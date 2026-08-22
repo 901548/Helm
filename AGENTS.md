@@ -332,6 +332,7 @@ F:\Helm\
 - [x] **P43 Git 初始化 + 许可证(已完成)**:补齐项目缺的版本控制与法律文件。
   1. **git init + 初始提交**(5bca1d4):108 文件入库;**.gitignore 排除运行时本地数据 `config.yaml`(含会话明文密码样例)与 `known_hosts.json`(主机 pin)**,仓库内提供脱敏 `config.example.yaml`(password: null)代替;.gitattributes 统一 LF(`* text=auto eol=lf`,消除 Windows CRLF 噪音);`.zcode/` 不入库;LICENSE(MIT,与 Cargo.toml 声明一致)补齐。
   2. **后续开发流程**:改完一批 → git add -A + commit(AGENTS.md 同步更新一起提交);发布时打 tag。**AGENTS.md 一并入库,新机器 clone 后按档案即可恢复全部上下文**。
+  3. **远程仓库**:`https://github.com/901548/Helm`(origin/main,本地分支 main);首推时远端已有建仓占位提交(303be40,stub README/LICENSE),经 `git merge --allow-unrelated-histories -X ours` 合并(README/LICENSE 保留本地完整版);LICENSE 版权人对齐 901548。**config.yaml/known_hosts.json 已 gitignore 不在远端,clone 后需自备 config.yaml(结构见 config.example.yaml)**。
   3. **坑**:a) git 在 Windows 无 .gitattributes 时按 core.autocrlf 全量警告 CRLF 转换,入库前先建 .gitattributes 最省心;b) `git rm --cached` 只退出暂存不删本地文件(config.yaml/known_hosts.json 仍在磁盘上供应用运行);c) 内联 node 脚本里写反引号会被 bash 当命令替换吃掉,长文本操作一律走 Edit/Write 工具(P20 教训重演)。
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

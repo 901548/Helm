@@ -65,6 +65,13 @@ export const getAiConfig = () => invoke<AiConfig | null>("get_ai_config");
 export const updateAiConfig = (config: AiConfig) =>
   invoke<void>("update_ai_config", { config });
 
+// 测试 AI 连接(表单值非空时覆盖已保存配置;api_key 传明文,空=沿用已保存值)
+export const testAiConnection = (
+  model?: string,
+  apiBaseUrl?: string,
+  apiKey?: string,
+) => invoke<string>("test_ai_connection", { model, apiBaseUrl, apiKey });
+
 export const getUiConfig = () => invoke<UiConfig>("get_ui_config");
 
 export const updateUiConfig = (config: UiConfig) =>

@@ -329,6 +329,10 @@ F:\Helm\
   2. **前端 lib 拆分**:`api.ts` → `types.ts`(全部类型)+ `commands.ts`(invoke)+ `events.ts`(listen)+ `api.ts` 桶导出(`export *`)——**所有现有 `../lib/api` 导入零改动**,新代码可按域直连。
   3. **组件分域**:`components/{terminal/{TerminalTabs,SysMonitor,AiCopilot}, sessions/{SessionPanel,SessionForm}, files/FileBrowser, chrome/{StatusBar,SettingsModal}}`;App.svelte 六个导入改域路径,组件内 `../lib/api`→`../../lib/api`(TerminalTabs→SysMonitor/AiCopilot 同域相对路径不变)。
   4. **验证**:`cargo build` 零警告 + `cargo test` 61 项全过 + `npm run build` 通过;行为零变化(纯移动,唯一代码改动是可见性与 import)。
+- [x] **P43 Git 初始化 + 许可证(已完成)**:补齐项目缺的版本控制与法律文件。
+  1. **git init + 初始提交**(5bca1d4):108 文件入库;**.gitignore 排除运行时本地数据 `config.yaml`(含会话明文密码样例)与 `known_hosts.json`(主机 pin)**,仓库内提供脱敏 `config.example.yaml`(password: null)代替;.gitattributes 统一 LF(`* text=auto eol=lf`,消除 Windows CRLF 噪音);`.zcode/` 不入库;LICENSE(MIT,与 Cargo.toml 声明一致)补齐。
+  2. **后续开发流程**:改完一批 → git add -A + commit(AGENTS.md 同步更新一起提交);发布时打 tag。**AGENTS.md 一并入库,新机器 clone 后按档案即可恢复全部上下文**。
+  3. **坑**:a) git 在 Windows 无 .gitattributes 时按 core.autocrlf 全量警告 CRLF 转换,入库前先建 .gitattributes 最省心;b) `git rm --cached` 只退出暂存不删本地文件(config.yaml/known_hosts.json 仍在磁盘上供应用运行);c) 内联 node 脚本里写反引号会被 bash 当命令替换吃掉,长文本操作一律走 Edit/Write 工具(P20 教训重演)。
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)
 - 全栈开发:`cargo tauri dev`

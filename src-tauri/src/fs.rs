@@ -267,10 +267,12 @@ fn remove_recursive(
     path: String,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
     Box::pin(async move {
-        let md = sftp
-            .symlink_metadata(&path)
-            .await
-            .map_err(|e| format!("无法读取 {}: {}", path, e))?;
+        let md = match sftp.symlink_metadata(&path).await {
+            Ok(md) => md,
+            // 目标已不存在:幂等成功(重复删除/测试起始清理)
+            Err(e) if e.to_string().contains("No such file") => return Ok(()),
+            Err(e) => return Err(format!("无法读取 {}: {}", path, e)),
+        };
         if md.file_type().is_dir() {
             let mut read_dir = sftp.read_dir(&path).await.map_err(|e| e.to_string())?;
             let child_paths: Vec<String> = read_dir.by_ref().map(|e| e.path()).collect();
@@ -524,8 +526,9 @@ mod tests {
         let cwd_map = Mutex::new(HashMap::new());
 
         let dir = "/tmp/helm_smoke_test";
-        // 清理历史残留，确保从干净状态开始
-        let _ = remove(&mgr, &name, dir).await;
+        // 清理历史残留，确保从干净状态开始(失败即显式报错,不静默)
+        let r0 = remove(&mgr, &name, dir).await.expect("起始清理调用失败");
+        assert!(r0.ok, "起始清理失败: {}", r0.message);
 
         // 1. 递归 mkdir + 幂等重复
         let r = mkdir(&mgr, &name, dir).await.expect("mkdir 调用失败");

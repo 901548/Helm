@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { testAiConnection } from "../../lib/api";
   import type { AiConfig, UiConfig, Theme } from "../../lib/api";
 
   interface Props {
@@ -11,6 +12,20 @@
   let { aiConfig, uiConfig, onCancel, onSave } = $props<Props>();
 
   let tab = $state<"ai" | "ui">("ai");
+
+  // 常见 OpenAI 兼容提供商预设（选中即填入地址与模型，可再手改）
+  const PROVIDER_PRESETS: { label: string; base: string; model: string }[] = [
+    { label: "DeepSeek", base: "https://api.deepseek.com", model: "deepseek-chat" },
+    { label: "OpenAI", base: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+    { label: "Google Gemini", base: "https://generativelanguage.googleapis.com/v1beta/openai", model: "gemini-2.0-flash" },
+    { label: "Groq", base: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile" },
+    { label: "Ollama（本地，无需 Key）", base: "http://localhost:11434/v1", model: "qwen2.5:7b" },
+    { label: "硅基流动 SiliconFlow", base: "https://api.siliconflow.cn/v1", model: "Qwen/Qwen2.5-7B-Instruct" },
+    { label: "智谱 GLM", base: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4-flash" },
+    { label: "通义千问 Qwen", base: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-turbo" },
+    { label: "月之暗面 Kimi", base: "https://api.moonshot.cn/v1", model: "moonshot-v1-8k" },
+    { label: "零一万物 Yi", base: "https://api.lingyiwanwu.com/v1", model: "yi-lightning" },
+  ];
 
   // AI 表单
   let model = $state(aiConfig?.model ?? "");
@@ -40,6 +55,34 @@
 
   let error = $state("");
   let saving = $state(false);
+  let testing = $state(false);
+  let testResult = $state<{ ok: boolean; msg: string } | null>(null);
+
+  function applyPreset(sel: HTMLSelectElement) {
+    const p = PROVIDER_PRESETS[Number(sel.value)];
+    sel.value = ""; // 复位，便于再次选择同一预设
+    if (!p) return;
+    model = p.model;
+    apiBaseUrl = p.base;
+    testResult = null;
+  }
+
+  async function runTest() {
+    testing = true;
+    testResult = null;
+    try {
+      const msg = await testAiConnection(
+        model.trim() || undefined,
+        apiBaseUrl.trim() || undefined,
+        apiKey.trim() || undefined,
+      );
+      testResult = { ok: true, msg };
+    } catch (e) {
+      testResult = { ok: false, msg: String(e) };
+    } finally {
+      testing = false;
+    }
+  }
 
   function num(v: string, def: number, label: string): number {
     const n = parseFloat(v);
@@ -115,20 +158,39 @@
     <div class="modal-body">
     {#if tab === "ai"}
       <div class="form">
+        <label>提供商快速填入（任意 OpenAI 兼容服务均可）
+          <select onchange={(e) => applyPreset(e.currentTarget)}>
+            <option value="">选择提供商（自动填入地址与模型）…</option>
+            {#each PROVIDER_PRESETS as p, i}
+              <option value={i}>{p.label}</option>
+            {/each}
+          </select>
+        </label>
         <label>模型
-          <input bind:value={model} placeholder="deepseek-chat" />
+          <input bind:value={model} oninput={() => (testResult = null)} placeholder="如 gpt-4o-mini / deepseek-chat / qwen-turbo" />
         </label>
         <label>API Key
           <input
             type="password"
             bind:value={apiKey}
+            oninput={() => (testResult = null)}
             placeholder={apiKeySaved ? "已保存（留空则不修改）" : "输入 API Key"}
             autocomplete="off"
           />
         </label>
         <label>API Base URL（可选）
-          <input bind:value={apiBaseUrl} placeholder="https://api.deepseek.com" />
+          <input bind:value={apiBaseUrl} oninput={() => (testResult = null)} placeholder="https://api.openai.com/v1（默认）" />
         </label>
+        <div class="test-row">
+          <button class="ghost" onclick={runTest} disabled={testing}>
+            {testing ? "测试中…" : "测试连接"}
+          </button>
+          {#if testResult}
+            <span class="test-result" class:ok={testResult.ok} class:bad={!testResult.ok}>
+              {testResult.ok ? "✓ " : "✗ "}{testResult.msg}
+            </span>
+          {/if}
+        </div>
         <label>自定义提示词
           <textarea bind:value={systemPrompt} rows="4"></textarea>
         </label>
@@ -351,6 +413,31 @@
     color: var(--danger);
     font-size: 0.85rem;
     margin: 0.6rem 0 0;
+  }
+  .test-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin-top: 0.45rem;
+  }
+  .test-row button {
+    padding: 0.32rem 0.9rem;
+    font-size: 0.82rem;
+    flex-shrink: 0;
+  }
+  .test-result {
+    font-size: 0.8rem;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+  }
+  .test-result.ok {
+    color: var(--ok);
+  }
+  .test-result.bad {
+    color: var(--danger);
   }
   .modal-foot {
     display: flex;

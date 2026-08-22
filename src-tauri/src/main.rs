@@ -94,6 +94,7 @@ fn main() {
             core::ai_mode,
             core::get_ai_config,
             core::update_ai_config,
+            core::test_ai_connection,
             core::get_ui_config,
             core::update_ui_config,
             core::fs_list_dir,

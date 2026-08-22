@@ -75,25 +75,30 @@ pub struct Agent {
     system_prompt_agent: String,
 }
 
+/// 判断 base_url 是否指向本机（Ollama/LM Studio 等本地推理服务无需 API Key）
+fn is_local_base(base: Option<&str>) -> bool {
+    let Some(url) = base.map(str::trim).filter(|u| !u.is_empty()) else {
+        return false;
+    };
+    if url.contains("[::1]") {
+        return true;
+    }
+    let host = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split(&['/', ':'][..])
+        .next()
+        .unwrap_or("");
+    matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1")
+}
+
 impl Agent {
-    /// 从配置创建 Agent，并按 api_key(DPAPI 密文) > api_key_env(环境变量) 顺序解析 API Key
+    /// 从配置创建 Agent，API Key 按 api_key > api_key_env > 本地服务免 Key 顺序解析
     pub fn new(config: &AiConfig) -> Result<Self> {
         if config.model.is_empty() {
             return Err(anyhow!("未配置 AI 模型（ai.model）"));
         }
-        let api_key = if let Some(cipher) = config.api_key.as_ref().filter(|k| !k.is_empty()) {
-            // 优先使用配置中直接填写的 API Key（DPAPI 密文）
-            crypto::decrypt_api_key(cipher)?
-        } else if !config.api_key_env.is_empty() {
-            // 回退到环境变量
-            env::var(&config.api_key_env)
-                .map_err(|_| anyhow!("环境变量 {} 未设置，请先配置后再启动", config.api_key_env))?
-        } else {
-            return Err(anyhow!("未配置 API Key（请填写 ai.api_key 或 ai.api_key_env）"));
-        };
-        if api_key.trim().is_empty() {
-            return Err(anyhow!("API Key 的值为空"));
-        }
+        let api_key = Self::resolve_api_key(config)?;
         let mut history = Vec::new();
         let system_prompt_default = config.system_prompt.clone();
         let system_prompt_agent = config
@@ -283,12 +288,11 @@ impl Agent {
         let body = self.request_body(false);
 
         let request_once = || async {
-            let resp = client
-                .post(&url)
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .json(&body)
-                .send()
-                .await?;
+            let mut req = client.post(&url).json(&body);
+            if !self.api_key.is_empty() {
+                req = req.header("Authorization", format!("Bearer {}", self.api_key));
+            }
+            let resp = req.send().await?;
             let status = resp.status();
             let text = resp.text().await?;
             if !status.is_success() {
@@ -327,12 +331,11 @@ impl Agent {
         let url = self.request_url();
         let body = self.request_body(true);
 
-        let resp = client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(&body)
-            .send()
-            .await?;
+        let mut req = client.post(&url).json(&body);
+        if !self.api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+        let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await?;
@@ -405,6 +408,80 @@ impl Agent {
             }
         }
         body
+    }
+
+    /// 解析 API Key：api_key 字段（密文→解密，明文→原样）> 环境变量 > 本地服务免 Key（空串）
+    fn resolve_api_key(config: &AiConfig) -> Result<String> {
+        if let Some(k) = config
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+        {
+            // 字段值可能是 DPAPI 密文（配置落盘的），也可能是明文（测试连接直传/手改配置）
+            return Ok(crypto::decrypt_api_key(k).unwrap_or_else(|_| k.to_string()));
+        }
+        if !config.api_key_env.is_empty() {
+            if let Ok(v) = env::var(&config.api_key_env) {
+                if !v.trim().is_empty() {
+                    return Ok(v);
+                }
+            }
+        }
+        if is_local_base(config.api_base_url.as_deref()) {
+            return Ok(String::new());
+        }
+        let env_name = if config.api_key_env.is_empty() {
+            "API_KEY"
+        } else {
+            &config.api_key_env
+        };
+        Err(anyhow!("未配置 API Key（请填写 API Key 或设置环境变量 {env_name}）"))
+    }
+
+    /// 测试 AI 连接（设置弹窗「测试连接」按钮）
+    ///
+    /// 只读探测：用最小请求（一条消息 + max_tokens=1）验证 base_url / api_key / model
+    /// 是否可用，成功返回确认信息。不修改状态、不落盘。
+    /// 超时沿用 timeout_secs（下限 20 秒）：本地推理服务冷启动可能超过 15 秒。
+    pub async fn test_connection(config: &AiConfig) -> Result<String, String> {
+        if config.model.trim().is_empty() {
+            return Err("请先填写模型名称".into());
+        }
+        let key = Self::resolve_api_key(config).map_err(|e| e.to_string())?;
+        let mut probe_cfg = config.clone();
+        probe_cfg.timeout_secs = config.timeout_secs.max(20);
+        let client = Self::build_client(&probe_cfg).map_err(|e| e.to_string())?;
+        let base = config
+            .api_base_url
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1");
+        let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+        let body = json!({
+            "model": config.model,
+            "messages": [{ "role": "user", "content": "hi" }],
+            "max_tokens": 1,
+            "stream": false,
+        });
+        let mut req = client.post(&url).json(&body);
+        if !key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+        let resp = req.send().await.map_err(|e| format!("请求失败: {e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let brief: String = text.chars().take(300).collect();
+            return Err(format!("HTTP {status}: {brief}"));
+        }
+        // 多数 OpenAI 兼容服务会回显实际使用的 model 名
+        let model_echo = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| v["model"].as_str().map(str::to_string));
+        match model_echo {
+            Some(m) => Ok(format!("连接成功（{m}）")),
+            None => Ok("连接成功".into()),
+        }
     }
 
     /// 构建 HTTP 客户端（超时 + 附加请求头）
@@ -548,6 +625,37 @@ pub fn truncate_text(text: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_base_detection() {
+        assert!(is_local_base(Some("http://localhost:11434/v1")));
+        assert!(is_local_base(Some("http://127.0.0.1:8080")));
+        assert!(is_local_base(Some("http://0.0.0.0:9000/v1")));
+        assert!(is_local_base(Some("http://[::1]:11434/v1")));
+        assert!(is_local_base(Some("localhost:11434/v1")));
+        assert!(!is_local_base(Some("https://api.deepseek.com")));
+        assert!(!is_local_base(Some("https://api.openai.com/v1")));
+        assert!(!is_local_base(None));
+        // 远端域名里含 localhost 子串不应误判
+        assert!(!is_local_base(Some("https://localhost.evil.com/v1")));
+    }
+
+    #[test]
+    fn resolve_key_prefers_field_over_env() {
+        let mut cfg = crate::config::AiConfig::default();
+        cfg.api_key_env = "HELM_TEST_UNSET_ENV_XYZ".into();
+        // 密文落盘不可行（单测环境也能 DPAPI），用"非密文明文"路径验证自适应
+        cfg.api_key = Some("sk-plain-key".into());
+        assert_eq!(Agent::resolve_api_key(&cfg).unwrap(), "sk-plain-key");
+
+        // 字段为空 + 环境变量未设置 + 非本地 → 报错
+        cfg.api_key = None;
+        assert!(Agent::resolve_api_key(&cfg).is_err());
+
+        // 本地服务免 Key
+        cfg.api_base_url = Some("http://localhost:11434/v1".into());
+        assert_eq!(Agent::resolve_api_key(&cfg).unwrap(), "");
+    }
 
     #[test]
     fn parse_sse_content_line() {

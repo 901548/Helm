@@ -111,6 +111,8 @@ pub struct SshManager {
     known_hosts: Arc<Mutex<KnownHostsStore>>,
     /// 输出事件通知：shell 有输出或通道结束时唤醒输出 poller
     notify: Arc<Notify>,
+    /// 连接任务进行中的会话名(双击守卫)
+    connecting: Arc<Mutex<std::collections::HashSet<String>>>,
 }
 
 impl SshManager {
@@ -126,11 +128,14 @@ impl SshManager {
             active: Arc::new(Mutex::new(None)),
             known_hosts,
             notify: Arc::new(Notify::new()),
+            connecting: Arc::new(Mutex::new(std::collections::HashSet::new())),
         }
     }
 
-    /// 标记会话为“连接中”（供 UI 显示状态并防止重复触发连接）
-    pub async fn mark_connecting(&self, name: &str) {
+    /// 标记会话为"连接中";返回 false 表示已有连接任务进行中(双击守卫)。
+    /// connect 的成败出口都会清除标记。
+    pub async fn mark_connecting(&self, name: &str) -> bool {
+        let newly = self.connecting.lock().await.insert(name.to_string());
         let session = Arc::new(Mutex::new(SshSession {
             kind: SessionKind::Linux,
             handle: None,
@@ -142,6 +147,12 @@ impl SshManager {
             .await
             .entry(name.to_string())
             .or_insert(session);
+        newly
+    }
+
+    /// 清除"连接中"标记(connect 成败出口调用)
+    async fn clear_connecting(&self, name: &str) {
+        self.connecting.lock().await.remove(name);
     }
 
     /// 建立 SSH 连接并完成认证
@@ -210,10 +221,12 @@ impl SshManager {
             Ok(Ok(pair)) => pair,
             Ok(Err(e)) => {
                 self.sessions.lock().await.remove(&name);
+                self.clear_connecting(&name).await;
                 return Err(e);
             }
             Err(_) => {
                 self.sessions.lock().await.remove(&name);
+                self.clear_connecting(&name).await;
                 return Err(anyhow!(
                     "连接 {}:{} 超时（45秒），请检查服务器可达性",
                     info.host,
@@ -224,6 +237,7 @@ impl SshManager {
 
         if !auth_ok {
             self.sessions.lock().await.remove(&name);
+            self.clear_connecting(&name).await;
             return Err(anyhow!("{} 认证失败，请检查用户名/密码或密钥", name));
         }
 
@@ -250,6 +264,7 @@ impl SshManager {
         if let Some(session) = sessions.get_mut(&name) {
             session.lock().await.kind = info.kind;
         }
+        self.clear_connecting(&name).await;
         Ok(true)
     }
 
@@ -320,7 +335,9 @@ impl SshManager {
                                 notify.notify_one();
                             }
                         }
-                        Some(ChannelMsg::ExitStatus { .. }) => break,
+                        // 收到退出状态后仍等 EOF(None)再退出:
+                        // 部分 shell 在 ExitStatus 后还会 flush 尾部输出,提前 break 会丢
+                        Some(ChannelMsg::ExitStatus { .. }) => {}
                         Some(_) => {}
                         None => break,
                     },

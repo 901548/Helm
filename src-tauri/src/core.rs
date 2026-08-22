@@ -225,6 +225,9 @@ pub async fn update_session(
             let old_pw = config.sessions[pos].password.clone();
             info.password = persist_session_password(info.password.as_deref(), old_pw.as_deref())?;
             config.sessions[pos] = info.clone();
+        } else {
+            // 旧名不存在:显式报错,不再静默成功(前端会误以为已保存)
+            return Err(format!("会话 {} 不存在(可能已被删除或改名)", old_name));
         }
     }
     if old_name != info.name {
@@ -281,7 +284,10 @@ pub async fn connect_session(
     if ssh.get_status(&name).await != SessionStatus::Disconnected {
         return Ok(());
     }
-    ssh.mark_connecting(&name).await;
+    // 双击守卫:已有连接任务进行中则忽略本次触发
+    if !ssh.mark_connecting(&name).await {
+        return Ok(());
+    }
     tokio::spawn(async move {
         let result = async {
             let ok = ssh.connect(&info).await?;

@@ -61,6 +61,8 @@ pub struct Agent {
     config: AiConfig,
     /// API Key
     api_key: String,
+    /// 复用 HTTP 客户端(连接池/TLS 会话复用,避免每步重建握手)
+    client: reqwest::Client,
     /// 对话历史（首条始终为 system prompt）
     history: Vec<ChatMessage>,
     /// 当前工作模式
@@ -107,9 +109,11 @@ impl Agent {
             role: "system".into(),
             content: system_prompt_for(mode, &system_prompt_default, &system_prompt_agent),
         });
+        let client = Self::build_client(config)?;
         Ok(Self {
             config: config.clone(),
             api_key,
+            client,
             history,
             mode,
             current_task: None,
@@ -274,7 +278,7 @@ impl Agent {
 
     /// 非流式请求：一次取回完整回复，失败重试 1 次（间隔 1 秒）
     async fn call_api_plain(&self) -> Result<String> {
-        let client = self.build_client()?;
+        let client = self.client.clone();
         let url = self.request_url();
         let body = self.request_body(false);
 
@@ -319,7 +323,7 @@ impl Agent {
         sink: &mut (dyn FnMut(&str) + Send),
         started: &mut bool,
     ) -> Result<String> {
-        let client = self.build_client()?;
+        let client = self.client.clone();
         let url = self.request_url();
         let body = self.request_body(true);
 
@@ -404,9 +408,9 @@ impl Agent {
     }
 
     /// 构建 HTTP 客户端（超时 + 附加请求头）
-    fn build_client(&self) -> Result<reqwest::Client> {
+    fn build_client(config: &AiConfig) -> Result<reqwest::Client> {
         let mut headers = reqwest::header::HeaderMap::new();
-        for (k, v) in &self.config.extra_headers {
+        for (k, v) in &config.extra_headers {
             if let (Ok(name), Ok(value)) = (
                 reqwest::header::HeaderName::from_bytes(k.as_bytes()),
                 reqwest::header::HeaderValue::from_str(v),
@@ -416,7 +420,7 @@ impl Agent {
         }
         Ok(reqwest::Client::builder()
             .default_headers(headers)
-            .timeout(Duration::from_secs(self.config.timeout_secs.max(1)))
+            .timeout(Duration::from_secs(config.timeout_secs.max(1)))
             .build()?)
     }
 }
@@ -427,6 +431,7 @@ impl Default for Agent {
         Self {
             config: AiConfig::default(),
             api_key: String::new(),
+            client: reqwest::Client::new(),
             history: vec![ChatMessage {
                 role: "system".into(),
                 content: String::new(),

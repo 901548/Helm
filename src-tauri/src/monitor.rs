@@ -311,6 +311,8 @@ pub fn spawn_sysmon_poller(app: AppHandle, ssh: Arc<SshManager>) {
             let Some(name) = name else { continue };
             let is_connected = ssh.get_status(&name).await == SessionStatus::Connected;
             if !is_connected {
+                // 断开即清差值状态,防残留泄漏
+                prev.remove(&name);
                 continue;
             }
             let handle = ssh.exec_handle(&name).await;

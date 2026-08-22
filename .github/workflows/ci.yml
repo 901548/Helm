@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 前端单元测试 (Vitest)
+        run: npm test
+
+      # dist 必须先生成:tauri 的 generate_context! 在编译期嵌入前端产物
+      - name: 前端构建
+        run: npm run build
+
+      # .cargo/config.toml 仅配置 gnu target 链接器,对 CI 默认的 msvc 宿主构建不生效
+      - name: Rust 测试 (cargo test)
+        run: cargo test --manifest-path src-tauri/Cargo.toml

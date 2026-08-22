@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import * as api from "../../lib/api";
   import type { FileEntry, SessionKind } from "../../lib/api";
+  import { fmtSize as fmtSizeLib, joinPath as joinPathLib, parentPathWindows, resolvePath as resolvePathLib, shq } from "../../lib/paths";
 
   interface Props {
     activeTab: string | null;
@@ -29,12 +30,7 @@
   let previewLoading = $state(false);
   let saved = $state(false);
 
-  const fmtSize = (n: number) => {
-    if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(1) + "G";
-    if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + "M";
-    if (n >= 1024) return (n / 1024).toFixed(0) + "K";
-    return n + "B";
-  };
+  const fmtSize = fmtSizeLib;
 
   let refreshSeq = 0;
 
@@ -43,10 +39,7 @@
   const isBlocked = $derived(kind !== "linux" && kind !== "windows");
   const sep = $derived(isWindows ? "\\" : "/");
 
-  const joinPath = (base: string, name: string) => {
-    if (!base) return name;
-    return base.endsWith("/") || base.endsWith("\\") ? base + name : base + sep + name;
-  };
+  const joinPath = (base: string, name: string) => joinPathLib(base, name, sep);
 
   async function refresh(dir?: string) {
     if (!activeTab) return;
@@ -94,7 +87,7 @@
     }
   });
 
-  const shq = (p: string) => "'" + p.replace(/'/g, `'\\''`) + "'";
+  // shq 来自 lib/paths(bash 单引号安全包裹)
 
   function syncTerminal(path: string) {
     if (!activeTab || kind !== "linux") return;
@@ -138,16 +131,7 @@
   }
 
   function resolvePath(raw: string): string {
-    let p = raw.trim();
-    if (!p) return "~";
-    if (p === "~") return "~";
-    if (p.startsWith("~/") || p.startsWith("~\\")) return "~" + p.slice(1);
-    const isAbs = p.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(p);
-    if (!isAbs) {
-      p = joinPath(cwd, p);
-    }
-    while (p.length > 1 && (p.endsWith("/") || p.endsWith("\\"))) p = p.slice(0, -1);
-    return p;
+    return resolvePathLib(raw, cwd, sep);
   }
 
   async function savePreview() {
@@ -173,11 +157,8 @@
   function goUp() {
     if (!cwd) return;
     if (isWindows) {
-      const idx = Math.max(cwd.lastIndexOf("\\"), cwd.lastIndexOf("/"));
-      if (idx < 0) return;
-      const parent = cwd.slice(0, idx);
-      if (parent && !/^[a-zA-Z]:$/.test(parent)) refresh(parent);
-      else refresh("\\");
+      const parent = parentPathWindows(cwd);
+      if (parent !== null) refresh(parent);
       return;
     }
     if (cwd === "/") return;

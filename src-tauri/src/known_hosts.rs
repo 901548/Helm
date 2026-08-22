@@ -18,8 +18,6 @@ pub struct KnownHostsStore {
     path: Option<PathBuf>,
     /// host:port → 指纹
     entries: HashMap<String, String>,
-    /// 最近一次校验失败原因（供 handler 转述给用户）
-    pending_error: Option<String>,
 }
 
 impl KnownHostsStore {
@@ -29,56 +27,37 @@ impl KnownHostsStore {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
-        Self {
-            path: Some(path),
-            entries,
-            pending_error: None,
-        }
+        Self { path: Some(path), entries }
     }
 
     /// 纯内存库（测试/无配置路径时使用，不落盘）
     pub fn in_memory() -> Self {
-        Self {
-            path: None,
-            entries: HashMap::new(),
-            pending_error: None,
-        }
+        Self { path: None, entries: HashMap::new() }
     }
 
-    /// 校验/记录主机密钥。返回是否可信任。
+    /// 校验/记录主机密钥。
     ///
-    /// 首次连接自动信任并落盘；指纹一致通过；不一致设置 pending_error 并返回 false。
-    pub fn verify(&mut self, host: &str, port: u16, key: &PublicKey) -> bool {
+    /// Ok(()) = 信任(首次记录或指纹一致);Err(原因) = 指纹变更拒绝。
+    /// 失败原因经返回值传递(P47:不再用共享单槽,天然并发安全)。
+    pub fn verify(&mut self, host: &str, port: u16, key: &PublicKey) -> Result<(), String> {
         self.verify_fingerprint(host, port, &key.fingerprint())
     }
 
     /// 校验/记录主机指纹（纯逻辑，供 verify 与测试使用）
-    pub fn verify_fingerprint(&mut self, host: &str, port: u16, fp: &str) -> bool {
+    pub fn verify_fingerprint(&mut self, host: &str, port: u16, fp: &str) -> Result<(), String> {
         let id = format!("{host}:{port}");
         match self.entries.get(&id) {
             None => {
                 self.entries.insert(id, fp.to_string());
-                self.pending_error = None;
                 self.persist();
-                true
+                Ok(())
             }
-            Some(saved) if saved == fp => {
-                self.pending_error = None;
-                true
-            }
-            Some(saved) => {
-                self.pending_error = Some(format!(
-                    "主机 {} 的主机密钥已变更（旧指纹 {} → 新指纹 {}），可能遭受中间人攻击或服务器重装系统，已拒绝连接。若确认服务器正常，请先在设置中忘记该主机后重试。",
-                    host, saved, fp
-                ));
-                false
-            }
+            Some(saved) if saved == fp => Ok(()),
+            Some(saved) => Err(format!(
+                "主机 {} 的主机密钥已变更（旧指纹 {} → 新指纹 {}），可能遭受中间人攻击或服务器重装系统，已拒绝连接。若确认服务器正常，请先在设置中忘记该主机后重试。",
+                host, saved, fp
+            )),
         }
-    }
-
-    /// 取走最近一次校验失败原因（每次调用后清空）
-    pub fn take_pending_error(&mut self) -> Option<String> {
-        self.pending_error.take()
     }
 
     /// 遗忘指定主机密钥（密钥变更后手动重置）
@@ -112,32 +91,30 @@ mod tests {
     #[test]
     fn first_connect_trusts_and_pins() {
         let mut store = KnownHostsStore::in_memory();
-        assert!(store.verify_fingerprint("192.168.1.1", 22, "fpA"));
+        assert!(store.verify_fingerprint("192.168.1.1", 22, "fpA").is_ok());
         assert_eq!(store.fingerprint("192.168.1.1", 22), Some("fpA"));
-        assert_eq!(store.take_pending_error(), None);
     }
 
     #[test]
     fn same_key_keeps_trusting() {
         let mut store = KnownHostsStore::in_memory();
-        store.verify_fingerprint("h", 22, "fpA");
-        assert!(store.verify_fingerprint("h", 22, "fpA"));
+        store.verify_fingerprint("h", 22, "fpA").unwrap();
+        assert!(store.verify_fingerprint("h", 22, "fpA").is_ok());
     }
 
     #[test]
     fn changed_key_is_rejected_with_message() {
         let mut store = KnownHostsStore::in_memory();
-        store.verify_fingerprint("h", 22, "fpA");
-        assert!(!store.verify_fingerprint("h", 22, "fpB"));
-        let err = store.take_pending_error().expect("应有告警");
+        store.verify_fingerprint("h", 22, "fpA").unwrap();
+        let err = store.verify_fingerprint("h", 22, "fpB").unwrap_err();
         assert!(err.contains("主机密钥已变更"));
     }
 
     #[test]
     fn forget_removes_entry() {
         let mut store = KnownHostsStore::in_memory();
-        store.verify_fingerprint("h", 22, "fpA");
+        store.verify_fingerprint("h", 22, "fpA").unwrap();
         assert!(store.forget("h", 22));
-        assert!(store.verify_fingerprint("h", 22, "fpB"));
+        assert!(store.verify_fingerprint("h", 22, "fpB").is_ok());
     }
 }

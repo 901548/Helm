@@ -53,18 +53,19 @@ impl client::Handler for SshHandler {
     type Error = russh::Error;
 
     /// TOFU 主机密钥校验：首次信任并记录；指纹一致通过；变更拒绝并告警
+    /// (失败原因经返回值直达本次连接的 key_error 槽,P47 起不经共享单槽)
     async fn check_server_key(
         &mut self,
         server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
         let mut store = self.store.lock().await;
-        let ok = store.verify(&self.host, self.port, server_public_key);
-        if !ok {
-            if let Some(e) = store.take_pending_error() {
-                *self.key_error.lock().await = Some(e);
+        match store.verify(&self.host, self.port, server_public_key) {
+            Ok(()) => Ok(true),
+            Err(msg) => {
+                *self.key_error.lock().await = Some(msg);
+                Ok(false)
             }
         }
-        Ok(ok)
     }
 }
 

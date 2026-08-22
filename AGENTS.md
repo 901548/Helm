@@ -350,6 +350,12 @@ F:\Helm\
   3. **v0.1.1**:三处 version bump(package.json/tauri.conf.json/Cargo.toml)→ `cargo tauri build` 出 `Helm_0.1.1_x64_en-US.msi`(5.8MB)/`Helm_0.1.1_x64-setup.exe`(4.2MB),**含 P45 删除修复,取代带 bug 的 v0.1.0**;tag v0.1.1 已推送。
   4. **CI 验证**:`git credential fill` 取本机 token 调 GitHub API——**私有仓库也能查 Actions**:三次运行(run 1/2/3)全部 success(含 P45 提交),msvc 构建 + Vitest + cargo test 在 windows runner 上无需任何适配。
   5. **坑**:a) JS `String.replace(字符串,...)` 只替换**第一处**,批量改代码用 split/join(P46 就漏了第二个 `self.build_client()` 调用点);b) russh-sftp File 无 `read_all`,读整文件用 `sftp.read(path)`;c) GitHub 443 间歇阻断时 tag 与 main 分开重试(本次 tag 先通、main 后通),本地提交安全勿重写历史。**遗留未修(有意)**:Agent 危险检测不覆盖 `$()`/xargs(需语义级方案)、ai_busy TOCTOU(UI 已挡)、QA 持 agent 锁、known_hosts pending_error 单槽。
+- [x] **P47 清零批(P46 遗留 4 项全部修复,`cargo test` 63 项全过;live 因服务器再度离线自动跳过——改动均为纯函数/锁语义级,单测覆盖)**:
+  1. **safety.rs 二次执行防护**:a) **xargs 管道合并分析**——段含 `xargs` + 危险命令(rm/chmod/dd/mkfs/shutdown/reboot)时,把整条命令的 `|`/`;`/换行替换为空格后合并分词判定(`echo / | xargs rm -rf`→Critical;`find /var/log -name '*.gz' | xargs rm -rf`→Warning 不误伤日常清理;`echo x | xargs cat`→Safe);b) **命令替换根目标检测**——危险命令的 `$(...)`/反引号体内出现根 token(`/`、`/*`)即升级 Critical(`rm -rf $(echo /)`);`rm -rf $(pwd)/build`/`$(echo /tmp/a)` 维持 Warning;`echo $(ls /)` 不升级。**check_segment 拆出 check_tokens(tokens) 供合并分析复用**。+2 单测(xargs_secondary_execution / command_substitution_root)。
+  2. **ai_busy TOCTOU**:`ai_submit` 改 `compare_exchange(false,true)` 原子抢占,并发提交只一个进入;早退路径(空输入/无会话)统一 `rollback` 复位 busy + 发 Busy{false}(否则任务永久"忙")。
+  3. **QA 持锁不再阻塞查询**:CoreState 增 `ai_mode_agent: AtomicBool` 缓存(构造期从 config 初始化,ai_set_mode 双写);`ai_mode` 免锁即时返回(此前 QA 聊天持 agent 锁最长 60s 会卡住查询);`update_ai_config` 加 busy 守卫(任务中改配置与进行中的请求互踩)。
+  4. **known_hosts 错误通道**:`verify/verify_fingerprint` 改返回 `Result<(), String>`,失败原因经返回值直达本次连接的 key_error 槽;**删除共享 `pending_error` 单槽与 `take_pending_error`**(设计上天然并发安全,不再依赖锁内 set+take 的时序巧合)。
+  5. **坑**:a) `trim_matches` 会剥**所有**满足谓词的首尾字符——用「非/非*」做谓词时 `$(pwd)/build` 被剥成 `/` 误判根;包装标点剥离须排除字母数字(`!c.is_ascii_alphanumeric() && c != '/' && c != '*'`);b) 测试调试用临时 dbg_tests + `-- --nocapture` 打印分类路径,定位后删除,勿留库中。
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)
 - 全栈开发:`cargo tauri dev`

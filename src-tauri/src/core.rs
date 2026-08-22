@@ -85,6 +85,9 @@ pub struct CoreState {
     pub agent: Arc<Mutex<Agent>>,
     /// AI 任务忙碌标记
     pub ai_busy: Arc<AtomicBool>,
+    /// AI 模式缓存(true=Agent):查询不碰 agent 锁,
+    /// 避免 QA 聊天持锁期间 ai_mode 被阻塞最长 60s
+    pub ai_mode_agent: Arc<AtomicBool>,
     /// AI 控制通道发送端（每次任务启动时重建）
     pub ai_ctl: Arc<Mutex<Option<UnboundedSender<AiControl>>>>,
     /// 文件浏览器各会话当前目录
@@ -100,6 +103,7 @@ impl CoreState {
             Some(ai_cfg) => Agent::new(ai_cfg).unwrap_or_default(),
             None => Agent::default(),
         };
+        let mode_agent = config.ai.as_ref().map(|a| a.mode.eq_ignore_ascii_case("agent")).unwrap_or(false);
         let known_hosts = Arc::new(Mutex::new(crate::known_hosts::KnownHostsStore::load(
             config_path.parent().map(PathBuf::from).unwrap_or_default().join("known_hosts.json"),
         )));
@@ -109,6 +113,7 @@ impl CoreState {
             ssh: Arc::new(SshManager::with_known_hosts(known_hosts.clone())),
             agent: Arc::new(Mutex::new(agent)),
             ai_busy: Arc::new(AtomicBool::new(false)),
+            ai_mode_agent: Arc::new(AtomicBool::new(mode_agent)),
             ai_ctl: Arc::new(Mutex::new(None)),
             fs_cwd: Mutex::new(std::collections::HashMap::new()),
             known_hosts,
@@ -426,15 +431,26 @@ pub async fn ai_submit(
     input: String,
     pwd: Option<String>,
 ) -> Result<(), String> {
-    if state.ai_busy.load(Ordering::SeqCst) {
+    // 原子抢占 busy 标记:并发提交只有一个能进入(修复 TOCTOU;
+    // 早退路径必须复位,否则任务永远"忙")
+    if state
+        .ai_busy
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return Err("AI 任务正在执行中，请先停止或等待".to_string());
     }
+    let rollback = |state: &State<'_, CoreState>, app: &AppHandle| {
+        state.ai_busy.store(false, Ordering::SeqCst);
+        let _ = app.emit("ai", AiPayload::Busy { busy: false });
+    };
     let mode = {
         let agent = state.agent.lock().await;
         agent.mode()
     };
     let input = input.trim().to_string();
     if input.is_empty() {
+        rollback(&state, &app);
         return Ok(());
     }
 
@@ -443,7 +459,10 @@ pub async fn ai_submit(
         let ssh = state.ssh.clone();
         let name = ssh.active_name().await;
         let sessions = state.config.lock().await.sessions.clone();
-        let name = name.ok_or_else(|| "未连接会话：请先连接一个会话，再发起 Agent 任务".to_string())?;
+        let Some(name) = name else {
+            rollback(&state, &app);
+            return Err("未连接会话：请先连接一个会话，再发起 Agent 任务".to_string());
+        };
         let info = sessions.iter().find(|s| s.name == name);
         let (host, user) = match info {
             Some(info) => (info.host.clone(), info.user.clone()),
@@ -459,7 +478,6 @@ pub async fn ai_submit(
         None
     };
 
-    state.ai_busy.store(true, Ordering::SeqCst);
     let _ = app.emit("ai", AiPayload::Busy { busy: true });
 
     // 为本次任务建立控制通道
@@ -541,18 +559,24 @@ pub async fn ai_set_mode(state: State<'_, CoreState>, mode: String) -> Result<()
         "agent" => AgentMode::Agent,
         _ => return Err(format!("未知模式: {}", mode)),
     };
-    let mut agent = state.agent.lock().await;
-    agent.set_mode(mode);
+    {
+        let mut agent = state.agent.lock().await;
+        agent.set_mode(mode);
+    }
+    // 同步缓存,供 ai_mode 免锁查询
+    state
+        .ai_mode_agent
+        .store(mode == AgentMode::Agent, Ordering::SeqCst);
     Ok(())
 }
 
-/// 查询当前 AI 模式
+/// 查询当前 AI 模式(读缓存不碰 agent 锁,QA 聊天持锁期间也能即时返回)
 #[tauri::command]
 pub async fn ai_mode(state: State<'_, CoreState>) -> Result<String, String> {
-    let agent = state.agent.lock().await;
-    Ok(match agent.mode() {
-        AgentMode::QA => "qa".to_string(),
-        AgentMode::Agent => "agent".to_string(),
+    Ok(if state.ai_mode_agent.load(Ordering::SeqCst) {
+        "agent".to_string()
+    } else {
+        "qa".to_string()
     })
 }
 
@@ -581,6 +605,10 @@ pub async fn update_ai_config(
     state: State<'_, CoreState>,
     mut config: crate::config::AiConfig,
 ) -> Result<(), String> {
+    // busy 守卫:任务运行中替换 Agent 会与进行中的请求互踩(且会阻塞等 agent 锁)
+    if state.ai_busy.load(Ordering::SeqCst) {
+        return Err("AI 任务执行中，请先停止再修改配置".to_string());
+    }
     {
         let cfg = state.config.lock().await;
         let old_cipher = cfg.ai.as_ref().and_then(|a| a.api_key.clone());

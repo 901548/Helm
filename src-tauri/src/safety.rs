@@ -192,7 +192,11 @@ fn check_segment(seg: &str) -> (DangerLevel, &'static str) {
     if tokens.is_empty() {
         return (DangerLevel::Safe, "命令安全");
     }
+    check_tokens(&tokens)
+}
 
+/// token 级危险判定(供段分析与 xargs 管道合并分析复用)
+fn check_tokens(tokens: &[String]) -> (DangerLevel, &'static str) {
     // Critical：rm -rf 指向根路径
     if tokens.iter().any(|t| t == "rm") && rm_flags(&tokens).is_some() {
         if has_root_target(&tokens) {
@@ -238,16 +242,58 @@ fn check_segment(seg: &str) -> (DangerLevel, &'static str) {
     (DangerLevel::Safe, "命令安全")
 }
 
+/// xargs 需要提级合并分析的危险命令(目标可能来自管道 stdin)
+const XARGS_DANGER_CMDS: [&str; 6] = ["rm", "chmod", "dd", "mkfs", "shutdown", "reboot"];
+
+/// token 归一化后是否为毁灭性根目标(剥掉 `$()` / 引号残留字符)
+fn token_is_root_wipe(t: &str) -> bool {
+    // 只剥包装标点($、括号、引号、分号等),不剥字母数字——
+    // 否则 $(pwd)/build 会被剥成 "/" 误判根
+    let norm = t.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '/' && c != '*');
+    norm == "/" || (norm.starts_with("/*") && norm.chars().all(|c| c == '/' || c == '*'))
+}
+
 /// 检查命令的危险等级，返回 (等级, 中文原因说明)
 pub fn check_danger(cmd: &str) -> (DangerLevel, String) {
-    for seg in split_commands(cmd) {
-        let (level, reason) = check_segment(&seg);
+    let segs = split_commands(cmd);
+    // 二次执行防护 1:命令替换——危险命令的 $(...) 内出现根目标即升级
+    // (`rm -rf $(echo /)` 分词后看不到完整目标,替换体按保守原则判)
+    for seg in &segs {
+        if !seg.contains("$(") && !seg.contains('`') {
+            continue;
+        }
+        let tokens = tokenize_segment(seg);
+        let dangerous = (tokens.iter().any(|t| t == "rm") && rm_flags(&tokens).is_some())
+            || tokens.iter().any(|t| t.starts_with("mkfs"));
+        if dangerous && tokens.iter().any(|t| token_is_root_wipe(t)) {
+            return (DangerLevel::Critical, "命令替换中出现根目标 (rm -rf $(... /))".to_string());
+        }
+    }
+    // 二次执行防护 2:xargs 管道——目标经 stdin 传入,分段后不可见;
+    // 若 xargs 段本身含危险命令,合并整条管道的 token 分析
+    // (`echo / | xargs rm -rf` → 合并后见 "/" → Critical)
+    for seg in &segs {
+        let tokens = tokenize_segment(seg);
+        let has_xargs = tokens.iter().any(|t| t == "xargs");
+        let has_danger = XARGS_DANGER_CMDS
+            .iter()
+            .any(|c| tokens.iter().any(|t| t.starts_with(c)));
+        if has_xargs && has_danger {
+            let merged = tokenize_segment(&cmd.replace(['|', ';', '\n'], " "));
+            let (level, reason) = check_tokens(&merged);
+            if level == DangerLevel::Critical {
+                return (level, reason.to_string());
+            }
+        }
+    }
+    for seg in &segs {
+        let (level, reason) = check_segment(seg);
         if level == DangerLevel::Critical {
             return (DangerLevel::Critical, reason.to_string());
         }
     }
-    for seg in split_commands(cmd) {
-        let (level, reason) = check_segment(&seg);
+    for seg in &segs {
+        let (level, reason) = check_segment(seg);
         if level == DangerLevel::Warning {
             return (DangerLevel::Warning, reason.to_string());
         }
@@ -296,6 +342,30 @@ mod tests {
         is(DangerLevel::Safe, "rm -r dir");
         is(DangerLevel::Safe, "echo 'rm -rf /'");
         is(DangerLevel::Safe, "echo shutdown");
+    }
+
+    #[test]
+    fn xargs_secondary_execution() {
+        // 管道上游的根目标经 stdin 传给危险命令 → 合并分析升级
+        is(DangerLevel::Critical, "echo / | xargs rm -rf");
+        is(DangerLevel::Critical, "echo /* | xargs rm -rf");
+        // 非根目标仍是 Warning(日常清理模式)
+        is(DangerLevel::Warning, "echo /tmp/a | xargs rm -rf");
+        is(DangerLevel::Warning, "find /var/log -name '*.gz' | xargs rm -rf");
+        // xargs 段无危险命令不提级
+        is(DangerLevel::Safe, "echo x | xargs cat");
+    }
+
+    #[test]
+    fn command_substitution_root() {
+        // 危险命令的替换体内出现根目标 → Critical
+        is(DangerLevel::Critical, "rm -rf $(echo /)");
+        is(DangerLevel::Critical, "rm -rf $(echo /*)");
+        // 替换体非根目标 → 维持 Warning
+        is(DangerLevel::Warning, "rm -rf $(echo /tmp/a)");
+        is(DangerLevel::Warning, "rm -rf $(pwd)/build");
+        // 非危险命令带替换不升级
+        is(DangerLevel::Safe, "echo $(ls /)");
     }
 
     #[test]

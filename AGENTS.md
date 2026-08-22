@@ -334,7 +334,7 @@ F:\Helm\
   2. **后续开发流程**:改完一批 → git add -A + commit(AGENTS.md 同步更新一起提交);发布时打 tag。**AGENTS.md 一并入库,新机器 clone 后按档案即可恢复全部上下文**。
   3. **远程仓库**:`https://github.com/901548/Helm`(origin/main,本地分支 main);首推时远端已有建仓占位提交(303be40,stub README/LICENSE),经 `git merge --allow-unrelated-histories -X ours` 合并(README/LICENSE 保留本地完整版);LICENSE 版权人对齐 901548。**config.yaml/known_hosts.json 已 gitignore 不在远端,clone 后需自备 config.yaml(结构见 config.example.yaml)**。
   3. **坑**:a) git 在 Windows 无 .gitattributes 时按 core.autocrlf 全量警告 CRLF 转换,入库前先建 .gitattributes 最省心;b) `git rm --cached` 只退出暂存不删本地文件(config.yaml/known_hosts.json 仍在磁盘上供应用运行);c) 内联 node 脚本里写反引号会被 bash 当命令替换吃掉,长文本操作一律走 Edit/Write 工具(P20 教训重演)。
-- [x] **P44 前端测试 + CI + release(已完成本地部分;**GitHub 推送遇网络间歇阻断,重试中**)**:
+- [x] **P44 前端测试 + CI + release(已完成,`cargo tauri build` 三件套 + tag v0.1.0 已推送;CI 首跑状态需在仓库 Actions 页确认——仓库为私有,匿名 API 不可见)**:
   1. **前端纯函数抽离 + Vitest**:TerminalTabs/FileBrowser 内嵌纯函数抽到 `lib/osc.ts`(stripAnsi/parseOscPwd/normalizePwd——P24 跨 TCP 分包解析,前端最易错逻辑)与 `lib/paths.ts`(joinPath/resolvePath/parentPathWindows/shq/fmtSize);组件改薄包装(import + 闭包注入 sep/cwd);`osc.test.ts` + `paths.test.ts` 共 **26 项**(跨包 OSC 拼接/多标记取尾/非 helm 前缀不误取/盘符路径/shq 转义等,P24 真实场景全覆盖);`npm test` = `vitest run`。**测试抓到原实现怪癖**:`~/data/` 因早返回不剥尾斜杠,lib 版修正(~ 路径也剥)。
   2. **CI**:`.github/workflows/ci.yml`(windows-latest + Node 22 + rust stable):npm ci → npm test → npm run build(**dist 必须先于 cargo test 存在,generate_context! 编译期嵌入前端产物**)→ cargo test。**.cargo/config.toml 仅配置 gnu target 链接器,对 CI 默认 msvc 宿主构建不生效,无需改**。
   3. **release 构建**:`cargo tauri build` 带新图标出三件套(P37 遗留补跑)——`helm.exe`(13.5MB,图标中心像素 60,130,254 = accent 蓝确认新图标)+ `Helm_0.1.0_x64_en-US.msi`(5.8MB)+ `Helm_0.1.0_x64-setup.exe`(4.2MB);tag v0.1.0。

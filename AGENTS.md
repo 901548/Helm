@@ -339,6 +339,11 @@ F:\Helm\
   2. **CI**:`.github/workflows/ci.yml`(windows-latest + Node 22 + rust stable):npm ci → npm test → npm run build(**dist 必须先于 cargo test 存在,generate_context! 编译期嵌入前端产物**)→ cargo test。**.cargo/config.toml 仅配置 gnu target 链接器,对 CI 默认 msvc 宿主构建不生效,无需改**。
   3. **release 构建**:`cargo tauri build` 带新图标出三件套(P37 遗留补跑)——`helm.exe`(13.5MB,图标中心像素 60,130,254 = accent 蓝确认新图标)+ `Helm_0.1.0_x64_en-US.msi`(5.8MB)+ `Helm_0.1.0_x64-setup.exe`(4.2MB);tag v0.1.0。
   4. **坑**:a) 本机 gh CLI 未安装,GitHub Release 网页创建或后续装 gh;b) GitHub 443 间歇不可达(无代理环境),推送失败安全——本地提交不丢,网络恢复 `git push` 即可,勿因此重写历史。
+- [x] **P45 服务器恢复真机冒烟:抓出并修复 P29 安全回归(已完成,`cargo test` 61 项含 5 个 live 全过 + CDP 真机全链路验证)**:
+  1. **P29 安全回归(高危,文件删除被全面拦截)**:live 测试 `sftp_live_readwrite` 失败暴露——P29 把「任何 `/` 开头目标」判为 Critical 根删除,而 `fs.rs remove()` 拦截 Critical → **文件面板删除任何绝对路径目录必被拦截**(UI 恒用绝对路径,自 P29 起实际不可用)。P29-P44 期间未暴露纯属服务器离线 live 跳过。**修复**:`has_root_target` 收窄为真清根(`/` 本身或 `/*`/`/**` 通配),普通绝对路径回落 Warning;`critical_rm_variants`/`warning_rm_variants`/`chmod_commands` 断言同步(`/tmp/a`→Warning,`chmod 777 /etc`→Warning,新增 `/*` 与 `chmod 777 /` Critical)。
+  2. **remove 幂等**:`remove_recursive` 对 symlink_metadata 的 "No such file" 视为成功(重复删除/测试起始清理不再报错);测试起始清理从 `let _ =` 静默改为显式断言报错(本次盲区即源于静默吞错)。
+  3. **真机全链路(CDP @9229,192.168.79.150)**:连接(慢认证 ~20s, dot ok + tab + 提示符);`hostname -I` 回显;**双向 cd 联动**(终端 `cd /etc`→面板 /etc 177 行;双击 alternatives→面板+终端 `cd '/etc/alternatives'`——P44 osc.ts 抽离后依然正确);**mkdir** 创建 `helm-p45`(P38 修复验证:无 `undefined` 目录);**右键删除** helm-p45 成功(P45 修复验证:不再被 Critical 拦截);SysMonitor 实时(CPU 0%/MEM 414M/3.7G/负载/网速);**AI dock E2E**(QA 提交→活动流 QA 卡+「✗ AI 未配置」摘要,错误路径即验证);截图 `docs/screenshots/ui-live-connected.png`。**仍待办:Windows 测试机冒烟(P34 项)+ 真实 AI 多步任务(需 API Key)**。
+  4. **坑**:a) 测试起始清理 `let _ = remove(...)` 吞错是排查最大障碍——清理性前置操作必须显式断言;b) 语义收窄后 `rm -rf /tmp/a/../..` 这类**路径回溯写法分词层判不出**(resolve 后才是 /),已知取舍,Critical 仍覆盖直接形式;c) cargo test live 前须 `cp config.yaml src-tauri/`(P28 坑重申)。
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)
 - 全栈开发:`cargo tauri dev`

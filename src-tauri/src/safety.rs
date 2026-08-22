@@ -159,10 +159,13 @@ fn rm_flags(tokens: &[String]) -> Option<RmFlags> {
     }
 }
 
-/// 段内目标令牌是否以 `/` 开头（根及根下任意路径）
+/// 目标是否为"毁灭性根目标":`/` 本身或 `/*` `/**` 形式的直接清根。
+/// 普通绝对路径(如 /tmp/a)不算——文件面板删除恒用绝对路径,
+/// 若误判为 Critical 会拦截正常删除操作(P45 修复的 P29 回归)。
 fn has_root_target(tokens: &[String]) -> bool {
-    // 存在以 '-' 开头或 `--` 之后的均为选项;真正的位置参数以 `/` 开头才算根目标
-    tokens.iter().any(|t| t.starts_with('/'))
+    tokens.iter().any(|t| {
+        t == "/" || (t.starts_with("/*") && t.chars().all(|c| c == '/' || c == '*'))
+    })
 }
 
 /// 常见命令包装器：`sudo shutdown` / `env VAR=x cmd` / `nohup cmd &` 等。
@@ -265,14 +268,14 @@ mod tests {
         is(DangerLevel::Critical, "rm -rf /");
         is(DangerLevel::Critical, "rm -r -f /");
         is(DangerLevel::Critical, "rm -rf -- /");
+        is(DangerLevel::Critical, "rm -rf /*");
         is(DangerLevel::Critical, "rm -rfv /");
-        is(DangerLevel::Critical, "rm -rf /tmp/a");
         is(DangerLevel::Critical, "sudo rm -rf /");
         is(DangerLevel::Critical, "rm -rf /; echo ok");
         is(DangerLevel::Critical, "rm -rf / && reboot");
         // 长选项变体(曾因 strip_prefix 少剥一个 '-' 永假漏检)
         is(DangerLevel::Critical, "rm --recursive --force /");
-        is(DangerLevel::Critical, "rm --recursive -f /tmp/a");
+        is(DangerLevel::Critical, "rm --recursive -f /*");
         is(DangerLevel::Critical, "rm -r --force /");
     }
 
@@ -280,6 +283,10 @@ mod tests {
     fn warning_rm_variants() {
         is(DangerLevel::Warning, "rm -rf ./backup.sh");
         is(DangerLevel::Warning, "rm -rf dir");
+        // 普通绝对路径不是清根:回落 Warning(P45 语义修正,
+        // 文件面板删除恒用绝对路径,误判 Critical 会拦截正常删除)
+        is(DangerLevel::Warning, "rm -rf /tmp/a");
+        is(DangerLevel::Warning, "rm -rf /tmp/helm_smoke_test");
         is(DangerLevel::Warning, "rm --recursive --force dir");
     }
 
@@ -307,7 +314,10 @@ mod tests {
 
     #[test]
     fn chmod_commands() {
-        is(DangerLevel::Critical, "chmod 777 /etc");
+        is(DangerLevel::Critical, "chmod 777 /");
+        is(DangerLevel::Critical, "chmod 777 /*");
+        // 普通绝对路径非清根(P45 语义修正)
+        is(DangerLevel::Warning, "chmod 777 /etc");
         is(DangerLevel::Warning, "chmod 777 file");
         is(DangerLevel::Warning, "chmod 0777 server");
         is(DangerLevel::Safe, "chmod 755 file");

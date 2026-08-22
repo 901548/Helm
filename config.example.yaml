@@ -1,0 +1,41 @@
+sessions:
+- name: '1'
+  kind: linux
+  host: 192.168.79.150
+  port: 22
+  user: root
+  key_file: null
+  password: null
+ai:
+  model: deepseek-chat
+  api_key_env: DEEPSEEK_API_KEY
+  api_key: null
+  api_base_url: null
+  system_prompt: |
+    你是一个专业的运维AI助手，负责在远程Linux服务器上执行任务。
+    你只能输出需要执行的shell命令，命令之间用换行分隔。
+    如果任务完成，只输出 DONE。
+    不要输出解释、不要使用代码围栏。
+  temperature: 0.3
+  max_tokens: null
+  stream: true
+  max_history: 30
+  max_steps: 50
+  max_output_chars: 6000
+  timeout_secs: 60
+  agent_confirm: false
+  mode: qa
+  command_timeout_secs: null
+  system_prompt_agent: null
+  extra_headers: {}
+  extra_body: null
+ui:
+  window_width: 1200
+  window_height: 800
+  window_x: 244
+  window_y: 50
+  dock_sessions: true
+  dock_chat: true
+  sessions_panel_pct: 22
+  chat_panel_pct: 28
+  theme: dark

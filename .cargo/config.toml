@@ -1,0 +1,3 @@
+# 使用 MinGW 的 gcc 作为链接器（本机未安装 MSVC Build Tools）
+[target.x86_64-pc-windows-gnu]
+linker = "F:/mingw-20.0/MinGW/bin/gcc.exe"

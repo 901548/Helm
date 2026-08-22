@@ -1,0 +1,24 @@
+# 依赖与构建产物
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# 开发临时日志(cargo tauri dev 重定向输出)
+*.log
+*.err
+dev-err.txt
+dev-log.txt
+deverr.txt
+devlog.txt
+
+# 会话数据
+.zcode/
+
+# 运行时本地数据(含会话密码/主机 pin,不入库;结构见 config.example.yaml)
+config.yaml
+known_hosts.json
+
+# 系统杂项
+.DS_Store
+Thumbs.db

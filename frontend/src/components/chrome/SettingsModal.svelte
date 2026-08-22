@@ -1,0 +1,388 @@
+<script lang="ts">
+  import type { AiConfig, UiConfig, Theme } from "../../lib/api";
+
+  interface Props {
+    aiConfig: AiConfig | null;
+    uiConfig: UiConfig;
+    onCancel: () => void;
+    onSave: (ai: AiConfig, ui: UiConfig) => Promise<string | null>;
+  }
+
+  let { aiConfig, uiConfig, onCancel, onSave } = $props<Props>();
+
+  let tab = $state<"ai" | "ui">("ai");
+
+  // AI 表单
+  let model = $state(aiConfig?.model ?? "");
+  let apiKey = $state("");
+  let apiKeySaved = $state(aiConfig?.api_key != null);
+  let apiBaseUrl = $state(aiConfig?.api_base_url ?? "");
+  let systemPrompt = $state(aiConfig?.system_prompt ?? "");
+  let temperature = $state(String(aiConfig?.temperature ?? 0.3));
+  let maxTokens = $state(aiConfig?.max_tokens ? String(aiConfig.max_tokens) : "");
+  let stream = $state(aiConfig?.stream ?? true);
+  let maxHistory = $state(String(aiConfig?.max_history ?? 30));
+  let maxSteps = $state(String(aiConfig?.max_steps ?? 50));
+  let maxOutputChars = $state(String(aiConfig?.max_output_chars ?? 6000));
+  let timeoutSecs = $state(String(aiConfig?.timeout_secs ?? 60));
+  let commandTimeout = $state(
+    aiConfig?.command_timeout_secs ? String(aiConfig.command_timeout_secs) : "",
+  );
+  let agentConfirm = $state(aiConfig?.agent_confirm ?? false);
+  let initMode = $state(aiConfig?.mode ?? "qa");
+
+  // UI 表单
+  let winWidth = $state(String(uiConfig.window_width));
+  let winHeight = $state(String(uiConfig.window_height));
+  let dockSessions = $state(uiConfig.dock_sessions);
+  let sessionsPct = $state(String(uiConfig.sessions_panel_pct));
+  let theme = $state<Theme>(uiConfig.theme);
+
+  let error = $state("");
+  let saving = $state(false);
+
+  function num(v: string, def: number, label: string): number {
+    const n = parseFloat(v);
+    if (Number.isNaN(n) || n < 0) {
+      error = `${label} 无效`;
+      return def;
+    }
+    return n;
+  }
+
+  async function submit() {
+    error = "";
+    saving = true;
+    const ui: UiConfig = {
+      window_width: num(winWidth, 1200, "窗口宽度"),
+      window_height: num(winHeight, 800, "窗口高度"),
+      dock_sessions: dockSessions,
+      dock_chat: true,
+      sessions_panel_pct: num(sessionsPct, 22, "会话面板宽度"),
+      chat_panel_pct: 28,
+      theme,
+    };
+    if (error) {
+      saving = false;
+      return;
+    }
+    const ai: AiConfig = {
+      model: model.trim(),
+      api_key_env: "API_KEY",
+      api_key: apiKey.trim() || null,
+      api_base_url: apiBaseUrl.trim() || null,
+      system_prompt: systemPrompt,
+      temperature: num(temperature, 0.3, "温度"),
+      max_tokens: maxTokens ? num(maxTokens, 0, "max_tokens") as number : null,
+      stream,
+      max_history: num(maxHistory, 30, "历史条数") as number,
+      max_steps: num(maxSteps, 50, "最大步数") as number,
+      max_output_chars: num(maxOutputChars, 6000, "输出上限") as number,
+      timeout_secs: num(timeoutSecs, 60, "超时") as number,
+      command_timeout_secs: commandTimeout.trim()
+        ? (num(commandTimeout, 60, "命令超时") as number)
+        : null,
+      system_prompt_agent: aiConfig?.system_prompt_agent ?? null,
+      agent_confirm: agentConfirm,
+      mode: initMode,
+      extra_headers: aiConfig?.extra_headers ?? {},
+      extra_body: aiConfig?.extra_body ?? null,
+    };
+    if (error) {
+      saving = false;
+      return;
+    }
+    const err = await onSave(ai, ui);
+    saving = false;
+    if (err) error = err;
+  }
+</script>
+
+<!-- 遮罩：点击空白取消；modal 容器 stopPropagation 防误关，内部控件均为可访问的按钮/输入框 -->
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+<div class="veil" onclick={onCancel}>
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+  <div class="modal" onclick={(e) => e.stopPropagation()}>
+    <header class="modal-head">
+      <h3>设置</h3>
+      <div class="tabs">
+        <button class:on={tab === "ai"} onclick={() => (tab = "ai")}>AI</button>
+        <button class:on={tab === "ui"} onclick={() => (tab = "ui")}>界面</button>
+      </div>
+      <button class="close" title="关闭" onclick={onCancel}>×</button>
+    </header>
+
+    <div class="modal-body">
+    {#if tab === "ai"}
+      <div class="form">
+        <label>模型
+          <input bind:value={model} placeholder="deepseek-chat" />
+        </label>
+        <label>API Key
+          <input
+            type="password"
+            bind:value={apiKey}
+            placeholder={apiKeySaved ? "已保存（留空则不修改）" : "输入 API Key"}
+            autocomplete="off"
+          />
+        </label>
+        <label>API Base URL（可选）
+          <input bind:value={apiBaseUrl} placeholder="https://api.deepseek.com" />
+        </label>
+        <label>自定义提示词
+          <textarea bind:value={systemPrompt} rows="4"></textarea>
+        </label>
+        <div class="row3">
+          <label>温度
+            <input bind:value={temperature} type="number" step="0.1" />
+          </label>
+          <label>max_tokens
+            <input bind:value={maxTokens} type="number" />
+          </label>
+          <label>超时(秒)
+            <input bind:value={timeoutSecs} type="number" />
+          </label>
+        </div>
+        <div class="row3">
+          <label>历史条数
+            <input bind:value={maxHistory} type="number" />
+          </label>
+          <label>最大步数
+            <input bind:value={maxSteps} type="number" />
+          </label>
+          <label>命令超时(秒)
+            <input bind:value={commandTimeout} type="number" placeholder="默认 60" title="Agent 单条命令执行超时，0 表示使用默认 60 秒" />
+          </label>
+        </div>
+        <div class="row3">
+          <label>输出上限
+            <input bind:value={maxOutputChars} type="number" />
+          </label>
+          <span></span>
+          <span></span>
+        </div>
+        <div class="checks">
+          <label class="check"><input type="checkbox" bind:checked={stream} /> 流式输出</label>
+          <label class="check" title="开启后所有命令都要确认；关闭时仅危险命令需要确认"><input type="checkbox" bind:checked={agentConfirm} /> 全部命令确认（危险命令始终确认）</label>
+        </div>
+        <label>初始模式
+          <select bind:value={initMode}>
+            <option value="qa">问答</option>
+            <option value="agent">Agent</option>
+          </select>
+        </label>
+      </div>
+    {:else}
+      <div class="form">
+        <div class="row2">
+          <label>窗口宽度
+            <input bind:value={winWidth} type="number" />
+          </label>
+          <label>窗口高度
+            <input bind:value={winHeight} type="number" />
+          </label>
+        </div>
+        <div class="row2">
+          <label>会话面板宽度%
+            <input bind:value={sessionsPct} type="number" min="12" max="40" />
+          </label>
+          <label>主题
+            <select bind:value={theme}>
+              <option value="light">白天</option>
+              <option value="dark">黑夜</option>
+              <option value="system">跟随系统</option>
+            </select>
+          </label>
+        </div>
+        <div class="checks">
+          <label class="check"><input type="checkbox" bind:checked={dockSessions} /> 显示会话面板</label>
+        </div>
+      </div>
+    {/if}
+
+    {#if error}
+      <p class="error">{error}</p>
+    {/if}
+    </div>
+
+    <footer class="modal-foot">
+      <button class="ghost" onclick={onCancel}>取消</button>
+      <button class="primary" onclick={submit} disabled={saving}>
+        {saving ? "保存中…" : "保存"}
+      </button>
+    </footer>
+  </div>
+</div>
+
+<style>
+  .veil {
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 12, 18, 0.5);
+    backdrop-filter: blur(2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 200;
+  }
+  .modal {
+    background: var(--modal-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    width: 490px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .modal-head {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.6rem 1rem;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  h3 {
+    margin: 0;
+    font-size: 0.95rem;
+  }
+  .tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-left: auto;
+    background: var(--track-bg);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+  }
+  .tabs button {
+    border: none;
+    background: transparent;
+    padding: 0.22rem 0.9rem;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.8rem;
+    color: var(--fg-muted);
+  }
+  .tabs button.on {
+    background: var(--bg-panel);
+    color: var(--accent);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  }
+  .close {
+    border: none;
+    background: transparent;
+    color: var(--fg-muted);
+    font-size: 1.15rem;
+    cursor: pointer;
+    padding: 0 0.35rem;
+    border-radius: var(--radius-sm);
+    line-height: 1;
+  }
+  .close:hover {
+    color: var(--fg);
+    background: var(--hover);
+  }
+  .modal-body {
+    padding: 0.7rem 1rem 0.9rem;
+    overflow-y: auto;
+  }
+  .form label {
+    display: block;
+    font-size: 0.8rem;
+    color: var(--fg-muted);
+    margin: 0.55rem 0 0.2rem;
+  }
+  .form label:first-child {
+    margin-top: 0;
+  }
+  input,
+  select,
+  textarea {
+    width: 100%;
+    padding: 0.45rem 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 0.9rem;
+    font-family: inherit;
+    background: var(--input-bg);
+    color: var(--fg);
+    transition: border-color 0.12s ease;
+  }
+  input:focus,
+  select:focus,
+  textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  textarea {
+    resize: vertical;
+  }
+  .row2,
+  .row3 {
+    display: grid;
+    gap: 0.6rem;
+  }
+  .row2 {
+    grid-template-columns: 1fr 1fr;
+  }
+  .row3 {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+  .checks {
+    display: flex;
+    gap: 1rem;
+    margin-top: 0.6rem;
+  }
+  .check {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 0.3rem;
+    margin: 0 !important;
+    color: var(--fg) !important;
+    font-size: 0.9rem !important;
+  }
+  .check input {
+    width: auto;
+  }
+  .error {
+    color: var(--danger);
+    font-size: 0.85rem;
+    margin: 0.6rem 0 0;
+  }
+  .modal-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.6rem;
+    padding: 0.7rem 1rem;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  button {
+    padding: 0.45rem 1.2rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--bg-panel);
+    color: var(--fg);
+    cursor: pointer;
+    font-size: 0.88rem;
+    transition: background 0.12s ease;
+  }
+  button:hover {
+    background: var(--hover);
+  }
+  button.primary {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    font-weight: 600;
+  }
+  button.primary:hover {
+    background: var(--accent-hover);
+  }
+  button.ghost:hover {
+    background: var(--hover);
+  }
+</style>

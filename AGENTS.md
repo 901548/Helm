@@ -344,6 +344,12 @@ F:\Helm\
   2. **remove 幂等**:`remove_recursive` 对 symlink_metadata 的 "No such file" 视为成功(重复删除/测试起始清理不再报错);测试起始清理从 `let _ =` 静默改为显式断言报错(本次盲区即源于静默吞错)。
   3. **真机全链路(CDP @9229,192.168.79.150)**:连接(慢认证 ~20s, dot ok + tab + 提示符);`hostname -I` 回显;**双向 cd 联动**(终端 `cd /etc`→面板 /etc 177 行;双击 alternatives→面板+终端 `cd '/etc/alternatives'`——P44 osc.ts 抽离后依然正确);**mkdir** 创建 `helm-p45`(P38 修复验证:无 `undefined` 目录);**右键删除** helm-p45 成功(P45 修复验证:不再被 Critical 拦截);SysMonitor 实时(CPU 0%/MEM 414M/3.7G/负载/网速);**AI dock E2E**(QA 提交→活动流 QA 卡+「✗ AI 未配置」摘要,错误路径即验证);截图 `docs/screenshots/ui-live-connected.png`。**仍待办:Windows 测试机冒烟(P34 项)+ 真实 AI 多步任务(需 API Key)**。
   4. **坑**:a) 测试起始清理 `let _ = remove(...)` 吞错是排查最大障碍——清理性前置操作必须显式断言;b) 语义收窄后 `rm -rf /tmp/a/../..` 这类**路径回溯写法分词层判不出**(resolve 后才是 /),已知取舍,Critical 仍覆盖直接形式;c) cargo test live 前须 `cp config.yaml src-tauri/`(P28 坑重申)。
+- [x] **P46 遗留问题批 + v0.1.1 重打包(已完成,`cargo test` 61 项含 live 全过;CI 经 git credential 查得三次运行全绿;v0.1.0 安装包含 P29 回归 → v0.1.1 替换)**:
+  1. **小修 6 项**:a) **连接双击守卫**:SshManager 加 `connecting: HashSet`,`mark_connecting` 返回 bool(false=已有任务,connect_session 早退),connect 成败出口 `clear_connecting`;b) **shell 尾输出**:读任务 ExitStatus 不再 break,等 EOF(None) 才退出(部分 shell 在退出状态后 flush 尾部);c) **下载上限**:download 先 metadata 检查 >64MB 报错(此前整文件入内存无上限);d) **update_session 旧名不存在显式 Err**(此前静默成功);e) **监控 prev 泄漏**:断开即 `prev.remove`;f) **reqwest Client 复用**:Agent 持有 `client` 字段构造期建立(build_client 改关联函数),每步不再重建 TLS。
+  2. **审查纠错**:「窗口宽高设置不生效」为误报——`update_ui_config` 本就 `set_size`,划掉不修。
+  3. **v0.1.1**:三处 version bump(package.json/tauri.conf.json/Cargo.toml)→ `cargo tauri build` 出 `Helm_0.1.1_x64_en-US.msi`(5.8MB)/`Helm_0.1.1_x64-setup.exe`(4.2MB),**含 P45 删除修复,取代带 bug 的 v0.1.0**;tag v0.1.1 已推送。
+  4. **CI 验证**:`git credential fill` 取本机 token 调 GitHub API——**私有仓库也能查 Actions**:三次运行(run 1/2/3)全部 success(含 P45 提交),msvc 构建 + Vitest + cargo test 在 windows runner 上无需任何适配。
+  5. **坑**:a) JS `String.replace(字符串,...)` 只替换**第一处**,批量改代码用 split/join(P46 就漏了第二个 `self.build_client()` 调用点);b) russh-sftp File 无 `read_all`,读整文件用 `sftp.read(path)`;c) GitHub 443 间歇阻断时 tag 与 main 分开重试(本次 tag 先通、main 后通),本地提交安全勿重写历史。**遗留未修(有意)**:Agent 危险检测不覆盖 `$()`/xargs(需语义级方案)、ai_busy TOCTOU(UI 已挡)、QA 持 agent 锁、known_hosts pending_error 单槽。
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)
 - 全栈开发:`cargo tauri dev`

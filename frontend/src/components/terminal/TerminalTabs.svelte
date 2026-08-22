@@ -7,6 +7,7 @@
   import "@xterm/xterm/css/xterm.css";
   import * as api from "../../lib/api";
   import type { AiCard, AiLogEntry, SessionKind } from "../../lib/api";
+  import { normalizePwd, parseOscPwd, stripAnsi as stripAnsiLib } from "../../lib/osc";
   import SysMonitor from "./SysMonitor.svelte";
   import AiCopilot from "./AiCopilot.svelte";
 
@@ -81,13 +82,7 @@
   const hasMarker = new Map<string, boolean>();
   const lastPwd = new Map<string, string>();
 
-  function stripAnsi(s: string): string {
-    return s
-      .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
-      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-      .replace(/\x1b[()[\]][0-9A-Za-z]/g, "")
-      .replace(/\x1b[@-Z\\\-_]/g, "");
-  }
+  const stripAnsi = stripAnsiLib;
 
   function fireCd(name: string, target: string) {
     const now = Date.now();
@@ -97,41 +92,19 @@
     onCd?.(name, target);
   }
 
-  /// 从原始流中截取 OSC7 `ESC]7;helm:PWD ESC\` 标记。
-  /// 返回解析出的 PWD;同时跨 data 块拼接 OSC(标记可能被 TCP 分包)。
+  /// 从原始流中截取 OSC7 `ESC]7;helm:PWD BEL` 标记(P24 权威 PWD)。
+  /// 解析逻辑在 lib/osc(纯函数,带测试);此处仅维护每会话的跨包片段缓冲。
   function extractOscPwd(name: string, raw: string): string | null {
-    let buf = (markerBufs.get(name) ?? "") + raw;
-    const idx = buf.lastIndexOf("\x1b]");
-    let res: string | null = null;
-    // 扫描全部完成的标记,取最后一个(PWD 以指令执行后的最终组成成为准)
-    const re = /\x1b\]\d+;helm:([^\x07\x1b]*)(\x07|\x1b\\)/g;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(buf))) {
-      const pwd = m[1];
-      if (pwd && pwd.length > 0) res = pwd;
-    }
-    // 保留最后一个 `ESC]` 起未终止片段(可能是跨包的 OSC 前半)
-    let keep = "";
-    if (idx !== -1) {
-      const frag = buf.slice(idx);
-      if (!/(\x07|\x1b\\)/.test(frag)) keep = frag;
-    } else if (buf.length > 512) {
-      keep = buf.slice(-512);
-    } else {
-      keep = buf.slice(0, 0); // 无 ESC] 时不留
-      keep = "";
-    }
-    if (keep.length > 4096) keep = "";
-    markerBufs.set(name, keep);
-    return res;
+    const { pwd, rest } = parseOscPwd(markerBufs.get(name) ?? "", raw);
+    markerBufs.set(name, rest);
+    return pwd;
   }
 
   /// P24:按权威 OSC7 PWD 同步文件面板。bash 每次重画提示符都发标记,
   /// 故 PWD 未变(普通命令)时去重跳过,仅真实目录变化才触发。
   function syncOscPwd(name: string, pwd: string) {
     hasMarker.set(name, true);
-    let norm = pwd;
-    while (norm.length > 1 && norm.endsWith("/")) norm = norm.slice(0, -1);
+    const norm = normalizePwd(pwd);
     if (lastPwd.get(name) === norm) return;
     lastPwd.set(name, norm);
     fireCd(name, norm);

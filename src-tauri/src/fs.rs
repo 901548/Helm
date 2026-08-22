@@ -343,12 +343,26 @@ pub async fn upload(
 }
 
 /// 下载：读取远端文件整体并返回 base64（前端解码保存）
+/// SFTP 下载大小上限:整文件读入内存再 base64 过 IPC,大文件会内存暴涨
+const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
+
 pub async fn download(
     ssh: &Arc<SshManager>,
     name: &str,
     path: &str,
 ) -> Result<FsResult, String> {
     let sftp = sftp_session(ssh, name).await?;
+    let file = match sftp.open(path).await {
+        Ok(f) => f,
+        Err(e) => return Ok(FsResult::err(format!("打开失败: {}", e))),
+    };
+    let len = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+    if len > MAX_DOWNLOAD_BYTES {
+        return Ok(FsResult::err(format!(
+            "文件过大({} 字节,上限 64MB),暂不支持下载",
+            len
+        )));
+    }
     match sftp.read(path).await {
         Ok(data) => Ok(FsResult {
             ok: true,

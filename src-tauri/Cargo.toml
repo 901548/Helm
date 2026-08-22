@@ -1,6 +1,6 @@
 [package]
 name = "helm"
-version = "0.1.0"
+version = "0.1.1"
 description = "带本地AI Agent的SSH终端工具：你掌舵，AI执行"
 license = "MIT"
 edition = "2021"

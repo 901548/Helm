@@ -92,6 +92,23 @@ fn is_local_base(base: Option<&str>) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0" | "::1")
 }
 
+/// 解析 GET /models 响应（OpenAI 格式 {"data":[{"id":"..."}]}），返回排序后的模型 id
+fn parse_models_response(text: &str) -> Result<Vec<String>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("响应解析失败: {e}"))?;
+    let Some(data) = value.get("data").and_then(|d| d.as_array()) else {
+        return Err("响应缺少 data 数组（该服务可能不支持 /models 端点）".into());
+    };
+    let mut models: Vec<String> = data
+        .iter()
+        .filter_map(|m| m.get("id").and_then(|i| i.as_str()))
+        .map(str::to_string)
+        .filter(|id| !id.is_empty())
+        .collect();
+    models.sort();
+    Ok(models)
+}
+
 impl Agent {
     /// 从配置创建 Agent，API Key 按 api_key > api_key_env > 本地服务免 Key 顺序解析
     pub fn new(config: &AiConfig) -> Result<Self> {
@@ -484,6 +501,38 @@ impl Agent {
         }
     }
 
+    /// 拉取提供商可用模型列表（设置弹窗「获取模型列表」）
+    ///
+    /// GET {base}/models（OpenAI 兼容标准端点），返回排序后的模型 id 列表。
+    /// 只读探测，超时/鉴权与 test_connection 同规则。
+    pub async fn list_models(config: &AiConfig) -> Result<Vec<String>, String> {
+        let key = Self::resolve_api_key(config).map_err(|e| e.to_string())?;
+        let mut probe_cfg = config.clone();
+        probe_cfg.timeout_secs = config.timeout_secs.max(20);
+        let client = Self::build_client(&probe_cfg).map_err(|e| e.to_string())?;
+        let base = config
+            .api_base_url
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1");
+        let url = format!("{}/models", base.trim_end_matches('/'));
+        let mut req = client.get(&url);
+        if !key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {key}"));
+        }
+        let resp = req.send().await.map_err(|e| format!("请求失败: {e}"))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let brief: String = text.chars().take(300).collect();
+            return Err(format!("HTTP {status}: {brief}"));
+        }
+        let models = parse_models_response(&text)?;
+        if models.is_empty() {
+            return Err("服务未返回任何模型".into());
+        }
+        Ok(models)
+    }
+
     /// 构建 HTTP 客户端（超时 + 附加请求头）
     fn build_client(config: &AiConfig) -> Result<reqwest::Client> {
         let mut headers = reqwest::header::HeaderMap::new();
@@ -655,6 +704,18 @@ mod tests {
         // 本地服务免 Key
         cfg.api_base_url = Some("http://localhost:11434/v1".into());
         assert_eq!(Agent::resolve_api_key(&cfg).unwrap(), "");
+    }
+
+    #[test]
+    fn parse_models_response_sorts_and_filters() {
+        let body = r#"{"object":"list","data":[{"id":"qwen3:8b"},{"id":"gemma4:26b"},{"id":""},{"no_id":1}]}"#;
+        assert_eq!(
+            parse_models_response(body).unwrap(),
+            vec!["gemma4:26b".to_string(), "qwen3:8b".to_string()]
+        );
+        // 非 OpenAI 格式（如聊天补全响应）应报错而非 panic
+        assert!(parse_models_response(r#"{"choices":[]}"#).is_err());
+        assert!(parse_models_response("not json").is_err());
     }
 
     #[test]

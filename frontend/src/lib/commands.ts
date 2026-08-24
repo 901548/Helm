@@ -72,6 +72,13 @@ export const testAiConnection = (
   apiKey?: string,
 ) => invoke<string>("test_ai_connection", { model, apiBaseUrl, apiKey });
 
+// 拉取提供商可用模型列表(参数规则同 testAiConnection)
+export const aiListModels = (
+  model?: string,
+  apiBaseUrl?: string,
+  apiKey?: string,
+) => invoke<string[]>("ai_list_models", { model, apiBaseUrl, apiKey });
+
 export const getUiConfig = () => invoke<UiConfig>("get_ui_config");
 
 export const updateUiConfig = (config: UiConfig) =>

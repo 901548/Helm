@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { testAiConnection } from "../../lib/api";
+  import { testAiConnection, aiListModels } from "../../lib/api";
   import type { AiConfig, UiConfig, Theme } from "../../lib/api";
 
   interface Props {
@@ -57,6 +57,9 @@
   let saving = $state(false);
   let testing = $state(false);
   let testResult = $state<{ ok: boolean; msg: string } | null>(null);
+  let loadingModels = $state(false);
+  let modelOptions = $state<string[] | null>(null);
+  let modelsError = $state("");
 
   function applyPreset(sel: HTMLSelectElement) {
     const p = PROVIDER_PRESETS[Number(sel.value)];
@@ -65,6 +68,25 @@
     model = p.model;
     apiBaseUrl = p.base;
     testResult = null;
+    modelOptions = null;
+    modelsError = "";
+  }
+
+  async function fetchModels() {
+    loadingModels = true;
+    modelsError = "";
+    modelOptions = null;
+    try {
+      modelOptions = await aiListModels(
+        model.trim() || undefined,
+        apiBaseUrl.trim() || undefined,
+        apiKey.trim() || undefined,
+      );
+    } catch (e) {
+      modelsError = String(e);
+    } finally {
+      loadingModels = false;
+    }
   }
 
   async function runTest() {
@@ -167,8 +189,36 @@
           </select>
         </label>
         <label>模型
-          <input bind:value={model} oninput={() => (testResult = null)} placeholder="如 gpt-4o-mini / deepseek-chat / qwen-turbo" />
+          <div class="model-row">
+            <input bind:value={model} oninput={() => (testResult = null)} placeholder="如 gpt-4o-mini / deepseek-chat / qwen-turbo" />
+            <button
+              class="ghost"
+              onclick={fetchModels}
+              disabled={loadingModels}
+              title="从当前 API 地址拉取可用模型列表"
+            >
+              {loadingModels ? "获取中…" : "获取列表"}
+            </button>
+          </div>
         </label>
+        {#if modelOptions}
+          <select
+            class="model-pick"
+            onchange={(e) => {
+              const v = e.currentTarget.value;
+              if (v) model = v;
+              e.currentTarget.value = "";
+            }}
+          >
+            <option value="">从列表选择模型…（{modelOptions.length} 个）</option>
+            {#each modelOptions as m}
+              <option value={m}>{m}</option>
+            {/each}
+          </select>
+        {/if}
+        {#if modelsError}
+          <p class="models-error">✗ {modelsError}</p>
+        {/if}
         <label>API Key
           <input
             type="password"
@@ -438,6 +488,27 @@
   }
   .test-result.bad {
     color: var(--danger);
+  }
+  .model-row {
+    display: flex;
+    gap: 0.5rem;
+  }
+  .model-row input {
+    flex: 1;
+    min-width: 0;
+  }
+  .model-row button {
+    padding: 0.32rem 0.8rem;
+    font-size: 0.82rem;
+    flex-shrink: 0;
+  }
+  .model-pick {
+    margin-top: 0.35rem;
+  }
+  .models-error {
+    color: var(--danger);
+    font-size: 0.8rem;
+    margin: 0.3rem 0 0;
   }
   .modal-foot {
     display: flex;

@@ -631,6 +631,35 @@ pub async fn update_ai_config(
     save_config(&state.config_path, &cfg).map_err(|e| e.to_string())
 }
 
+/// 以已保存 AI 配置为底，合并设置弹窗表单值（非空才覆盖；api_key 空/哨兵=沿用已存密文）
+fn merged_ai_config(
+    cfg: &crate::config::HelmConfig,
+    model: Option<String>,
+    api_base_url: Option<String>,
+    api_key: Option<String>,
+) -> crate::config::AiConfig {
+    let mut out = cfg.ai.clone().unwrap_or_default();
+    if let Some(m) = model {
+        let t = m.trim().to_string();
+        if !t.is_empty() {
+            out.model = t;
+        }
+    }
+    if let Some(u) = api_base_url {
+        let t = u.trim().to_string();
+        if !t.is_empty() {
+            out.api_base_url = Some(t);
+        }
+    }
+    if let Some(k) = api_key {
+        let t = k.trim().to_string();
+        if !t.is_empty() && t != crate::crypto::SECRET_MASK {
+            out.api_key = Some(t);
+        }
+    }
+    out
+}
+
 /// 测试 AI 连接（只读探测，不落盘、不重建 Agent、不受 busy 限制）
 ///
 /// 表单值非空时覆盖已保存配置；api_key 传明文，空/哨兵表示沿用已保存值。
@@ -641,26 +670,20 @@ pub async fn test_ai_connection(
     api_base_url: Option<String>,
     api_key: Option<String>,
 ) -> Result<String, String> {
-    let mut cfg = state.config.lock().await.ai.clone().unwrap_or_default();
-    if let Some(m) = model {
-        let t = m.trim().to_string();
-        if !t.is_empty() {
-            cfg.model = t;
-        }
-    }
-    if let Some(u) = api_base_url {
-        let t = u.trim().to_string();
-        if !t.is_empty() {
-            cfg.api_base_url = Some(t);
-        }
-    }
-    if let Some(k) = api_key {
-        let t = k.trim().to_string();
-        if !t.is_empty() && t != crate::crypto::SECRET_MASK {
-            cfg.api_key = Some(t);
-        }
-    }
-    Agent::test_connection(&cfg).await
+    let cfg = state.config.lock().await;
+    Agent::test_connection(&merged_ai_config(&cfg, model, api_base_url, api_key)).await
+}
+
+/// 拉取提供商可用模型列表（GET /models，只读探测，规则同 test_ai_connection）
+#[tauri::command]
+pub async fn ai_list_models(
+    state: State<'_, CoreState>,
+    model: Option<String>,
+    api_base_url: Option<String>,
+    api_key: Option<String>,
+) -> Result<Vec<String>, String> {
+    let cfg = state.config.lock().await;
+    Agent::list_models(&merged_ai_config(&cfg, model, api_base_url, api_key)).await
 }
 
 /// 读取 UI 配置（None 表示未配置，用默认值）

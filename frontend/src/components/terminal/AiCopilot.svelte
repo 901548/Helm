@@ -12,6 +12,7 @@
     streamOpen: boolean;
     focusSeq: number;
     logOpen: boolean;
+    thinking?: string;
     onSubmit: (text: string) => void;
     onStop: () => void;
     onApprove: () => void;
@@ -31,6 +32,7 @@
     streamOpen,
     focusSeq,
     logOpen,
+    thinking = "",
     onSubmit,
     onStop,
     onApprove,
@@ -114,6 +116,12 @@
         <button class="mini" onclick={onToggleStream} title="收起">▾</button>
       </header>
       <div class="ai-stream-body" bind:this={bodyEl}>
+        {#if thinking && busy}
+          <div class="card thinking-live">
+            <div class="thinking-label">🤔 思考中…（推理型模型，实时过程）</div>
+            <div class="thinking-text">{thinking}<span class="cursor">▋</span></div>
+          </div>
+        {/if}
         {#each cards as c (c.id)}
           {#if c.kind === "qa"}
             <div class="card qa" class:done={c.done}>
@@ -182,7 +190,7 @@
   .ai-stream {
     display: flex;
     flex-direction: column;
-    max-height: 38vh;
+    max-height: min(38vh, 300px);
     min-height: 0;
     border-bottom: 1px solid var(--border);
     background: var(--bg-panel);
@@ -320,6 +328,25 @@
     white-space: pre-wrap;
     word-break: break-word;
     line-height: 1.5;
+  }
+  .thinking-live {
+    border-color: var(--warning);
+    background: var(--warn-bg);
+  }
+  .thinking-label {
+    font-size: 0.72rem;
+    color: var(--warning);
+    font-weight: 600;
+    margin-bottom: 0.2rem;
+  }
+  .thinking-text {
+    font-size: 0.78rem;
+    color: var(--fg-muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 160px;
+    overflow-y: auto;
+    line-height: 1.4;
   }
   .card.qa.done .qa-text {
     color: var(--fg);

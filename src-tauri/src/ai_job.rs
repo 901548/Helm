@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::Mutex;
 
-use crate::agent::{parse_commands, truncate_text, Agent, AgentMode};
+use crate::agent::{parse_commands, truncate_text, Agent, AgentMode, AiStreamEvent};
 use crate::core::{AiControl, AiPayload};
 use crate::safety::{check_danger, DangerLevel};
 use crate::ssh::SshManager;
@@ -30,6 +30,14 @@ pub struct TaskCtx {
     pub pwd: String,
 }
 
+/// 将流式事件映射为前端口径的 AI 事件（正文 → Streaming，思考 → Reasoning）
+fn stream_to_payload(evt: AiStreamEvent) -> AiPayload {
+    match evt {
+        AiStreamEvent::Content(t) => AiPayload::Streaming { text: t },
+        AiStreamEvent::Reasoning(t) => AiPayload::Reasoning { text: t },
+    }
+}
+
 /// 后台 AI 任务状态机：按模式驱动 Agent 引擎，事件经 app emit 回传
 pub(crate) async fn run_ai_job(
     agent: &Arc<Mutex<Agent>>,
@@ -43,10 +51,10 @@ pub(crate) async fn run_ai_job(
     match mode {
         AgentMode::QA => {
             let mut ag = agent.lock().await;
-            let mut sink = Some(|t: &str| {
-                let _ = app.emit("ai", AiPayload::Streaming { text: t.to_string() });
+            let mut sink = Some(|evt: AiStreamEvent| {
+                let _ = app.emit("ai", stream_to_payload(evt));
             });
-            let sink: Option<&mut (dyn FnMut(&str) + Send)> = sink.as_mut().map(|f| f as _);
+            let sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)> = sink.as_mut().map(|f| f as _);
             let chat_fut = ag.chat(input, sink);
             tokio::pin!(chat_fut);
             tokio::select! {
@@ -88,6 +96,9 @@ pub(crate) async fn run_ai_job(
             // cwd 恒为绝对路径（无尾斜杠），作初始执行目录
             let mut last_output = String::new();
             let mut finished = false;
+            // 连续未给出可执行命令的次数：到达阈值即中止，防弱模型死循环（提示词回显等）
+            let mut invalid_steps = 0;
+            const MAX_INVALID_STEPS: u32 = 2;
 
             for _step in 0..max_steps {
                 if ctl_rx.try_recv().ok() == Some(AiControl::Cancel) {
@@ -106,10 +117,10 @@ pub(crate) async fn run_ai_job(
                 let mut next = None;
                 {
                     let mut ag = agent.lock().await;
-                    let mut sink = Some(|t: &str| {
-                        let _ = app.emit("ai", AiPayload::Streaming { text: t.to_string() });
+                    let mut sink = Some(|evt: AiStreamEvent| {
+                        let _ = app.emit("ai", stream_to_payload(evt));
                     });
-                    let sink: Option<&mut (dyn FnMut(&str) + Send)> =
+                    let sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)> =
                         sink.as_mut().map(|f| f as _);
                     let fut = ag.agent_step(input, &last_output, &ctx_desc, sink);
                     tokio::pin!(fut);
@@ -150,6 +161,7 @@ pub(crate) async fn run_ai_job(
 
                 let commands = parse_commands(&next);
                 if commands.is_empty() {
+                    invalid_steps += 1;
                     let _ = app.emit(
                         "ai",
                         AiPayload::CommandStep {
@@ -159,9 +171,20 @@ pub(crate) async fn run_ai_job(
                             output: String::new(),
                         },
                     );
+                    if invalid_steps >= MAX_INVALID_STEPS {
+                        let _ = app.emit(
+                            "ai",
+                            AiPayload::Done {
+                                message: "模型连续未给出可执行命令，任务已中止".to_string(),
+                            },
+                        );
+                        finished = true;
+                        break;
+                    }
                     last_output = "错误: 模型未给出可执行命令，请直接输出 shell 命令".to_string();
                     continue;
                 }
+                invalid_steps = 0;
 
                 for command in commands {
                     if ctl_rx.try_recv().ok() == Some(AiControl::Cancel) {

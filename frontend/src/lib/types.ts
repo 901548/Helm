@@ -61,6 +61,7 @@ export interface ConnectionPayload {
 export type AiPayload =
   | { kind: "stepBegin" }
   | { kind: "streaming"; text: string }
+  | { kind: "reasoning"; text: string }
   | { kind: "stepOutputEnd" }
   | { kind: "commandStep"; command: string; success: boolean; message: string; output: string }
   | { kind: "done"; message: string }

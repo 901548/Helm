@@ -55,6 +55,8 @@ pub enum ConnectionPayload {
 pub enum AiPayload {
     StepBegin,
     Streaming { text: String },
+    /// 推理型模型的思考过程增量（仅供 UI 展示，不写入答案）
+    Reasoning { text: String },
     StepOutputEnd,
     CommandStep { command: String, success: bool, message: String, output: String },
     Done { message: String },

@@ -26,6 +26,8 @@
   let logOpen = $state(false);
   let aiLog = $state<AiLogEntry[]>([]);
   let aiEcho = $state<{ seq: number; name: string; text: string }[]>([]);
+  // 推理型模型思考过程：实时累积展示，不混入最终答案卡片
+  let aiThinking = $state("");
   let pwds = $state<Record<string, string>>({});
   let echoSeq = 0;
   let logId = 0;
@@ -147,6 +149,11 @@
           }
           break;
         }
+        case "reasoning": {
+          // 推理型模型思考过程：实时展示（QA 卡未完成时可见），不写入答案文本
+          aiThinking = (aiThinking + (p.text || "")).slice(-4000);
+          break;
+        }
         case "commandStep": {
           // 更新既有卡片(运行中/待确认/已跳过同命令),否则新建
           const idx = [...aiCards]
@@ -167,9 +174,25 @@
             ];
           }
           aiStreamOpen = true;
+          // 镜像到终端：在当前终端窗口实时展示 agent 执行了哪些命令及其状态，
+          // 让用户直观看到命令在跑（agent 仍走独立后台通道真实执行，退出码/输出可靠）
+          const echoName = activeTab ?? "";
+          if (echoName && p.command) {
+            pushEcho(
+              echoName,
+              p.success
+                ? `\r\n\x1b[36m[AI] $ \x1b[0m${p.command}\x1b[90m ✓\x1b[0m\r\n`
+                : `\r\n\x1b[36m[AI] $ \x1b[0m${p.command}\x1b[31m ✗${p.message ? ` ${p.message}` : ""}\x1b[0m\r\n`,
+            );
+            if (p.output) {
+              const limited =
+                p.output.length > 800 ? `${p.output.slice(0, 800)}\n…[已截断]` : p.output;
+              pushEcho(echoName, `\x1b[90m${limited}\x1b[0m\r\n`);
+            }
+          }
           addLog({
             id: ++logId,
-            name: activeTab ?? "",
+            name: echoName,
             type: "cmd",
             command: p.command,
             success: p.success,
@@ -179,6 +202,12 @@
           break;
         }
         case "pendingCommand":
+          if ((activeTab ?? "") && p.command) {
+            pushEcho(
+              activeTab ?? "",
+              `\r\n\x1b[33m[AI] ⏸ 待确认: \x1b[0m${p.command}\r\n`,
+            );
+          }
           aiCards = [
             ...aiCards,
             { id: ++cardId, kind: "step", command: p.command, status: "confirm", level: p.level, reason: p.reason },
@@ -188,6 +217,9 @@
         case "done":
           aiSummary = { text: p.message, ok: true };
           finishQaCard();
+          if (aiMode === "agent" && activeTab) {
+            pushEcho(activeTab, `\r\n\x1b[32m[AI] ✓ ${p.message}\x1b[0m\r\n`);
+          }
           addLog({
             id: ++logId,
             name: activeTab ?? "",
@@ -201,6 +233,9 @@
         case "error":
           aiSummary = { text: p.message, ok: false };
           finishQaCard();
+          if (aiMode === "agent" && activeTab) {
+            pushEcho(activeTab, `\r\n\x1b[31m[AI] ✗ ${p.message}\x1b[0m\r\n`);
+          }
           addLog({
             id: ++logId,
             name: activeTab ?? "",
@@ -366,6 +401,7 @@
     aiTaskText = text;
     aiSummary = null;
     aiStreamOpen = true;
+    aiThinking = "";
     const name = activeTab ?? "";
     if (aiMode === "agent" && name) {
       pushEcho(name, `\r\n\x1b[90m[AI] 任务: ${text}\x1b[0m\r\n`);
@@ -440,6 +476,7 @@
     aiSummary = null;
     aiTaskText = "";
     aiStreamOpen = false;
+    aiThinking = "";
   }
 
   async function saveSettings(ai: AiConfig, ui: UiConfig) {
@@ -505,6 +542,7 @@
           {aiLog}
           {logOpen}
           {aiEcho}
+          {aiThinking}
           onModeChange={handleModeChange}
           onApprove={() => decide(true)}
           onReject={() => decide(false)}
@@ -678,5 +716,7 @@
     flex-direction: column;
     background: var(--term-bg);
     flex: 1;
+    /* 收拢终端内容，避免 AI 输入条/终端溢出画到下方文件面板上（Bug1） */
+    overflow: hidden;
   }
 </style>

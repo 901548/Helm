@@ -61,9 +61,15 @@
   let modelOptions = $state<string[] | null>(null);
   let modelsError = $state("");
 
-  function applyPreset(sel: HTMLSelectElement) {
-    const p = PROVIDER_PRESETS[Number(sel.value)];
-    sel.value = ""; // 复位，便于再次选择同一预设
+  // 打开时按已存 base URL 预选匹配的提供商（无匹配保持占位符）
+  const presetInitIdx = PROVIDER_PRESETS.findIndex(
+    (p) => p.base === (aiConfig?.api_base_url ?? "").trim(),
+  );
+  let presetSel = $state(presetInitIdx >= 0 ? String(presetInitIdx) : "");
+
+  function onPresetChange(e: Event & { currentTarget: EventTarget & HTMLSelectElement }) {
+    presetSel = e.currentTarget.value;
+    const p = PROVIDER_PRESETS[Number(presetSel)];
     if (!p) return;
     model = p.model;
     apiBaseUrl = p.base;
@@ -181,10 +187,10 @@
     {#if tab === "ai"}
       <div class="form">
         <label>提供商快速填入（任意 OpenAI 兼容服务均可）
-          <select onchange={(e) => applyPreset(e.currentTarget)}>
+          <select bind:value={presetSel} onchange={onPresetChange}>
             <option value="">选择提供商（自动填入地址与模型）…</option>
             {#each PROVIDER_PRESETS as p, i}
-              <option value={i}>{p.label}</option>
+              <option value={String(i)}>{p.label}</option>
             {/each}
           </select>
         </label>
@@ -229,7 +235,16 @@
           />
         </label>
         <label>API Base URL（可选）
-          <input bind:value={apiBaseUrl} oninput={() => (testResult = null)} placeholder="https://api.openai.com/v1（默认）" />
+          <input
+            bind:value={apiBaseUrl}
+            oninput={(e) => {
+              testResult = null;
+              // 手改地址后所选预设已失真，回占位符（读 DOM 值，不依赖 bind 与此监听的先后）
+              const p = PROVIDER_PRESETS[Number(presetSel)];
+              if (!p || e.currentTarget.value.trim() !== p.base) presetSel = "";
+            }}
+            placeholder="https://api.openai.com/v1（默认）"
+          />
         </label>
         <div class="test-row">
           <button class="ghost" onclick={runTest} disabled={testing}>

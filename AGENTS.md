@@ -370,6 +370,11 @@ F:\Helm\
   4. **前端**:commands.ts `aiListModels`(参数规则同 testAiConnection);SettingsModal 模型输入框旁加**「获取列表」按钮**(loading 态「获取中…」disabled),拉到后下方显示**选择下拉**(「从列表选择模型…（N 个）」+ 全部模型 option,选中即填入 model 输入框且 select 复位空值便于重选);失败红 ✗ 行内展示;**改 provider 预设时清除已拉取的列表与错误**(模型列表属于旧 base,留着误导)。用表单当前值即未保存也可拉。
   5. **验证(CDP 冒烟,本机 Ollama 11434)**:点「获取列表」拉到 5 个真实模型(deepseek-r1:8b / gemma4:26b / qwen3:8b 等)下拉展示;选中即回填输入框;`cargo test` 66 项(65+1)全过 + `npm run build` 通过。
   6. **坑**:a) 模型选择 select 选中后须复位 `e.currentTarget.value=""`,否则重复选同一模型不触发 onchange(与 P48 预设下拉同坑);b) `list_models` 用 `Self::build_client(&probe_cfg)` 独立建 client(非 Agent 实例方法语义,关联函数静态调用,与 test_connection 一致);c) Ollama 的 `/models` 响应天然 OpenAI 格式(`data[].id`),本地与云厂商端点同构,无需分支。
+- [x] **P50 提供商预设下拉"选不上"修复(已完成,CDP 全断言 PASS + `npm run build` 通过;纯前端单文件改动)**:
+  1. **现象**:用户反馈提供商下拉"只能下拉没办法选择"。根因:P48 的 `applyPreset` 在 change 里读值后**立即 `sel.value=""` 复位**——点选任何提供商,下拉瞬间弹回占位符"选择提供商…",感知上就是选不上(功能其实已填入 model/URL,但控件从不显示所选)。
+  2. **修复(SettingsModal.svelte)**:预设下拉改 **`bind:value={presetSel}` 持久选中**(与主题/初始模式下拉同模式),删除中途复位;`onPresetChange` 从 `e.currentTarget.value` 读值填 model/apiBaseUrl 并清 testResult/modelOptions/modelsError;打开弹窗时按已存 `api_base_url`(trim 相等)**预选匹配预设**;手改 base URL(oninput)**读 `e.currentTarget.value`** 与所选预设 base 不一致时 presetSel 回占位符(程序化赋值不触发 oninput,无循环)。
+  3. **验证(CDP:vite dev + debug exe @9229)**:选 DeepSeek→下拉显示 DeepSeek + 填入 deepseek-chat/api.deepseek.com;切 OpenAI 正常;手改 base→回占位符;重选 Gemini 正常;弹窗关闭无残留;console 零错误。
+  4. **坑**:a) **Svelte 5 `bind:value` 对 option 值严格匹配**:`{#each ... as p, i}<option value={i}>`(数字)与字符串状态 `"0"` 不等 → select 被置为无匹配值,**selectedIndex=-1 显示空白**(不是回落占位符!修复:option value 一律 `String(i)`);b) **debug exe 走 devUrl**:调试构建按 tauri.conf 连 localhost:1420,vite 没跑时 WebView 显示 `chrome-error://chromewebdata`(标题"localhost"、只有一个"刷新"按钮),CDP 测的是错误页还查不出异常——**CDP 前先 `npm run dev` 或改用 release exe(embedded dist)**;c) 自定义 oninput 与 bind:value 的 input 监听执行顺序不保证,handler 里读状态变量会踩旧值,一律读 `e.currentTarget.value`。
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)
 - 全栈开发:`cargo tauri dev`

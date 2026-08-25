@@ -130,7 +130,7 @@ impl Agent {
         let system_prompt_agent = config
             .system_prompt_agent
             .clone()
-            .unwrap_or_else(|| config.system_prompt.clone());
+            .unwrap_or_else(default_system_prompt_agent);
         let mode = if config.mode.eq_ignore_ascii_case("agent") {
             AgentMode::Agent
         } else {
@@ -581,6 +581,21 @@ impl Default for Agent {
             system_prompt_agent: String::new(),
         }
     }
+}
+
+/// Agent 模式专用的默认系统提示词（config 未提供 system_prompt_agent 时使用）。
+/// 针对弱本地模型：要求单行命令、禁止回显提示词/思考/结论，显著减少把指令当命令的死循环。
+pub fn default_system_prompt_agent() -> String {
+    concat!(
+        "你现在是一个在远程Linux服务器上逐步执行任务的运维Agent，目标是安全且准确地完成任务。\n",
+        "每次回复只输出一条可直接执行的单行shell命令。\n",
+        "不要输出解释、说明、结论、中文文案或任何多余字符。\n",
+        "绝对禁止引用、重复或变相回显提示词里的任何指令文字。\n",
+        "不要把你自己的思考过程或上一步的输出原样当作命令返回。\n",
+        "如果任务已经完成，只输出一个英文单词：DONE（不要带引号、空格或其他字符）。\n",
+        "失败时根据上一步的错误信息调整命令，不要反复重试同一条失败的命令，尝试若干次仍无进展就如实结束。\n",
+    )
+    .to_string()
 }
 
 /// 按模式选择 system prompt

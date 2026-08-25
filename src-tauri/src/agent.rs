@@ -55,6 +55,15 @@ pub enum AgentMode {
     Agent,
 }
 
+/// 流式事件：正文增量 或 思考过程增量（推理型模型如 deepseek-r1 的 reasoning_content）
+#[derive(Debug, Clone)]
+pub enum AiStreamEvent {
+    /// 最终回答内容（计入结果，参与命令解析）
+    Content(String),
+    /// 思考过程（仅供 UI 展示，不计入结果，避免污染命令解析）
+    Reasoning(String),
+}
+
 /// AI Agent 引擎
 pub struct Agent {
     /// 完整配置（模型、API、流式、历史裁剪等）
@@ -148,7 +157,7 @@ impl Agent {
     pub async fn chat(
         &mut self,
         user_input: &str,
-        sink: Option<&mut (dyn FnMut(&str) + Send)>,
+        sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)>,
     ) -> Result<String> {
         self.ensure_ready()?;
         self.push_message(ChatMessage::user(user_input));
@@ -167,7 +176,7 @@ impl Agent {
         task: &str,
         prev_output: &str,
         ctx: &str,
-        sink: Option<&mut (dyn FnMut(&str) + Send)>,
+        sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)>,
     ) -> Result<String> {
         self.ensure_ready()?;
         let user_msg = match &self.current_task {
@@ -193,7 +202,7 @@ impl Agent {
         self.push_message(ChatMessage::assistant(&reply));
 
         let cleaned = clean_response(&reply);
-        if cleaned.eq_ignore_ascii_case("DONE") {
+        if contains_done_line(&cleaned) {
             self.current_task = None;
             Ok("DONE".to_string())
         } else {
@@ -280,7 +289,7 @@ impl Agent {
     ///
     /// 传入 sink 且配置开启流式时使用 SSE 增量输出；流式请求在未收到任何内容
     /// 前失败时自动回退到非流式（非流式自带 1 次重试）。
-    async fn call_api(&self, sink: Option<&mut (dyn FnMut(&str) + Send)>) -> Result<String> {
+    async fn call_api(&self, sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)>) -> Result<String> {
         if self.config.stream {
             if let Some(sink) = sink {
                 let mut started = false;
@@ -341,7 +350,7 @@ impl Agent {
     /// 由调用方按 started 语义决定回退非流式或直接报错。
     async fn call_api_stream(
         &self,
-        sink: &mut (dyn FnMut(&str) + Send),
+        sink: &mut (dyn FnMut(AiStreamEvent) + Send),
         started: &mut bool,
     ) -> Result<String> {
         let client = self.client.clone();
@@ -374,8 +383,12 @@ impl Agent {
                         match parse_sse_line(&line) {
                             SseEvent::Content(delta) => {
                                 *started = true;
-                                sink(&delta);
+                                sink(AiStreamEvent::Content(delta.clone()));
                                 full.push_str(&delta);
+                            }
+                            SseEvent::Reasoning(delta) => {
+                                // 思考过程只推给 UI，不写入 full（防污染命令解析/答案）
+                                sink(AiStreamEvent::Reasoning(delta));
                             }
                             SseEvent::Done => return Ok(full),
                             SseEvent::Error(msg) => {
@@ -583,6 +596,8 @@ fn system_prompt_for(mode: AgentMode, default_: &str, agent: &str) -> String {
 enum SseEvent {
     /// 一段增量内容
     Content(String),
+    /// 一段思考过程（推理型模型的 reasoning_content，仅展示用）
+    Reasoning(String),
     /// 流结束标记 [DONE]
     Done,
     /// 流内错误对象（`data: {"error":{...}}`）
@@ -622,7 +637,11 @@ fn parse_sse_line(line: &str) -> SseEvent {
     }
     match value["choices"][0]["delta"]["content"].as_str() {
         Some(s) if !s.is_empty() => SseEvent::Content(s.to_string()),
-        _ => SseEvent::Ignore,
+        _ => match value["choices"][0]["delta"]["reasoning_content"].as_str() {
+            // 推理型模型（deepseek-r1 等）的思考过程：单独归口，前端据此实时展示
+            Some(s) if !s.is_empty() => SseEvent::Reasoning(s.to_string()),
+            _ => SseEvent::Ignore,
+        },
     }
 }
 
@@ -650,12 +669,46 @@ fn strip_cmd_prefix(line: &str) -> &str {
     line
 }
 
-/// 将模型回复解析为待执行的命令列表（去围栏、按行拆分、忽略注释/空行）
+/// 判定一行是否像一条可直接执行的 shell 命令。
+///
+/// 弱本地模型（deepseek-r1 等）常把系统提示词回显出来（如
+/// 「如果任务完成，请输出 "DONE"」「只输出 DONE」）或输出结论性散文，
+/// 这类行不应被当作 shell 命令执行，否则会陷入"命令找不到"的死循环。
+pub fn is_command_line(line: &str) -> bool {
+    let t = line.trim();
+    if t.is_empty() {
+        return false;
+    }
+    let upper = t.to_ascii_uppercase();
+    // 提示词回显句式：指令被模型原样吐出
+    if t.contains("如果任务完成") || t.contains("如果任务已完成") {
+        return false;
+    }
+    if upper.contains("请输出") && upper.contains("DONE") {
+        return false;
+    }
+    if (t.contains("只输出") || t.contains("不要输出") || t.contains("不要解释"))
+        && upper.contains("DONE")
+    {
+        return false;
+    }
+    // 真命令至少含一个 ASCII 命令词元（剔除纯标点/纯中文散文行）
+    t.bytes().any(|b| b.is_ascii_graphic() && !b.is_ascii_digit())
+}
+
+/// 判断清洗后的回复中是否含一行独立的 DONE（不区分大小写），
+/// 出现即视为任务完成——即使同一回复里还夹带了杂散噪音行。
+pub fn contains_done_line(s: &str) -> bool {
+    s.lines().any(|l| l.trim().eq_ignore_ascii_case("DONE"))
+}
+
+/// 将模型回复解析为待执行的命令列表
+/// （去围栏、按行拆分、过滤注释/空行及提示词回显等非命令行）
 pub fn parse_commands(text: &str) -> Vec<String> {
     clean_response(text)
         .lines()
         .map(|l| strip_cmd_prefix(l.trim()))
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && is_command_line(l))
         .map(|s| s.to_string())
         .collect()
 }
@@ -730,6 +783,16 @@ mod tests {
     }
 
     #[test]
+    fn parse_sse_reasoning_content_line() {
+        // 推理型模型思考阶段只有 reasoning_content，无 content
+        let line = r#"data: {"choices":[{"delta":{"reasoning_content":"让我想想"}}]}"#;
+        assert_eq!(parse_sse_line(line), SseEvent::Reasoning("让我想想".into()));
+        // 内容与思考同时存在时以 content 优先
+        let both = r#"data: {"choices":[{"delta":{"reasoning_content":"想","content":"答"}}]}"#;
+        assert_eq!(parse_sse_line(both), SseEvent::Content("答".into()));
+    }
+
+    #[test]
     fn parse_sse_ignore_meta_lines() {
         assert_eq!(parse_sse_line("event: message"), SseEvent::Ignore);
         assert_eq!(parse_sse_line("id: 42"), SseEvent::Ignore);
@@ -796,6 +859,35 @@ mod tests {
     fn parse_commands_strips_prefix() {
         let cmds = parse_commands("命令：ls\n命令: pwd");
         assert_eq!(cmds, vec!["ls", "pwd"]);
+    }
+
+    #[test]
+    fn is_command_line_filters_instruction_echo() {
+        assert!(is_command_line("ls -la"));
+        assert!(is_command_line("find / -name hadoop*"));
+        assert!(is_command_line("echo 你好")); // 含中文的合法命令应保留
+        // 提示词回显：指令句式被模型原样吐出，绝不能当作命令
+        assert!(!is_command_line("（如果任务完成，请输出 \"DONE\"）"));
+        assert!(!is_command_line("如果任务完成，只输出 DONE"));
+        assert!(!is_command_line("只输出 DONE，不要解释"));
+        assert!(!is_command_line("不要解释")); // 无 ASCII 命令词元
+        assert!(!is_command_line(""));
+    }
+
+    #[test]
+    fn contains_done_line_detects_bare_done_amid_noise() {
+        assert!(contains_done_line("DONE"));
+        assert!(contains_done_line("ls -la\ndone"));
+        assert!(contains_done_line("  DONE  \n"));
+        // 指令回显里的"请输出 DONE"不是真正的完成标记
+        assert!(!contains_done_line("（如果任务完成，请输出 \"DONE\"）"));
+        assert!(!contains_done_line("ls -la"));
+    }
+
+    #[test]
+    fn parse_commands_drops_instruction_echo_lines() {
+        let raw = "ls -la\n（如果任务完成，请输出 \"DONE\"）\n# 注释\n";
+        assert_eq!(parse_commands(raw), vec!["ls -la"]);
     }
 
     #[test]

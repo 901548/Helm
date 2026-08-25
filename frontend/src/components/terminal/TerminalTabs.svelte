@@ -31,6 +31,7 @@
     aiLog: AiLogEntry[];
     logOpen: boolean;
     aiEcho: { seq: number; name: string; text: string }[];
+    aiThinking?: string;
     onModeChange: (m: "qa" | "agent") => void;
     onApprove: () => void;
     onReject: () => void;
@@ -62,6 +63,7 @@
     aiLog,
     logOpen,
     aiEcho,
+    aiThinking = "",
     onModeChange,
     onApprove,
     onReject,
@@ -572,6 +574,7 @@
   streamOpen={aiStreamOpen}
   focusSeq={aiFocusSeq}
   {logOpen}
+  thinking={aiThinking}
   onSubmit={onDockSubmit}
   onStop={onStop}
   onApprove={onApprove}

@@ -57,25 +57,49 @@
 </script>
 
 <aside class="panel" class:collapsed>
+  {#if collapsed}
+    <button
+      class="reopen"
+      title="展开会话栏"
+      onclick={() => (collapsed = false)}
+    >
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      ><path d="M9 6l6 6-6 6" /></svg>
+    </button>
+  {:else}
   <header class="panel-header">
-    {#if collapsed}
-      <button
-        class="expand-btn"
-        title="展开会话栏"
-        onclick={() => (collapsed = false)}
-      >▶</button>
-    {:else}
       <span class="title">会话</span>
       <div class="head-actions">
         <button
           class="icon-btn"
           title="折叠"
           onclick={() => (collapsed = true)}
-        >◂</button>
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          ><path d="M15 6l-6 6 6 6" /></svg>
+        </button>
         <button class="icon-btn accent" title="新建会话" onclick={onNew}>＋</button>
       </div>
-    {/if}
   </header>
+  {/if}
 
   {#if !collapsed}
     <div class="session-list">
@@ -146,29 +170,36 @@
     transition: width 0.15s ease;
   }
   .panel.collapsed {
-    width: 44px;
+    width: 0;
+    border-right: none;
+    overflow: visible;
   }
-  .panel.collapsed .panel-header {
+  /* 折叠后:左上角悬浮的紧凑展开柄 */
+  .reopen {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    display: flex;
+    align-items: center;
     justify-content: center;
-    padding: 0.35rem 0;
-    flex: 1;
-    border-bottom: none;
-  }
-  .expand-btn {
-    border: none;
-    background: transparent;
-    color: var(--accent);
-    cursor: pointer;
-    font-size: 1.4rem;
-    line-height: 1;
-    width: 100%;
-    height: 100%;
+    width: 28px;
+    height: 28px;
     padding: 0;
-    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-panel);
+    color: var(--fg-muted);
+    cursor: pointer;
+    box-shadow: var(--shadow);
+    transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
   }
-  .expand-btn:hover {
-    background: var(--hover);
-    color: var(--accent-hover);
+  .reopen:hover {
+    background: var(--active-bg);
+    border-color: var(--accent-dim);
+    color: var(--accent);
+  }
+  .reopen svg {
+    display: block;
   }
 
   .panel-header {

@@ -400,6 +400,11 @@ F:\Helm\
   2. **改动**:SettingsModal UI tab 删「窗口」卡(仅含宽高两项);submit() 宽高透传 uiConfig(仅满足 TS 类型);**core.rs `update_ui_config` 去掉 `app: AppHandle` 参数与 set_size/set_position 调用,宽高与 xy 一律保留磁盘现值**(几何唯一写者 = main.rs Moved 事件/RunEvent::Exit 落盘),随删 core.rs 顶部不再使用的 `Manager` import。
   3. **验证(CDP)**:界面 tab 仅剩「布局」(会话面板宽度%/显示会话面板)与「外观」(主题)两卡,无几何输入;保存后视口尺寸不变;弹窗正常关闭。build 输出中 `state_referenced_locally` 两条为 P27 已知保留警告,与本次无关。
   4. **坑**:SettingsModal 模板在 P60-P62 已重构为卡片分组(sec-title),凭旧行号/旧结构写 Edit 会失配——改前端模板前先重读现文件。
+- [x] **P66 设置页重设计:三 tab 信息架构(用户定,已完成,CDP 三 tab 断言 + 截图 + Vitest 26 项/`npm run build` 通过)**:
+  1. **动机**:AI tab 五卡过长需滚动,连接三件套(提供商/模型/Key/测试)与专家调参争夺注意力;P65 删宽高后 UI tab 仅剩三控件,二 tab 结构失衡。
+  2. **新结构(tab 默认 "conn")**:**「连接」**= 模型卡 + 认证卡(预设填入/获取列表/API Key/URL/测试连接,首屏零滚动,90% 用户到此为止);**「AI」**= 行为卡(初始模式/流式/全部确认/自定义提示词,概念项提前)+ 生成参数 + 执行限制(数值调参殿后);**「界面」**= 布局 + 外观(不变)。保存按钮仍是全量提交(跨 tab 生效,与 tab 无关)。
+  3. **验证(CDP)**:默认开「连接」;三 tab 切换 sec-title 断言正确(连接=[模型,认证]/AI=[行为,生成参数,执行限制]/界面=[布局,外观]);界面 tab 点保存→全量落盘+关窗;截图 `docs/screenshots/ui-review-tab-{conn,ai,ui}.png`。预设预选联动(P50)在新结构下正常(用户配置 localhost:11434 → Ollama 预设选中显示)。
+  4. **坑**:无——纯模板重组 + tab 状态类型扩展(`"conn"|"ai"|"ui"`),状态/提交逻辑零改动。
   4. **遗留小瑕疵(评估过,暂不处理)**:premature_done 提示文案插值 goals.len() 而非剩余数(模型侧轻微失真);Linux 会话 dock 也渲染「容器(可选)」输入(输入无效果,纯观感)。
 
 ## 6. 命令与验证

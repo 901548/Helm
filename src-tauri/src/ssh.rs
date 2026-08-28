@@ -285,12 +285,14 @@ impl SshManager {
     ///
     /// 通道打开与 PTY/shell 请求有 10 秒超时，避免服务器无响应时无限挂起。
     /// 通道建立全程不持有 map 锁；读写任务把输出送入队列并 notify 唤醒输出 poller。
+    /// Docker 会话（P71）：不请求宿主 shell，改经 `docker exec -it <容器> sh` 进入容器交互。
     pub async fn open_shell(
         &self,
         name: &str,
         cols: u16,
         rows: u16,
         kind: SessionKind,
+        container: Option<&str>,
     ) -> Result<()> {
         let session = self
             .sessions
@@ -306,6 +308,17 @@ impl SshManager {
             .clone()
             .ok_or_else(|| anyhow!("会话 {} 未连接", name))?;
 
+        // Docker 会话必须有目标容器名；单引号转义防容器名携带 shell 元字符
+        let docker_cmd = if kind == SessionKind::Docker {
+            let c = container
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .ok_or_else(|| anyhow!("Docker 会话未配置容器名"))?;
+            Some(format!("docker exec -it '{}' sh", c.replace('\'', "'\\''")))
+        } else {
+            None
+        };
+
         let mut channel = match tokio::time::timeout(Duration::from_secs(10), async {
             let channel = handle
                 .channel_open_session()
@@ -315,10 +328,17 @@ impl SshManager {
                 .request_pty(true, "xterm-256color", cols as u32, rows as u32, 0, 0, &[])
                 .await
                 .map_err(|e| anyhow!("请求 PTY 失败: {}", e))?;
-            channel
-                .request_shell(true)
-                .await
-                .map_err(|e| anyhow!("启动 shell 失败: {}", e))?;
+            if let Some(cmd) = &docker_cmd {
+                channel
+                    .exec(true, cmd.as_str())
+                    .await
+                    .map_err(|e| anyhow!("进入容器失败: {}", e))?;
+            } else {
+                channel
+                    .request_shell(true)
+                    .await
+                    .map_err(|e| anyhow!("启动 shell 失败: {}", e))?;
+            }
             Ok::<_, anyhow::Error>(channel)
         })
         .await
@@ -638,7 +658,7 @@ mod tests {
 
     /// 打开 shell 并设为活跃
     async fn open_live(mgr: &SshManager, info: &SessionInfo) {
-        mgr.open_shell(&info.name, 80, 24, info.kind)
+        mgr.open_shell(&info.name, 80, 24, info.kind, info.container.as_deref())
             .await
             .expect("打开 shell 失败");
         mgr.set_active(&info.name).await;

@@ -433,6 +433,12 @@ F:\Helm\
   3. **验证**:`cargo test` 102 项(+4:分包行组装/ESC+退格/空行与开关 noop/civil 历法锚点);CDP 端到端:真敲 `echo helm-rec-test-70`→input 行落盘;本机 Ollama QA「1+1等于几」→qa 对落盘(答「1+1等于2」);agent 任务→ai_task+ai_step 全字段落盘。
   4. **实测插曲(记录器首战立功)**:trivial 任务「输出当前所在目录路径」glm4 在 step 0 就 `pwd` 答对,但**不输出 DONE,继续乱逛 49 步**(ls/cat 日志/找 auth.log)直到 max_steps 兜底——记录器完整捕获,正是训练需要的负样本;无效步与命令步交替出现(1,3,5 缺号)所以 `MAX_INVALID_STEPS=2` 不触发(计数被成功步清零),靠 max_steps 收敛,属模型质量问题已有护栏。
   5. **坑**:a) cargo test 并行线程共享同一临时目录会互删文件(测试 A 收尾 remove_dir_all 干掉测试 B 正写的文件→NotFound),每测试独立目录(AtomicU64 序号);b) 硬编码"今天"的日期锚点会过期(UTC 已 rollover 到 29 日),历法断言用可心算的历史锚点(0→1970-01-01/31→02-01/365→1971-01-01);c) dev 模式 config 路径回退 `../config.yaml` 使 parent 为 ".." → logs 目录相对路径随 CWD 漂移,须 canonicalize;d) canonicalize 返回 `\\?\` 扩展前缀路径,展示层剥掉。
+- [x] **P71 Docker 交互终端(补 P54 首版缺口,已完成,`cargo build` 零警告 + `cargo test` 102 项全过;容器内交互待 Docker 环境复验)**:
+  1. **背景**:P54 首版 Docker 会话只开 AI exec 通道,`connect_session` 显式跳过 open_shell——Docker 会话无交互终端(前端 tab 空壳)。
+  2. **改动(纯后端两处)**:a) `ssh.rs open_shell` 加 `container: Option<&str>` 参数——kind=Docker 时 PTY 请求后不 `request_shell`,改 `channel.exec("docker exec -it '<容器>' sh")`(容器名单引号转义防 shell 元字符注入;容器名缺失/空白报"Docker 会话未配置容器名";sh 而非 bash 因容器内不一定有 bash);OSC7 注入门控 `kind == Linux` 天然跳过 Docker(容器内 sh 不支持 PROMPT_COMMAND,前端 cd 联动对容器本就不适用——文件面板是宿主 SFTP);b) `core.rs connect_session` 删除 Docker 跳过分支,透传 `info.container`;live 测试 `open_live` 调用点同步。
+  3. **前端零改动**:App 只门控 rdp,Docker 会话本就按普通 SSH 建标签/路由输入;SessionForm 已有容器名字段(docker 会话强制填);SysMonitor 对 Docker 显示宿主统计(exec 通道在宿主,可接受);AI Agent 的 docker_exec_cmd 分支(P54)不受影响。
+  4. **验证与限制**:本机唯一服务器 192.168.79.150 **无 docker**(agent 实测 `docker: 未找到命令`,连 apt-get 都无——记录器完整捕获了弱模型"尝试安装 docker"的发散轨迹,ai_stop 兜住)。已验证:错误路径(无 docker 宿主上建 docker 会话连接→exec 请求发出→docker 报错文本进终端缓冲+通道 EOF→poller 心跳转 Disconnected,标签仍建)+ 输入路由(dock-test 会话敲命令→recorder 正确记录)。**容器内真实交互(debian/ubuntu 容器 sh 提示符/resize/exit)待有 Docker 环境时复验**。
+  5. **坑**:a) docker exec 失败在 SSH 协议层是"成功"(exec 被接受),错误经通道数据+EOF 才暴露——连接瞬时绿点后转断开,属诚实表现未做连接时探测(等待探测会拖慢所有 docker 连接);b) ai_set_mode 在 AI busy 时拒绝("请先停止当前 AI 任务"),CDP 切模式前须确认任务已结束。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

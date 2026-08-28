@@ -83,6 +83,7 @@ fn main() {
             core::set_active,
             core::clear_active,
             core::rdp_connect,
+            core::open_external,
             core::send_input,
             core::send_active_input,
             core::resize_sessions,

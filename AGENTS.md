@@ -412,6 +412,15 @@ F:\Helm\
   3. **忘记主机密钥(改放会话右键菜单,非设置页——探码后修正:用户被 TOFU 拒连的第一反应是右键会话,且 host/port 现成免新增 list 命令)**:commands.ts `forgetHostKey(host,port)` 封装(后端 P26-3 命令早已注册但前端零调用);SessionPanel 菜单加「忘记主机密钥」(rdp 会话隐藏);App `forgetHostKey` handler:confirm 说明场景 → 调命令 → alert 反馈"已忘记/无记录/失败"。
   4. **验证(CDP 真机 192.168.79.150)**:界面 tab sec-title=[布局,终端,外观] 且两输入在;**连接会话后改字体保存→`.xterm-screen` 行高 24→16 实时生效**(坑:验 `.xterm` 根元素 computed font-size 恒为 xterm.css 的 16px 不反映 options,须量字符格子);AI tab Agent 提示词 textarea 显示用户现有 P57 提示词;右键菜单五项=连接/断开/**忘记主机密钥**/编辑/删除,点击 confirm 文案正确+真实后端调用成功(alert"已忘记")。
   5. **坑**:a) CDP 测试改 20 验证 20 恒无变化(首轮测试已把 20 存进 config,基线即 20px)——改值断言须避开已存值,且测完恢复配置原值(已 sed 回 14);b) **测试调「忘记主机密钥」真实删掉了 192.168.79.150 的 TOFU pin**(活跃数据,勿删勿动)——测完重连一次自动重新信任恢复 pin,再断开,状态还原;c) 拦截 `window.confirm/alert` 须在页面加载后尽早注入,否则原生对话框会挂住 CDP。
+- [x] **P68 终端体验批:WebGL/链接点击/字体缩放/标签键盘导航/右键菜单/多行粘贴警告(已完成,`cargo test` 94 项+Vitest 26 项+CDP 六项断言 ALL PASS)**:
+  1. **WebGL 硬件渲染**:`@xterm/addon-webgl`,syncContainers 里 `term.open` 后 try/catch 挂载(上下文超限/驱动问题静默回退 DOM 渲染器);terminals 条目加 `webgl?` 槽位,term.dispose 连带释放。
+  2. **链接点击**:`@xterm/addon-web-links` + **后端新命令 `open_external(url)`**(core.rs,`cmd /c start` 空标题占位防注入 + CREATE_NO_WINDOW,**只放行 http/https**;需 `use std::os::windows::process::CommandExt`)。不用 addon 默认 window.open——WebView2 里会导航走应用页面本身。main.rs 注册;commands.ts `openExternal`。
+  3. **字体缩放(Ctrl+滚轮/Ctrl+=(-/0))**:TerminalTabs `zoomOffset` $state(临时缩放不持久化,+14/-6 钳制),P67 字体 effect 改读 `termFontSize + zoomOffset`;wheel 监听挂 termArea(`passive:false` 才能 preventDefault 挡 WebView 页面缩放),onMount 注册/清理。
+  4. **标签键盘导航**:handleKey 加 Ctrl+Tab(下一个,Shift 反向,循环取模)与 Ctrl+1..9 直达;单标签/越界 no-op。
+  5. **终端区右键菜单**:`.term-area oncontextmenu`(仅 `.xterm` 内拦截)+ 复制/粘贴/搜索/清屏 四项(term.clear 含缓冲)+ veil 关闭;样式对齐 SessionPanel ctx-menu。
+  6. **多行粘贴警告**:paste() 读剪贴板后按非空行数 >1 时 confirm「粘贴内容包含 N 行命令」——运维安全件,防粘贴块误执行破坏性命令。
+  7. **验证(CDP 真机,连接 192.168.79.150)**:WebGL 3 canvas ✓;缩放先 Ctrl+0 归零定基线→Ctrl+= ×2+wheel→canvas 背板尺寸变化→Ctrl+0 精确复位 ✓;右键菜单四项+veil 关闭 ✓;stub 剪贴板两行→Ctrl+V→confirm「2 行命令」✓;单标签 Ctrl+Tab/1 no-throw ✓;`open_external` https 放行真开浏览器/file:// 拒绝 ✓。
+  8. **坑**:a) **WebGL 渲染器下所有视觉尺寸被 fit 拉齐区域大小,字号无 DOM 指标**——`.xterm-rows > div` 为 null、`.xterm-screen` 高度恒等于区域、canvas 背板仅重排噪声级变化,断言只能以「重排发生(canvas 尺寸变)+Ctrl+0 精确回到基线」为证(P67 的 DOM 渲染器行高断言在 WebGL 下失效);b) **测试脚本自身会污染被测状态**——探针残留 zoomOffset=7 导致首轮 base 不在零位,断言前必须显式归零;c) clipboard.readText 需文档焦点,CDP 合成事件下直接 stub `navigator.clipboard.readText` 最稳;d) CDP 断言 Svelte DOM 更新须 sleep 等 flush,同步连查恒为旧 DOM。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

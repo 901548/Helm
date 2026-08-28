@@ -3,6 +3,8 @@
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import { SearchAddon } from "@xterm/addon-search";
+  import { WebglAddon } from "@xterm/addon-webgl";
+  import { WebLinksAddon } from "@xterm/addon-web-links";
   import type { ITheme } from "@xterm/xterm";
   import "@xterm/xterm/css/xterm.css";
   import * as api from "../../lib/api";
@@ -232,7 +234,7 @@
 
   const terminals = new Map<
     string,
-    { term: Terminal; fit: FitAddon; search: SearchAddon; open: boolean }
+    { term: Terminal; fit: FitAddon; search: SearchAddon; open: boolean; webgl?: WebglAddon }
   >();
 
   function createTerminal(name: string): Terminal {
@@ -249,6 +251,12 @@
     const search = new SearchAddon();
     term.loadAddon(fit);
     term.loadAddon(search);
+    // P68 输出中的 URL 可点击：经后端 open_external 用系统浏览器打开（只放行 http/https），
+    // 不用默认 window.open——WebView2 里那会导航走应用页面本身
+    term.loadAddon(new WebLinksAddon((e, uri) => {
+      e.preventDefault();
+      api.openExternal(uri).catch(() => {});
+    }));
     term.onData((data) => {
       api.sendActiveInput(new TextEncoder().encode(data));
     });
@@ -292,6 +300,15 @@
       if (!e.open) {
         e.term.open(el);
         e.open = true;
+        // P68 WebGL 硬件渲染（大输出滚动性能）；上下文创建失败（上下文数超限/驱动问题/
+        // 容器隐藏）时静默回退 DOM 渲染器，不影响功能
+        try {
+          const webgl = new WebglAddon();
+          e.term.loadAddon(webgl);
+          e.webgl = webgl;
+        } catch {
+          /* DOM renderer fallback */
+        }
         try {
           e.fit.fit();
         } catch {
@@ -330,8 +347,34 @@
   function paste() {
     navigator.clipboard
       .readText()
-      .then((text) => api.sendActiveInput(new TextEncoder().encode(text)))
+      .then((text) => {
+        // P68 运维安全：多行粘贴经 confirm 二次把关（防误执行粘贴块中的破坏性命令）
+        const lines = text.split(/\r\n|\r|\n/).filter((l) => l.trim().length > 0).length;
+        if (lines > 1 && !window.confirm(`粘贴内容包含 ${lines} 行命令，将逐行发送到终端执行。确定继续？`)) {
+          return;
+        }
+        api.sendActiveInput(new TextEncoder().encode(text));
+      })
       .catch(() => {});
+  }
+
+  // P68 终端区右键菜单（复制/粘贴/搜索/清屏）
+  let tctx = $state<{ x: number; y: number } | null>(null);
+  function openTermCtx(e: MouseEvent) {
+    // 仅终端区域（.xterm 内）拦截；tabbar/搜索框等走默认行为
+    if (!(e.target as HTMLElement | null)?.closest?.(".xterm")) return;
+    e.preventDefault();
+    tctx = { x: e.clientX, y: e.clientY };
+  }
+  function termCtx(action: "copy" | "paste" | "search" | "clear") {
+    tctx = null;
+    const term = activeTab ? terminals.get(activeTab)?.term : undefined;
+    if (action === "copy") copySelection();
+    else if (action === "paste") paste();
+    else if (action === "search") {
+      showSearch = true;
+      setTimeout(() => searchBar?.focus(), 0);
+    } else if (action === "clear") term?.clear();
   }
 
   function doSearch(direction: "next" | "prev") {
@@ -385,6 +428,33 @@
       e.preventDefault();
       e.stopPropagation();
       paste();
+    } else if (ctrl && (key === "=" || key === "+")) {
+      // P68 字体缩放：放大（终端聚焦或应用区域都响应，缩放是全局观感）
+      if (fromAppField) return;
+      e.preventDefault();
+      zoomOffset = Math.min(14, zoomOffset + 1);
+    } else if (ctrl && key === "-") {
+      if (fromAppField) return;
+      e.preventDefault();
+      zoomOffset = Math.max(-6, zoomOffset - 1);
+    } else if (ctrl && key === "0") {
+      if (fromAppField) return;
+      e.preventDefault();
+      zoomOffset = 0;
+    } else if (ctrl && key === "tab" && tabs.length > 1) {
+      // P68 标签键盘导航：Ctrl+Tab 下一个 / Ctrl+Shift+Tab 上一个（循环）
+      e.preventDefault();
+      const idx = activeTab ? tabs.indexOf(activeTab) : -1;
+      const dir = e.shiftKey ? -1 : 1;
+      const next = tabs[(((idx + dir) % tabs.length) + tabs.length) % tabs.length];
+      if (next && next !== activeTab) onSelect(next);
+    } else if (ctrl && key >= "1" && key <= "9" && !e.shiftKey && !e.altKey) {
+      // P68 Ctrl+1..9 直达第 N 个标签
+      const t = tabs[Number(key) - 1];
+      if (t) {
+        e.preventDefault();
+        if (t !== activeTab) onSelect(t);
+      }
     } else if (e.altKey && key === "i" && !fromAppField) {
       // 聚焦 AI 命令条输入框（⌥I）;输入框内不劫持
       e.preventDefault();
@@ -429,6 +499,13 @@
     });
     const onResize = () => fitActive();
     window.addEventListener("resize", onResize);
+    // P68 Ctrl+滚轮字体缩放（passive:false 才能 preventDefault 挡住 WebView 页面缩放）
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      zoomOffset = Math.min(14, Math.max(-6, zoomOffset + (e.deltaY < 0 ? 1 : -1)));
+    };
+    termArea?.addEventListener("wheel", onWheel, { passive: false });
     const ro = new ResizeObserver(onResize);
     if (termArea) ro.observe(termArea);
     window.addEventListener("keydown", handleKey, true);
@@ -436,6 +513,7 @@
     return () => {
       unsubP.then((fn) => fn());
       window.removeEventListener("resize", onResize);
+      termArea?.removeEventListener("wheel", onWheel);
       ro.disconnect();
       window.removeEventListener("keydown", handleKey, true);
       for (const e of terminals.values()) e.term.dispose();
@@ -459,9 +537,12 @@
     }
   });
 
+  // P68 临时字体缩放（Ctrl+滚轮 / Ctrl+=/-/0）：叠加在设置基准之上，不持久化
+  let zoomOffset = $state(0);
+
   // P67 终端设置即时生效：字体变化后须 refit，缓冲行数 xterm 支持运行时调整
   $effect(() => {
-    const size = termFontSize;
+    const size = Math.min(28, Math.max(8, termFontSize + zoomOffset));
     const back = termScrollback;
     for (const e of terminals.values()) {
       e.term.options.fontSize = size;
@@ -508,7 +589,7 @@
 
 <SysMonitor {activeTab} />
 
-<div class="term-area" bind:this={termArea}>
+<div class="term-area" bind:this={termArea} oncontextmenu={openTermCtx}>
   {#if showSearch}
     <div class="search-bar">
       <span class="search-glyph" aria-hidden="true">
@@ -529,6 +610,17 @@
   {#each tabs as t (t)}
     <div class="term-container" class:active={t === activeTab} data-term={t}></div>
   {/each}
+
+  {#if tctx}
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="term-ctx-veil" onclick={() => (tctx = null)} oncontextmenu={(e) => { e.preventDefault(); tctx = null; }}></div>
+    <div class="term-ctx" style:left={tctx.x + "px"} style:top={tctx.y + "px"}>
+      <button onclick={() => termCtx("copy")}>复制</button>
+      <button onclick={() => termCtx("paste")}>粘贴</button>
+      <button onclick={() => termCtx("search")}>搜索 (Ctrl+F)</button>
+      <button onclick={() => termCtx("clear")}>清屏</button>
+    </div>
+  {/if}
 
   {#if tabs.length === 0}
     <!-- 空状态提示:无会话标签时占据终端区,纯展示不拦事件 -->
@@ -791,6 +883,37 @@
     flex: 1;
     min-height: 0;
     position: relative;
+  }
+  /* P68 终端区右键菜单（样式对齐 SessionPanel ctx-menu） */
+  .term-ctx {
+    position: fixed;
+    z-index: 100;
+    background: var(--modal-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    padding: 0.25rem;
+    min-width: 130px;
+  }
+  .term-ctx button {
+    border: none;
+    background: transparent;
+    text-align: left;
+    padding: 0.45rem 0.7rem;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 0.9rem;
+    color: var(--fg);
+  }
+  .term-ctx button:hover {
+    background: var(--hover);
+  }
+  .term-ctx-veil {
+    position: fixed;
+    inset: 0;
+    z-index: 99;
   }
   .term-container {
     position: absolute;

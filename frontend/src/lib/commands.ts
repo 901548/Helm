@@ -35,6 +35,9 @@ export const rdpConnect = (name: string) => invoke<void>("rdp_connect", { name }
 export const forgetHostKey = (host: string, port: number) =>
   invoke<boolean>("forget_host_key", { host, port });
 
+// 系统默认浏览器打开外部链接(终端链接点击;后端只放行 http/https)
+export const openExternal = (url: string) => invoke<void>("open_external", { url });
+
 // ---------- 终端 commands ----------
 
 export const sendInput = (name: string, data: Uint8Array) =>

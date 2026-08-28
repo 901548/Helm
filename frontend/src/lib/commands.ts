@@ -38,6 +38,14 @@ export const forgetHostKey = (host: string, port: number) =>
 // 系统默认浏览器打开外部链接(终端链接点击;后端只放行 http/https)
 export const openExternal = (url: string) => invoke<void>("open_external", { url });
 
+// P73 ZMODEM：协议字节走 record=false（训练日志只记人类键入）
+export const sendInputRaw = (name: string, data: Uint8Array) =>
+  invoke<void>("send_input", { name, data, record: false });
+
+// ZMODEM 下载落盘（后端写 ~/Downloads/helm-zmodem/<名>，返回实际路径）
+export const zmodemSave = (name: string, b64: string) =>
+  invoke<string>("zmodem_save", { name, b64 });
+
 // ---------- 终端 commands ----------
 
 export const sendInput = (name: string, data: Uint8Array) =>

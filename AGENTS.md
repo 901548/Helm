@@ -446,6 +446,13 @@ F:\Helm\
   4. **配套修复(横幅依赖 activeTab)**:断开事件处理原先把 activeTab 无条件让位(pickNextActive 空手时 `clearActive`)→ activeTab=null → onReconnect 空转。改为**仅当有其他已连接会话可接棒时才让位**,否则保留断线标签为当前视图(横幅可作用)。
   5. **验证(CDP)**:连接→终端敲 `exit`→横幅 1s 内出现+标签保留→点重连→圆点恢复 ok→记录器持续工作,ALL PASS。修复后远端断开同步(P7 兜兜转转)才真正可靠。
   6. **坑**:a) **UI 本地状态更新会掩盖后端事件链路断裂**——验证"断开同步"必须绕开 UI 自更新路径(用 exit 而非右键断开);b) russh Handle::is_closed 实测语义:只对主动 close 可靠,服务端断开不翻转,勿再依赖;c) vite HMR 全量 reload 清前端状态后,连接事件在监听器注册前飞失→CDP 测试开头先 location.reload 清场;d) node 内联改含反引号模板串的脚本必炸(bash 命令替换),改脚本用 Edit 工具。
+- [x] **P73 ZMODEM 文件传输(rz/sz,已完成,真机 lrzsz 0.12.20 全链路往返对照一致 + `cargo test` 102 项/Vitest 26 项)**:
+  1. **架构**:纯 in-band——用户在终端敲 `rz`/`sz 文件`,PTY 字节流里的 ZMODEM 帧由前端哨兵拦截,后端零协议代码。依赖 `zmodem.js@0.1.10`(浏览器 bundle 挂 `window.Zmodem`,副作用导入 + `window` 访问;`Sentry{to_terminal,on_detect,on_retract,sender}` + `Browser.send_files`)。
+  2. **接线(TerminalTabs)**:每个终端配一个 Sentry——**入站字节全部过 `consume()`**(普通输出透传上屏、ZMODEM 帧拦截进协议栈),协议应答经 `sender` 回写远端;`on_detect`:`get_session_role()`——`receive`(远端 sz)=挂 offer 处理器累积字节→`xfer.accept()`→新命令 `zmodem_save(name, b64)` 落 `~/Downloads/helm-zmodem/`(文件名剥危险字符+重名 -N 序号+256MiB 上限);`send`(远端 rz)=浮层内嵌 `<input type=file>`→`Browser.send_files`。传输浮层(文件名/进度条/字节数/结果 note/取消)复用断线横幅定位风格;ZMODEM 进行中吞掉用户键入(防破坏帧序)。
+  3. **训练日志保护**:`send_input` 加 `record: Option<bool>`——哨兵协议应答走 `sendInputRaw`(record:false),ZMODEM 二进制帧不进 P70 训练日志;用户敲的 rz/sz 命令行正常记录。
+  4. **验证(真机 192.168.79.150,agent 自装 lrzsz)**:sz 下载→浮层进度→已保存路径+内容一致;rz 上传→选文件→发送完成;**往返对照逐字节一致**;协议帧零入训练日志。
+  5. **修复两个协议关键点**:a) **Receive 会话必须显式 `zsession.start()`**——不发 ZRINIT 服务器永远等不到握手(上传浮层都不出现的根因);Send 会话不需(服务器先发 ZRINIT 触发检测);b) rz 保存用**发送时原始文件名**(本地叫什么远端存什么,往返对照必须用同名)。
+  6. **坑**:a) zmodem.js 的 `Sentry` 在 index.js 入口只有协议栈,`Browser.send_files` 在 dist bundle——须 `import "zmodem.js/dist/zmodem.js"` 副作用导入 + `window.Zmodem` 访问;b) 哨兵透传会把 ZRQINIT 首帧渲染成屏幕垃圾(`**B00...`)属标准行为;c) **多轮测试互相污染**——上一轮卡死的 rz 会让后续 sz 命令喂进 rz stdin(命令永远不到 shell),每步前 Ctrl+C 清场+严格串行;d) `rz waiting to receive.**<18>B0...` 里的 ZRINIT 帧 = rz 方向检测源(服务端发 ZRINIT→Session.Send);sz 方向是 ZRQINIT→Session.Receive;e) 真机文件传输验证受 vite 存活/HMR 干扰,环境重置(杀净 node+helm)后再测最省时间。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

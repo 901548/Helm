@@ -6,6 +6,7 @@
 // core.rs 只留命令薄封装;新增任务模式/执行策略改本文件。
 // ============================================================================
 
+use std::time::Duration;
 use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter};
@@ -26,6 +27,19 @@ enum GoalStatus {
     Active,
     Ok,
     Failed,
+}
+
+/// P57 L3 · 确认等待超时(秒)：用户长时间不点 批准/拒绝/放弃 时任务自动中止。
+/// 不会"静默继续执行"未获批准的危险命令，避免确认点永久阻塞导致 busy 卡死。
+const CONFIRM_TIMEOUT_SECS: u64 = 120;
+
+/// 仅等待"确认"途径：超过 CONFIRM_TIMEOUT_SECS 未收到控制消息则返回 true(应中止任务)。
+/// 区分通道关闭(Ok(None)/Cancel)与真正超时(Err)：调用方按各自语义处理。
+async fn recv_confirm(ctl: &mut UnboundedReceiver<AiControl>) -> Result<Option<AiControl>, ()> {
+    match tokio::time::timeout(Duration::from_secs(CONFIRM_TIMEOUT_SECS), ctl.recv()).await {
+        Ok(v) => Ok(v),
+        Err(_elapsed) => Err(()), // 确认超时
+    }
 }
 
 /// 首个未完成的子目标（首个非 Ok）；用于决定当前执行/重规划目标。
@@ -406,8 +420,8 @@ pub(crate) async fn run_ai_job(
                 let commands: Vec<String> = if confirm_all || any_danger {
                     emit_state(AiRunState::AwaitingConfirm);
                     flush_stale(ctl_rx);
-                    match ctl_rx.recv().await {
-                        Some(AiControl::Approve) => {
+                    match recv_confirm(ctl_rx).await {
+                        Ok(Some(AiControl::Approve)) => {
                             preapproved = true;
                             let _ = app.emit(
                                 "ai",
@@ -415,8 +429,8 @@ pub(crate) async fn run_ai_job(
                             );
                             commands
                         }
-                        Some(AiControl::Edit(cmds)) => cmds,
-                        Some(AiControl::Reject) => {
+                        Ok(Some(AiControl::Edit(cmds))) => cmds,
+                        Ok(Some(AiControl::Reject)) => {
                             let _ = app.emit(
                                 "ai",
                                 AiPayload::Done { name: session.to_string(), message: "已放弃本步计划".to_string() },
@@ -424,7 +438,17 @@ pub(crate) async fn run_ai_job(
                             finished = true;
                             break;
                         }
-                        Some(AiControl::Cancel) | None => {
+                        // 通道关闭或主动取消：直接结束，不额外提示
+                        Ok(_) => {
+                            finished = true;
+                            break;
+                        }
+                        // 确认超时：中止任务(不静默执行未批计划)
+                        Err(()) => {
+                            let _ = app.emit(
+                                "ai",
+                                AiPayload::Done { name: session.to_string(), message: "等待确认超时,本次计划已中止".to_string() },
+                            );
                             finished = true;
                             break;
                         }
@@ -473,9 +497,9 @@ pub(crate) async fn run_ai_job(
                         if finished {
                             break;
                         }
-                        match ctl_rx.recv().await {
-                            Some(AiControl::Approve) => {}
-                            Some(AiControl::Reject) => {
+                        match recv_confirm(ctl_rx).await {
+                            Ok(Some(AiControl::Approve)) => {}
+                            Ok(Some(AiControl::Reject)) => {
                                 let _ = app.emit(
                                     "ai",
                                     AiPayload::CommandStep {
@@ -490,8 +514,9 @@ pub(crate) async fn run_ai_job(
                                 continue;
                             }
                             // 计划级 Edit 若滞留到逐条确认（异常时序），按跳过处理，不执行
-                            Some(AiControl::Edit(_)) => { continue; }
-                            Some(AiControl::Cancel) | None => {
+                            Ok(Some(AiControl::Edit(_))) => { continue; }
+                            // 通道关闭或主动取消或确认超时：中止任务，不执行未获批准的命令
+                            Ok(_) | Err(()) => {
                                 finished = true;
                                 break;
                             }

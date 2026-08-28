@@ -66,6 +66,8 @@ struct AiSlot {
     mode_agent: AtomicBool,
     /// 本会话控制通道发送端（每次任务启动时重建）
     ctl: Arc<Mutex<Option<UnboundedSender<AiControl>>>>,
+    /// 本会话当前 AI 任务的 JoinHandle（供会话删除时 abort，避免僵尸任务持续占用槽/busy）
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl AiSlot {
@@ -80,6 +82,7 @@ impl AiSlot {
             busy: AtomicBool::new(false),
             mode_agent: AtomicBool::new(mode_agent),
             ctl: Arc::new(Mutex::new(None)),
+            task: Mutex::new(None),
         }
     }
 }
@@ -102,9 +105,13 @@ impl AiManager {
             .clone()
     }
 
-    /// 会话删除时移除其槽
+    /// 会话删除时移除其槽，并 abort 仍在运行的 AI 任务(若有)，避免僵尸任务持续占用槽/busy
     pub async fn remove(&self, name: &str) {
-        self.slots.lock().await.remove(name);
+        if let Some(slot) = self.slots.lock().await.remove(name) {
+            if let Some(handle) = slot.task.lock().await.take() {
+                handle.abort();
+            }
+        }
     }
 
     /// 用最新 AI 配置重建所有空闲会话槽（运行中的跳过，避免与进行中请求互踩）
@@ -588,14 +595,18 @@ pub async fn ai_submit(
     let slot2 = slot.clone();
     let app2 = app.clone();
     let session = name.clone();
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         let mut ctl_rx = ctl_rx;
         run_ai_job(&session, &slot2.agent, &ssh, &app2, &mut ctl_rx, &input, mode, ctx).await;
         slot2.busy.store(false, Ordering::SeqCst);
         let _ = app2.emit("ai", AiPayload::Busy { name: session, busy: false });
         // 清空本会话控制通道槽位
         *slot2.ctl.lock().await = None;
+        // 任务结束，清掉本槽保存的 JoinHandle（防止陈旧句柄占用；新任务会覆盖）
+        *slot2.task.lock().await = None;
     });
+    // 保存 JoinHandle 供 delete_session abort
+    *slot.task.lock().await = Some(task);
     Ok(())
 }
 

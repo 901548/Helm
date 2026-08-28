@@ -15,8 +15,6 @@
   let activeTab = $state<string | null>(null);
   // 多会话：按会话名记录忙碌态，面板/提交只取当前活动会话的那一份
   let aiBusy = $state<Record<string, boolean>>({});
-  // §8.7.1 唯一状态机：按会话记录当前执行态（Idle/Parsing/Planning/AwaitingConfirm/Executing/ReadingBack）
-  let aiState = $state<Record<string, string>>({});
   let aiMode = $state<"qa" | "agent">("qa");
   let aiConfig = $state<AiConfig | null>(null);
   let uiConfig = $state<UiConfig | null>(null);
@@ -97,13 +95,16 @@
     systemDark = mq.matches;
     const onSystemChange = (e: MediaQueryListEvent) => (systemDark = e.matches);
     mq.addEventListener("change", onSystemChange);
-    api.listSessions().then((list) => {
-      sessions = list;
-      refreshStatuses();
-    });
+    api
+      .listSessions()
+      .then((list) => {
+        sessions = list;
+        refreshStatuses();
+      })
+      .catch((e) => console.error("加载会话列表失败:", e));
     refreshAiMode();
     refreshUiConfig();
-    api.getAiConfig().then((c) => (aiConfig = c));
+    api.getAiConfig().then((c) => (aiConfig = c)).catch((e) => console.error("加载 AI 配置失败:", e));
 
     const unsubConn = api.onConnection((p) => {
       if (p.status === "connected") {
@@ -246,10 +247,6 @@
               `\r\n${ok ? "\x1b[32m" : "\x1b[31m"}└─ [AI] 子目标 ${p.goalIndex + 1} ${ok ? "✓ 完成" : "✗ 失败（将重规划当前子目标）"}\x1b[0m\r\n`,
             );
           }
-          break;
-        case "state":
-          // §8.7.1 唯一状态机广播：目前仅用于驱动 busy UI，按会话记录
-          aiState[p.name] = p.state;
           break;
         case "done":
           if (isActive) {

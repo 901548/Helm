@@ -156,10 +156,15 @@
                 <span class="st" aria-hidden="true">{statusIcon(c.status)}</span>
                 <span class="plan-title">计划（{c.commands.length} 条命令）</span>
                 {#if c.status === "plan"}
-                  <button class="mini ghost" onclick={() => startEditPlan(c)}>修改</button>
-                  <button class="mini" onclick={() => toggleOut(c.id)}>查看命令</button>
-                  <button class="mini ghost" onclick={onReject}>放弃</button>
-                  <button class="mini go" onclick={onApprove}>执行</button>
+                  {#if c.needConfirm}
+                    <button class="mini ghost" onclick={() => startEditPlan(c)}>修改</button>
+                    <button class="mini" onclick={() => toggleOut(c.id)}>查看命令</button>
+                    <button class="mini ghost" onclick={onReject}>放弃</button>
+                    <button class="mini go" onclick={onApprove}>执行</button>
+                  {:else}
+                    <span class="safe-hint" title="全部为安全命令，无需确认">安全 · 自动执行</span>
+                    <button class="mini" onclick={() => toggleOut(c.id)}>查看命令</button>
+                  {/if}
                 {/if}
               </div>
               {#if editingPlanId === c.id}
@@ -547,6 +552,14 @@
     font-weight: 600;
     color: var(--fg);
     margin-right: auto;
+  }
+  .safe-hint {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    background: var(--track-bg);
+    color: var(--accent);
+    white-space: nowrap;
   }
   .plan-cmds {
     display: flex;

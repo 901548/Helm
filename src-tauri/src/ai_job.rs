@@ -409,7 +409,8 @@ pub(crate) async fn run_ai_job(
                     .collect();
                 let any_danger = plan_cmds.iter().any(|c| c.level != DangerLevel::Safe);
                 emit_state(AiRunState::Planning);
-                let _ = app.emit("ai", AiPayload::Planning { name: session.to_string(), commands: plan_cmds });
+                let need_confirm = confirm_all || any_danger;
+                let _ = app.emit("ai", AiPayload::Planning { name: session.to_string(), commands: plan_cmds, need_confirm });
 
                 // §8.7.3 计划级一次性确认：整份批准/编辑/放弃。
                 // 安全保证：批准计划 = 对本步全部命令（含计划卡上带风险标记的危险命令）的一次性显式授权，

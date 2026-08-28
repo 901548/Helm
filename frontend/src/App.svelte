@@ -227,7 +227,7 @@
           if (isActive && p.commands?.length) {
             aiCards = [
               ...aiCards,
-              { id: ++cardId, kind: "plan", commands: p.commands, status: "plan" },
+              { id: ++cardId, kind: "plan", commands: p.commands, status: "plan", needConfirm: p.needConfirm ?? true },
             ];
             aiStreamOpen = true;
           }

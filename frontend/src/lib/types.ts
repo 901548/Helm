@@ -83,7 +83,7 @@ export type AiPayload =
   | { kind: "error"; name: string; message: string }
   | { kind: "pendingCommand"; name: string; command: string; level: DangerLevel; reason: string }
   | { kind: "state"; name: string; state: AiState }
-  | { kind: "planning"; name: string; commands: PlanCommandUi[] }
+  | { kind: "planning"; name: string; commands: PlanCommandUi[]; needConfirm: boolean }
   // P57 L2 子目标事件
   | { kind: "goalStarted"; name: string; goalIndex: number; title: string }
   | { kind: "goalDone"; name: string; goalIndex: number; status: "ok" | "failed" }
@@ -158,6 +158,8 @@ export interface AiPlanCard {
   kind: "plan";
   commands: PlanCommandUi[];
   status: "plan" | "running" | "skipped";
+  /// false = 纯安全计划，只需读展示看并自动执行（无执行/放弃/修改按钮）
+  needConfirm: boolean;
 }
 
 export type AiCard = AiQaCard | AiStepCard | AiPlanCard;

@@ -291,13 +291,33 @@ fn remove_recursive(
     })
 }
 
-/// 校验待删除路径是否危险（根目录/空路径直接拒绝）
+/// 校验待删除路径是否危险（空路径 / 解析到根目录的变体直接拒绝）
 fn assert_removable(path: &str) -> Result<(), String> {
     let raw = path.trim();
-    if raw.is_empty() || raw == "/" {
+    if raw.is_empty() {
+        return Err("不允许删除空路径".to_string());
+    }
+    if resolves_to_root(raw) {
         return Err("不允许删除根目录".to_string());
     }
     Ok(())
+}
+
+/// 判断路径经 POSIX 分量归一化后是否解析到根目录 `/`。
+/// 覆盖 `/`、`//`、`/./`、`/../`、`/..`、`a/b/../../..` 等变体（此前只拦精确 `/`，
+/// 尾部斜杠/`.`/`..` 变体可绕过防误删，存在一路递归删到根的风险）。
+/// 相对根向下分层：``|"."` 忽略（连续斜杠/当前目录），`..` 上行(触顶钳制 0)，
+/// 普通分量下行；最终深度为 0 且非空串 → 即根目录。
+fn resolves_to_root(path: &str) -> bool {
+    let mut depth: i32 = 0;
+    for comp in path.split('/') {
+        match comp {
+            "" | "." => {}
+            ".." => depth = (depth - 1).max(0),
+            _ => depth += 1,
+        }
+    }
+    depth == 0
 }
 
 // ---------- 上传/下载/预览（SFTP 直传，无 base64 shell 中转上限） ----------
@@ -433,6 +453,20 @@ mod tests {
         assert!(assert_removable("").is_err());
         assert!(assert_removable("/home").is_ok());
         assert!(assert_removable("tmp/x").is_ok());
+    }
+
+    #[test]
+    fn resolves_to_root_detects_variants() {
+        // 根目录及其"变体"一律拦截
+        for p in ["/", "//", "///", "/./", "/../", "/..", "/../../", "../", "..", "./..", "/tmp/..", "/etc/passwd/../../.."] {
+            assert!(resolves_to_root(p), "应识别为根: {p}");
+            assert!(assert_removable(p).is_err(), "应拒绝删除: {p}");
+        }
+        // 正常非根路径放行
+        for p in ["/home", "/tmp/x", "/var/log", "relative/path", "/etc/passwd", "/a/./b"] {
+            assert!(!resolves_to_root(p), "不应识别为根: {p}");
+        }
+        assert!(assert_removable("/home/user").is_ok());
     }
 
     #[test]

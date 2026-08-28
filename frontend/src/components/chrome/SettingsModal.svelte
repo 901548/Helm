@@ -54,6 +54,7 @@
   let theme = $state<Theme>(uiConfig.theme);
   let termFontSize = $state(String(uiConfig.term_font_size ?? 14));
   let termScrollback = $state(String(uiConfig.term_scrollback ?? 5000));
+  let recording = $state(uiConfig.recording_enabled ?? true);
 
   let error = $state("");
   let saving = $state(false);
@@ -137,6 +138,7 @@
       theme,
       term_font_size: Math.min(28, Math.max(8, num(termFontSize, 14, "字体大小"))),
       term_scrollback: Math.min(100000, Math.max(500, num(termScrollback, 5000, "滚动缓冲"))),
+      recording_enabled: recording,
     };
     if (error) {
       saving = false;
@@ -370,6 +372,20 @@
             <input bind:value={termScrollback} type="number" min="500" max="100000" title="500 - 100000" />
           </label>
         </div>
+      </section>
+
+      <!-- 记录 -->
+      <section class="card">
+        <div class="sec-title"><span class="sec-ico"></span>记录</div>
+
+        <div class="checks">
+          <label class="check" title="把终端输入与 AI 任务轨迹（任务/命令/退出码/输出）记为 JSONL，用于训练终端操作模型">
+            <input type="checkbox" bind:checked={recording} /> 记录终端操作（训练数据）
+          </label>
+        </div>
+        <p class="rec-hint">
+          按天写入 config.yaml 同目录 logs/terminal-YYYYMMDD.jsonl；含键入命令与 AI 每步的命令/退出码/输出（截断 2000 字）。敏感输出请注意脱敏。
+        </p>
       </section>
 
       <!-- 外观 -->
@@ -626,6 +642,12 @@
     color: var(--danger);
     font-size: 0.8rem;
     margin: 0.3rem 0 0;
+  }
+  .rec-hint {
+    font-size: 0.75rem;
+    color: var(--fg-muted);
+    margin: 0.4rem 0 0;
+    line-height: 1.5;
   }
   .modal-foot {
     display: flex;

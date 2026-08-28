@@ -205,6 +205,8 @@ pub struct CoreState {
     pub fs_cwd: Mutex<std::collections::HashMap<String, String>>,
     /// 主机密钥库（TOFU）
     pub known_hosts: Arc<Mutex<crate::known_hosts::KnownHostsStore>>,
+    /// 操作记录器（P70：终端输入 + AI 轨迹 → JSONL）
+    pub recorder: Arc<crate::recorder::Recorder>,
 }
 
 impl CoreState {
@@ -213,6 +215,17 @@ impl CoreState {
         let known_hosts = Arc::new(Mutex::new(crate::known_hosts::KnownHostsStore::load(
             config_path.parent().map(PathBuf::from).unwrap_or_default().join("known_hosts.json"),
         )));
+        // P70 操作记录器：config 同目录 logs/（绝对化，防 dev 模式 CWD 相对路径漂移），开关随 ui.recording_enabled
+        let logs_dir = config_path
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join("logs");
+        let logs_dir = std::fs::canonicalize(&logs_dir).unwrap_or(logs_dir);
+        let recorder = Arc::new(crate::recorder::Recorder::new(
+            logs_dir,
+            config.ui.as_ref().map(|u| u.recording_enabled).unwrap_or(true),
+        ));
         Self {
             config_path,
             config: Mutex::new(config),
@@ -220,6 +233,7 @@ impl CoreState {
             ai: Arc::new(AiManager::new()),
             fs_cwd: Mutex::new(std::collections::HashMap::new()),
             known_hosts,
+            recorder,
         }
     }
 
@@ -533,6 +547,7 @@ pub async fn send_input(
     data: Vec<u8>,
 ) -> Result<(), String> {
     state.ssh.send_input(&name, &data).await;
+    state.recorder.record_input(&name, &data);
     Ok(())
 }
 
@@ -540,7 +555,19 @@ pub async fn send_input(
 #[tauri::command]
 pub async fn send_active_input(state: State<'_, CoreState>, data: Vec<u8>) -> Result<(), String> {
     state.ssh.send_active_input(&data).await;
+    if let Some(name) = state.ssh.active_name().await {
+        state.recorder.record_input(&name, &data);
+    }
     Ok(())
+}
+
+/// 操作记录状态与落盘目录（P70 设置卡展示用）
+#[tauri::command]
+pub async fn recording_info(state: State<'_, CoreState>) -> Result<serde_json::Value, String> {
+    // canonicalize 会带 Windows 扩展路径前缀 \\?\，展示时剥掉
+    let dir = state.recorder.dir().display().to_string();
+    let dir = dir.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(dir);
+    Ok(serde_json::json!({ "dir": dir }))
 }
 
 /// 调整所有会话 PTY 尺寸
@@ -615,12 +642,13 @@ pub async fn ai_submit(
     *slot.ctl.lock().await = Some(ctl_tx);
 
     let ssh = state.ssh.clone();
+    let recorder = state.recorder.clone();
     let slot2 = slot.clone();
     let app2 = app.clone();
     let session = name.clone();
     let task = tokio::spawn(async move {
         let mut ctl_rx = ctl_rx;
-        run_ai_job(&session, &slot2.agent, &ssh, &app2, &mut ctl_rx, &input, mode, ctx).await;
+        run_ai_job(&session, &slot2.agent, &ssh, &app2, &mut ctl_rx, &input, mode, ctx, &recorder).await;
         slot2.busy.store(false, Ordering::SeqCst);
         let _ = app2.emit("ai", AiPayload::Busy { name: session, busy: false });
         // 此处刻意不清理 slot.ctl / slot.task：busy 复位后有 await 点位，新任务可能已写入
@@ -869,6 +897,8 @@ pub async fn update_ui_config(
         }
         cfg.ui = Some(config.clone());
     }
+    // P70：记录开关即时生效
+    state.recorder.set_enabled(config.recording_enabled);
     save_config(&state.config_path, &state.config.lock().await.clone()).map_err(|e| e.to_string())
 }
 

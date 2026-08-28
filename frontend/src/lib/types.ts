@@ -49,6 +49,7 @@ export interface UiConfig {
   theme: Theme;
   term_font_size: number;
   term_scrollback: number;
+  recording_enabled: boolean;
 }
 
 export type DangerLevel = "Safe" | "Warning" | "Critical";

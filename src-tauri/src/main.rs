@@ -8,6 +8,7 @@ mod crypto;
 mod fs;
 mod known_hosts;
 mod monitor;
+mod recorder;
 mod safety;
 mod ssh;
 mod task_exec;
@@ -107,6 +108,7 @@ fn main() {
             core::fs_upload,
             core::fs_download,
             core::fs_read_file,
+            core::recording_info,
             core::forget_host_key,
             core::host_key_fingerprint,
         ])

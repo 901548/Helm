@@ -141,6 +141,7 @@ pub(crate) async fn run_ai_job(
     input: &str,
     mode: AgentMode,
     ctx: Option<TaskCtx>,
+    recorder: &crate::recorder::Recorder,
 ) {
     match mode {
         AgentMode::QA => {
@@ -154,9 +155,20 @@ pub(crate) async fn run_ai_job(
             tokio::select! {
                 result = &mut chat_fut => match result {
                     Ok(reply) => {
+                        // P70 训练数据：QA 问答对
+                        recorder.log(serde_json::json!({
+                            "type": "qa", "session": session,
+                            "q": crate::agent::truncate_text(input, 2000),
+                            "a": crate::agent::truncate_text(&reply, 4000),
+                        }));
                         let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: reply });
                     }
                     Err(e) => {
+                        recorder.log(serde_json::json!({
+                            "type": "qa", "session": session, "ok": false,
+                            "q": crate::agent::truncate_text(input, 2000),
+                            "a": crate::agent::truncate_text(&e.to_string(), 1000),
+                        }));
                         let _ = app.emit("ai", AiPayload::Error { name: session.to_string(), message: e.to_string() });
                     }
                 },
@@ -187,6 +199,11 @@ pub(crate) async fn run_ai_job(
                 )
             };
             let mut cwd = if ctx.pwd.is_empty() { "/".to_string() } else { ctx.pwd.clone() };
+            // P70 训练数据：任务起点（环境 + 目标 + 初始目录）
+            recorder.log(serde_json::json!({
+                "type": "ai_task", "session": session, "host": ctx.host,
+                "task": crate::agent::truncate_text(input, 2000), "pwd": cwd,
+            }));
             // cwd 恒为绝对路径（无尾斜杠），作初始执行目录
             let mut last_output = String::new();
             let mut finished = false;
@@ -512,6 +529,11 @@ pub(crate) async fn run_ai_job(
                         match recv_confirm(ctl_rx).await {
                             Ok(Some(AiControl::Approve)) => {}
                             Ok(Some(AiControl::Reject)) => {
+                                // P70：人类干预信号（跳过）同样进训练轨迹
+                                recorder.log(serde_json::json!({
+                                    "type": "ai_step", "session": session,
+                                    "command": command, "level": format!("{level:?}"), "skipped": true,
+                                }));
                                 let _ = app.emit(
                                     "ai",
                                     AiPayload::CommandStep {
@@ -545,6 +567,13 @@ pub(crate) async fn run_ai_job(
                     if !new_pwd.is_empty() {
                         cwd = new_pwd;
                     }
+                    // P70 训练核心三元组：(任务上下文, 动作命令, 结果输出+退出码+目录)
+                    recorder.log(serde_json::json!({
+                        "type": "ai_step", "session": session, "host": ctx.host,
+                        "step": _step, "command": command,
+                        "level": format!("{level:?}"), "exit_code": code, "pwd": cwd,
+                        "output": truncate_text(output.trim(), 2000),
+                    }));
                     // 工作记忆账本：记录本条命令及结果要点；失败保留退出码，供模型只重规划失败子集
                     let note = truncate_text(&output.trim().replace('\n', " "), 80);
                     ledger.push((command.clone(), code == 0, note));

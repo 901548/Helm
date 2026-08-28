@@ -46,9 +46,7 @@
   let agentConfirm = $state(aiConfig?.agent_confirm ?? false);
   let initMode = $state(aiConfig?.mode ?? "qa");
 
-  // UI 表单
-  let winWidth = $state(String(uiConfig.window_width));
-  let winHeight = $state(String(uiConfig.window_height));
+  // UI 表单（窗口几何由拖拽 + 退出自动落盘管理，弹窗不再提供宽高输入）
   let dockSessions = $state(uiConfig.dock_sessions);
   let sessionsPct = $state(String(uiConfig.sessions_panel_pct));
   let theme = $state<Theme>(uiConfig.theme);
@@ -125,8 +123,9 @@
     error = "";
     saving = true;
     const ui: UiConfig = {
-      window_width: num(winWidth, 1200, "窗口宽度"),
-      window_height: num(winHeight, 800, "窗口高度"),
+      // 宽高透传已存值（后端保留磁盘几何，不按此调整窗口）
+      window_width: uiConfig.window_width,
+      window_height: uiConfig.window_height,
       dock_sessions: dockSessions,
       dock_chat: true,
       sessions_panel_pct: num(sessionsPct, 22, "会话面板宽度"),
@@ -330,21 +329,7 @@
         </label>
       </section>
     {:else}
-      <!-- 窗口 -->
-      <section class="card">
-        <div class="sec-title"><span class="sec-ico"></span>窗口</div>
-
-        <div class="row2">
-          <label>窗口宽度
-            <input bind:value={winWidth} type="number" />
-          </label>
-          <label>窗口高度
-            <input bind:value={winHeight} type="number" />
-          </label>
-        </div>
-      </section>
-
-      <!-- 布局 -->
+      <!-- 布局（窗口几何由拖拽 + 退出自动落盘管理，不提供宽高输入） -->
       <section class="card">
         <div class="sec-title"><span class="sec-ico"></span>布局</div>
 

@@ -395,6 +395,11 @@ F:\Helm\
   1. **任务收尾清理竞态(core.rs ai_submit,低概率高危)**:spawned 任务收尾在 `busy=false`(有 await 点位:ctl/task 锁)之后执行 `ctl=None`/`task=None`——若此刻执行器暂停旧任务、用户立刻提交新任务 B(CAS 成功写 B 的通道+句柄),旧任务恢复后把 **B 的控制通道与 JoinHandle 一并抹掉**→B 的危险命令确认/停止全部报"任务未在运行"(卡到 120s 超时)、删除会话 abort 不掉(僵尸任务)。**修复:删除这两行清理**——陈旧通道留着只让 ai_control 报"任务已结束"(语义正确),下次 submit 自然覆盖;陈旧 JoinHandle abort 已完成任务是 no-op。`busy=false`+`Busy{false}` 保留。
   2. **flush_stale 吞 Cancel(ai_job.rs)**:计划级确认前 drain 陈旧信号的闭包不检查 Cancel——用户在模型推理刚结束的窗口点「停止」,Cancel 被当陈旧信号吞掉,任务继续弹计划卡干等 120s(与逐条确认处 drain 检查 Cancel 的行为不一致)。**修复:flush_stale 返回 bool(是否见 Cancel),调用处 true 即 finished+break**。
   3. **审查确认不改**:严格模式(confirm_all)计划卡+逐条双确认是 P56 设计意图;container 参数有 kind 闸门(Linux 误传走 task_exec_cmd,无危害);授权链(批准=整份授权/Edit 复位 preapproved)闭合;退出码确定性判成败+重试上限+premature_done 上限收敛有界;账本/输出有截断上限;确认双超时保证 busy 必回落;sender 存活全任务期,recv() None 路径不可达。
+- [x] **P65 设置弹窗删窗口宽高输入(用户定,已完成,CDP 验证 PASS + `cargo test` 93 项/`npm run build` 通过)**:
+  1. **理由**:P26-6 起窗口几何(宽高/位置)由"拖拽调整 + 退出自动落盘 + 启动恢复"管理,设置弹窗的手填宽高是冗余遗留;且保存时后端 `set_size` 会把窗口拉回表单陈旧值(挂载时加载的旧尺寸),拖大窗口后随手保存设置就被改回,属负收益。
+  2. **改动**:SettingsModal UI tab 删「窗口」卡(仅含宽高两项);submit() 宽高透传 uiConfig(仅满足 TS 类型);**core.rs `update_ui_config` 去掉 `app: AppHandle` 参数与 set_size/set_position 调用,宽高与 xy 一律保留磁盘现值**(几何唯一写者 = main.rs Moved 事件/RunEvent::Exit 落盘),随删 core.rs 顶部不再使用的 `Manager` import。
+  3. **验证(CDP)**:界面 tab 仅剩「布局」(会话面板宽度%/显示会话面板)与「外观」(主题)两卡,无几何输入;保存后视口尺寸不变;弹窗正常关闭。build 输出中 `state_referenced_locally` 两条为 P27 已知保留警告,与本次无关。
+  4. **坑**:SettingsModal 模板在 P60-P62 已重构为卡片分组(sec-title),凭旧行号/旧结构写 Edit 会失配——改前端模板前先重读现文件。
   4. **遗留小瑕疵(评估过,暂不处理)**:premature_done 提示文案插值 goals.len() 而非剩余数(模型侧轻微失真);Linux 会话 dock 也渲染「容器(可选)」输入(输入无效果,纯观感)。
 
 ## 6. 命令与验证

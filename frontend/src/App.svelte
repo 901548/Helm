@@ -130,11 +130,14 @@
           pushEcho(p.name, `\r\n\x1b[1;31m[连接失败]\x1b[0m ${p.error || "未知错误"}\r\n`);
         }
         if (p.status === "disconnected") {
-          // 连接意外断开：保留标签以便重新连接，但活动状态让给已连接会话
+          // 连接意外断开：保留标签以便重新连接；有其他已连接会话时才让出活动位，
+          // 否则保留断线标签为当前视图（P72 重连横幅依赖 activeTab 有效）
           if (activeTab === p.name) {
-            activeTab = pickNextActive(p.name);
-            if (activeTab) api.setActive(activeTab);
-            else api.clearActive();
+            const next = pickNextActive(p.name);
+            if (next) {
+              activeTab = next;
+              api.setActive(next);
+            }
           }
         }
       }
@@ -612,6 +615,8 @@
           {activeTab}
           theme={resolvedTheme}
           {kinds}
+          status={statuses[activeTab ?? ""] ?? "Disconnected"}
+          onReconnect={() => { if (activeTab) connectSession(activeTab); }}
           onSelect={selectSession}
           onClose={onTabClose}
           onAdd={openNewSession}

@@ -11,7 +11,7 @@
 
   let { aiConfig, uiConfig, onCancel, onSave } = $props<Props>();
 
-  let tab = $state<"ai" | "ui">("ai");
+  let tab = $state<"conn" | "ai" | "ui">("conn");
 
   // 常见 OpenAI 兼容提供商预设（选中即填入地址与模型，可再手改）
   const PROVIDER_PRESETS: { label: string; base: string; model: string }[] = [
@@ -176,6 +176,7 @@
     <header class="modal-head">
       <h3>设置</h3>
       <div class="tabs">
+        <button class:on={tab === "conn"} onclick={() => (tab = "conn")}>连接</button>
         <button class:on={tab === "ai"} onclick={() => (tab = "ai")}>AI</button>
         <button class:on={tab === "ui"} onclick={() => (tab = "ui")}>界面</button>
       </div>
@@ -183,7 +184,8 @@
     </header>
 
     <div class="modal-body">
-    {#if tab === "ai"}
+    {#if tab === "conn"}
+      <!-- 连接：选提供商 → 填 Key → 测试，多数用户到此为止 -->
       <!-- 模型 -->
       <section class="card">
         <div class="sec-title"><span class="sec-ico"></span>模型</div>
@@ -267,6 +269,28 @@
           {/if}
         </div>
       </section>
+    {:else if tab === "ai"}
+      <!-- AI：行为优先（概念项），数值调参殿后 -->
+      <!-- 行为 -->
+      <section class="card">
+        <div class="sec-title"><span class="sec-ico"></span>行为</div>
+
+        <label>初始模式
+          <select bind:value={initMode}>
+            <option value="qa">问答</option>
+            <option value="agent">Agent</option>
+          </select>
+        </label>
+
+        <div class="checks">
+          <label class="check"><input type="checkbox" bind:checked={stream} /> 流式输出</label>
+          <label class="check" title="开启后所有命令都要确认；关闭时仅危险命令需要确认"><input type="checkbox" bind:checked={agentConfirm} /> 全部命令确认</label>
+        </div>
+
+        <label>自定义提示词
+          <textarea bind:value={systemPrompt} rows="3"></textarea>
+        </label>
+      </section>
 
       <!-- 生成参数 -->
       <section class="card">
@@ -306,27 +330,6 @@
             <input bind:value={maxSteps} type="number" />
           </label>
         </div>
-      </section>
-
-      <!-- 行为 -->
-      <section class="card">
-        <div class="sec-title"><span class="sec-ico"></span>行为</div>
-
-        <label>自定义提示词
-          <textarea bind:value={systemPrompt} rows="3"></textarea>
-        </label>
-
-        <div class="checks">
-          <label class="check"><input type="checkbox" bind:checked={stream} /> 流式输出</label>
-          <label class="check" title="开启后所有命令都要确认；关闭时仅危险命令需要确认"><input type="checkbox" bind:checked={agentConfirm} /> 全部命令确认</label>
-        </div>
-
-        <label>初始模式
-          <select bind:value={initMode}>
-            <option value="qa">问答</option>
-            <option value="agent">Agent</option>
-          </select>
-        </label>
       </section>
     {:else}
       <!-- 布局（窗口几何由拖拽 + 退出自动落盘管理，不提供宽高输入） -->

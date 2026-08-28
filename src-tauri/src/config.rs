@@ -236,6 +236,12 @@ pub struct UiConfig {
     /// 主题模式
     #[serde(default = "default_theme")]
     pub theme: Theme,
+    /// 终端字体大小（逻辑像素，P67）
+    #[serde(default = "default_term_font_size")]
+    pub term_font_size: u32,
+    /// 终端滚动缓冲行数（P67）
+    #[serde(default = "default_term_scrollback")]
+    pub term_scrollback: u32,
 }
 
 impl Default for UiConfig {
@@ -250,6 +256,8 @@ impl Default for UiConfig {
             sessions_panel_pct: default_sessions_panel_pct(),
             chat_panel_pct: default_chat_panel_pct(),
             theme: default_theme(),
+            term_font_size: default_term_font_size(),
+            term_scrollback: default_term_scrollback(),
         }
     }
 }
@@ -287,6 +295,16 @@ fn default_chat_panel_pct() -> u16 {
 /// 默认主题（黑夜）
 fn default_theme() -> Theme {
     Theme::Dark
+}
+
+/// 默认终端字体大小
+fn default_term_font_size() -> u32 {
+    14
+}
+
+/// 默认终端滚动缓冲行数
+fn default_term_scrollback() -> u32 {
+    5000
 }
 
 /// Helm 顶层配置
@@ -380,4 +398,18 @@ pub fn expand_tilde(path: &str) -> PathBuf {
         }
     }
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧配置文件无 term_font_size/term_scrollback 字段时，serde default 兜底（P67 向后兼容）
+    #[test]
+    fn ui_config_defaults_for_missing_term_fields() {
+        let ui: UiConfig = serde_yaml::from_str("theme: light").unwrap();
+        assert_eq!(ui.term_font_size, 14);
+        assert_eq!(ui.term_scrollback, 5000);
+        assert!(matches!(ui.theme, Theme::Light));
+    }
 }

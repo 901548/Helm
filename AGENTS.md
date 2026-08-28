@@ -395,6 +395,7 @@ F:\Helm\
   1. **任务收尾清理竞态(core.rs ai_submit,低概率高危)**:spawned 任务收尾在 `busy=false`(有 await 点位:ctl/task 锁)之后执行 `ctl=None`/`task=None`——若此刻执行器暂停旧任务、用户立刻提交新任务 B(CAS 成功写 B 的通道+句柄),旧任务恢复后把 **B 的控制通道与 JoinHandle 一并抹掉**→B 的危险命令确认/停止全部报"任务未在运行"(卡到 120s 超时)、删除会话 abort 不掉(僵尸任务)。**修复:删除这两行清理**——陈旧通道留着只让 ai_control 报"任务已结束"(语义正确),下次 submit 自然覆盖;陈旧 JoinHandle abort 已完成任务是 no-op。`busy=false`+`Busy{false}` 保留。
   2. **flush_stale 吞 Cancel(ai_job.rs)**:计划级确认前 drain 陈旧信号的闭包不检查 Cancel——用户在模型推理刚结束的窗口点「停止」,Cancel 被当陈旧信号吞掉,任务继续弹计划卡干等 120s(与逐条确认处 drain 检查 Cancel 的行为不一致)。**修复:flush_stale 返回 bool(是否见 Cancel),调用处 true 即 finished+break**。
   3. **审查确认不改**:严格模式(confirm_all)计划卡+逐条双确认是 P56 设计意图;container 参数有 kind 闸门(Linux 误传走 task_exec_cmd,无危害);授权链(批准=整份授权/Edit 复位 preapproved)闭合;退出码确定性判成败+重试上限+premature_done 上限收敛有界;账本/输出有截断上限;确认双超时保证 busy 必回落;sender 存活全任务期,recv() None 路径不可达。
+  4. **遗留小瑕疵(评估过,暂不处理)**:premature_done 提示文案插值 goals.len() 而非剩余数(模型侧轻微失真);Linux 会话 dock 也渲染「容器(可选)」输入(输入无效果,纯观感)。
 - [x] **P65 设置弹窗删窗口宽高输入(用户定,已完成,CDP 验证 PASS + `cargo test` 93 项/`npm run build` 通过)**:
   1. **理由**:P26-6 起窗口几何(宽高/位置)由"拖拽调整 + 退出自动落盘 + 启动恢复"管理,设置弹窗的手填宽高是冗余遗留;且保存时后端 `set_size` 会把窗口拉回表单陈旧值(挂载时加载的旧尺寸),拖大窗口后随手保存设置就被改回,属负收益。
   2. **改动**:SettingsModal UI tab 删「窗口」卡(仅含宽高两项);submit() 宽高透传 uiConfig(仅满足 TS 类型);**core.rs `update_ui_config` 去掉 `app: AppHandle` 参数与 set_size/set_position 调用,宽高与 xy 一律保留磁盘现值**(几何唯一写者 = main.rs Moved 事件/RunEvent::Exit 落盘),随删 core.rs 顶部不再使用的 `Manager` import。
@@ -405,7 +406,12 @@ F:\Helm\
   2. **新结构(tab 默认 "conn")**:**「连接」**= 模型卡 + 认证卡(预设填入/获取列表/API Key/URL/测试连接,首屏零滚动,90% 用户到此为止);**「AI」**= 行为卡(初始模式/流式/全部确认/自定义提示词,概念项提前)+ 生成参数 + 执行限制(数值调参殿后);**「界面」**= 布局 + 外观(不变)。保存按钮仍是全量提交(跨 tab 生效,与 tab 无关)。
   3. **验证(CDP)**:默认开「连接」;三 tab 切换 sec-title 断言正确(连接=[模型,认证]/AI=[行为,生成参数,执行限制]/界面=[布局,外观]);界面 tab 点保存→全量落盘+关窗;截图 `docs/screenshots/ui-review-tab-{conn,ai,ui}.png`。预设预选联动(P50)在新结构下正常(用户配置 localhost:11434 → Ollama 预设选中显示)。
   4. **坑**:无——纯模板重组 + tab 状态类型扩展(`"conn"|"ai"|"ui"`),状态/提交逻辑零改动。
-  4. **遗留小瑕疵(评估过,暂不处理)**:premature_done 提示文案插值 goals.len() 而非剩余数(模型侧轻微失真);Linux 会话 dock 也渲染「容器(可选)」输入(输入无效果,纯观感)。
+- [x] **P67 设置三项新增:终端设置/Agent 提示词/忘记主机密钥(已完成,`cargo test` 94 项+Vitest 26 项+CDP 全链路验证)**:
+  1. **终端设置(界面 tab 新「终端」卡)**:config.rs `UiConfig` 加 `term_font_size`(default 14)/`term_scrollback`(default 5000,serde default 旧配置兼容,+1 单测 `ui_config_defaults_for_missing_term_fields`);SettingsModal 字体大小(钳 8-28)/滚动缓冲(钳 500-100000)两输入;TerminalTabs 收 props 替代硬编码(原 fontSize:14/scrollback:5000),**即时生效**仿主题 `$effect`(options.fontSize/scrollback 赋值 + tick 后 fitActive refit,无需重建终端);App 传 `uiConfig` 字段(saveSettings 整体替换自动触发)。
+  2. **Agent 提示词编辑(AI tab 行为卡,纯前端)**:`system_prompt_agent` 原先只透传无入口(P57 子目标协议载体,后端真实在用);加 `systemPromptAgent` state + textarea「Agent 提示词(留空用内置)」,submit 传 `trim() || null`;后端零改动(`system_prompt_for` 已处理 None→内置)。
+  3. **忘记主机密钥(改放会话右键菜单,非设置页——探码后修正:用户被 TOFU 拒连的第一反应是右键会话,且 host/port 现成免新增 list 命令)**:commands.ts `forgetHostKey(host,port)` 封装(后端 P26-3 命令早已注册但前端零调用);SessionPanel 菜单加「忘记主机密钥」(rdp 会话隐藏);App `forgetHostKey` handler:confirm 说明场景 → 调命令 → alert 反馈"已忘记/无记录/失败"。
+  4. **验证(CDP 真机 192.168.79.150)**:界面 tab sec-title=[布局,终端,外观] 且两输入在;**连接会话后改字体保存→`.xterm-screen` 行高 24→16 实时生效**(坑:验 `.xterm` 根元素 computed font-size 恒为 xterm.css 的 16px 不反映 options,须量字符格子);AI tab Agent 提示词 textarea 显示用户现有 P57 提示词;右键菜单五项=连接/断开/**忘记主机密钥**/编辑/删除,点击 confirm 文案正确+真实后端调用成功(alert"已忘记")。
+  5. **坑**:a) CDP 测试改 20 验证 20 恒无变化(首轮测试已把 20 存进 config,基线即 20px)——改值断言须避开已存值,且测完恢复配置原值(已 sed 回 14);b) **测试调「忘记主机密钥」真实删掉了 192.168.79.150 的 TOFU pin**(活跃数据,勿删勿动)——测完重连一次自动重新信任恢复 pin,再断开,状态还原;c) 拦截 `window.confirm/alert` 须在页面加载后尽早注入,否则原生对话框会挂住 CDP。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

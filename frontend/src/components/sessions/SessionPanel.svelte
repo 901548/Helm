@@ -16,9 +16,10 @@
     onNew: () => void;
     onEdit: (info: SessionInfo) => void;
     onDelete: (name: string) => void;
+    onForgetKey: (name: string) => void;
   }
 
-  let { sessions, statuses, tabs, onSelect, onConnect, onDisconnect, onRdp, onNew, onEdit, onDelete } =
+  let { sessions, statuses, tabs, onSelect, onConnect, onDisconnect, onRdp, onNew, onEdit, onDelete, onForgetKey } =
     $props<Props>();
 
   let ctxSession = $state<string | null>(null);
@@ -31,7 +32,7 @@
     ctxPos = { x: e.clientX, y: e.clientY };
   }
 
-  function ctx(action: "connect" | "disconnect" | "edit" | "delete") {
+  function ctx(action: "connect" | "disconnect" | "edit" | "delete" | "forget_key") {
     if (!ctxSession) return;
     const name = ctxSession;
     ctxSession = null;
@@ -45,6 +46,7 @@
       const info = sessions.find((s) => s.name === name);
       if (info) onEdit(info);
     } else if (action === "delete") onDelete(name);
+    else if (action === "forget_key") onForgetKey(name);
   }
 
   function statusDot(st: SessionStatus | undefined): string {
@@ -157,6 +159,9 @@
     <div class="ctx-menu" style:left={ctxPos.x + "px"} style:top={ctxPos.y + "px"}>
       <button onclick={() => ctx("connect")}>连接</button>
       <button onclick={() => ctx("disconnect")}>断开</button>
+      {#if sessions.find((s) => s.name === ctxSession)?.kind !== "rdp"}
+        <button title="服务器重装/换机后密钥变更连不上时，重置 TOFU 信任" onclick={() => ctx("forget_key")}>忘记主机密钥</button>
+      {/if}
       <button onclick={() => ctx("edit")}>编辑</button>
       <button class="danger" onclick={() => ctx("delete")}>删除</button>
     </div>

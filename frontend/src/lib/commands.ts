@@ -31,6 +31,10 @@ export const clearActive = () => invoke<void>("clear_active");
 
 export const rdpConnect = (name: string) => invoke<void>("rdp_connect", { name });
 
+// 忘记主机的 TOFU 公钥指纹(服务器重装后密钥变更时重置信任);返回是否有记录被删
+export const forgetHostKey = (host: string, port: number) =>
+  invoke<boolean>("forget_host_key", { host, port });
+
 // ---------- 终端 commands ----------
 
 export const sendInput = (name: string, data: Uint8Array) =>

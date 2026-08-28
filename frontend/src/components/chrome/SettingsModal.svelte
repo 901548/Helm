@@ -33,6 +33,8 @@
   let apiKeySaved = $state(aiConfig?.api_key != null);
   let apiBaseUrl = $state(aiConfig?.api_base_url ?? "");
   let systemPrompt = $state(aiConfig?.system_prompt ?? "");
+  // Agent 模式专用提示词（P57 子目标协议载体；留空回落内置默认）
+  let systemPromptAgent = $state(aiConfig?.system_prompt_agent ?? "");
   let temperature = $state(String(aiConfig?.temperature ?? 0.3));
   let maxTokens = $state(aiConfig?.max_tokens ? String(aiConfig.max_tokens) : "");
   let stream = $state(aiConfig?.stream ?? true);
@@ -50,6 +52,8 @@
   let dockSessions = $state(uiConfig.dock_sessions);
   let sessionsPct = $state(String(uiConfig.sessions_panel_pct));
   let theme = $state<Theme>(uiConfig.theme);
+  let termFontSize = $state(String(uiConfig.term_font_size ?? 14));
+  let termScrollback = $state(String(uiConfig.term_scrollback ?? 5000));
 
   let error = $state("");
   let saving = $state(false);
@@ -131,6 +135,8 @@
       sessions_panel_pct: num(sessionsPct, 22, "会话面板宽度"),
       chat_panel_pct: 28,
       theme,
+      term_font_size: Math.min(28, Math.max(8, num(termFontSize, 14, "字体大小"))),
+      term_scrollback: Math.min(100000, Math.max(500, num(termScrollback, 5000, "滚动缓冲"))),
     };
     if (error) {
       saving = false;
@@ -152,7 +158,7 @@
       command_timeout_secs: commandTimeout.trim()
         ? (num(commandTimeout, 60, "命令超时") as number)
         : null,
-      system_prompt_agent: aiConfig?.system_prompt_agent ?? null,
+      system_prompt_agent: systemPromptAgent.trim() || null,
       agent_confirm: agentConfirm,
       mode: initMode,
       extra_headers: aiConfig?.extra_headers ?? {},
@@ -290,6 +296,10 @@
         <label>自定义提示词
           <textarea bind:value={systemPrompt} rows="3"></textarea>
         </label>
+
+        <label title="Agent 模式专用系统提示词；留空使用内置默认（含 GOAL/REFLEXION 子目标协议）">Agent 提示词（留空用内置）
+          <textarea bind:value={systemPromptAgent} rows="3" placeholder="留空使用内置 Agent 提示词"></textarea>
+        </label>
       </section>
 
       <!-- 生成参数 -->
@@ -345,6 +355,20 @@
 
         <div class="checks">
           <label class="check"><input type="checkbox" bind:checked={dockSessions} /> 显示会话面板</label>
+        </div>
+      </section>
+
+      <!-- 终端 -->
+      <section class="card">
+        <div class="sec-title"><span class="sec-ico"></span>终端</div>
+
+        <div class="row2">
+          <label>字体大小
+            <input bind:value={termFontSize} type="number" min="8" max="28" title="8 - 28，保存后立即生效" />
+          </label>
+          <label>滚动缓冲(行)
+            <input bind:value={termScrollback} type="number" min="500" max="100000" title="500 - 100000" />
+          </label>
         </div>
       </section>
 

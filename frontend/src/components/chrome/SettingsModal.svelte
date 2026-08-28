@@ -185,7 +185,10 @@
 
     <div class="modal-body">
     {#if tab === "ai"}
-      <div class="form">
+      <!-- 模型 -->
+      <section class="card">
+        <div class="sec-title"><span class="sec-ico"></span>模型</div>
+
         <label>提供商快速填入（任意 OpenAI 兼容服务均可）
           <select bind:value={presetSel} onchange={onPresetChange}>
             <option value="">选择提供商（自动填入地址与模型）…</option>
@@ -194,6 +197,7 @@
             {/each}
           </select>
         </label>
+
         <label>模型
           <div class="model-row">
             <input bind:value={model} oninput={() => (testResult = null)} placeholder="如 gpt-4o-mini / deepseek-chat / qwen-turbo" />
@@ -225,6 +229,12 @@
         {#if modelsError}
           <p class="models-error">✗ {modelsError}</p>
         {/if}
+      </section>
+
+      <!-- 认证 -->
+      <section class="card">
+        <div class="sec-title"><span class="sec-ico"></span>认证</div>
+
         <label>API Key
           <input
             type="password"
@@ -234,18 +244,19 @@
             autocomplete="off"
           />
         </label>
+
         <label>API Base URL（可选）
           <input
             bind:value={apiBaseUrl}
             oninput={(e) => {
               testResult = null;
-              // 手改地址后所选预设已失真，回占位符（读 DOM 值，不依赖 bind 与此监听的先后）
               const p = PROVIDER_PRESETS[Number(presetSel)];
               if (!p || e.currentTarget.value.trim() !== p.base) presetSel = "";
             }}
             placeholder="https://api.openai.com/v1（默认）"
           />
         </label>
+
         <div class="test-row">
           <button class="ghost" onclick={runTest} disabled={testing}>
             {testing ? "测试中…" : "测试连接"}
@@ -256,9 +267,12 @@
             </span>
           {/if}
         </div>
-        <label>自定义提示词
-          <textarea bind:value={systemPrompt} rows="4"></textarea>
-        </label>
+      </section>
+
+      <!-- 生成参数 -->
+      <section class="card">
+        <div class="sec-title"><span class="sec-ico"></span>生成参数</div>
+
         <div class="row3">
           <label>温度
             <input bind:value={temperature} type="number" step="0.1" />
@@ -266,41 +280,60 @@
           <label>max_tokens
             <input bind:value={maxTokens} type="number" />
           </label>
-          <label>超时(秒)
-            <input bind:value={timeoutSecs} type="number" />
+          <label>输出上限
+            <input bind:value={maxOutputChars} type="number" />
           </label>
         </div>
-        <div class="row3">
+      </section>
+
+      <!-- 执行限制 -->
+      <section class="card">
+        <div class="sec-title"><span class="sec-ico"></span>执行限制</div>
+
+        <div class="row2">
+          <label>请求超时(秒)
+            <input bind:value={timeoutSecs} type="number" />
+          </label>
+          <label>命令超时(秒)
+            <input bind:value={commandTimeout} type="number" placeholder="默认 60" title="Agent 单条命令执行超时，0 表示使用默认 60 秒" />
+          </label>
+        </div>
+
+        <div class="row2">
           <label>历史条数
             <input bind:value={maxHistory} type="number" />
           </label>
           <label>最大步数
             <input bind:value={maxSteps} type="number" />
           </label>
-          <label>命令超时(秒)
-            <input bind:value={commandTimeout} type="number" placeholder="默认 60" title="Agent 单条命令执行超时，0 表示使用默认 60 秒" />
-          </label>
         </div>
-        <div class="row3">
-          <label>输出上限
-            <input bind:value={maxOutputChars} type="number" />
-          </label>
-          <span></span>
-          <span></span>
-        </div>
+      </section>
+
+      <!-- 行为 -->
+      <section class="card">
+        <div class="sec-title"><span class="sec-ico"></span>行为</div>
+
+        <label>自定义提示词
+          <textarea bind:value={systemPrompt} rows="3"></textarea>
+        </label>
+
         <div class="checks">
           <label class="check"><input type="checkbox" bind:checked={stream} /> 流式输出</label>
-          <label class="check" title="开启后所有命令都要确认；关闭时仅危险命令需要确认"><input type="checkbox" bind:checked={agentConfirm} /> 全部命令确认（危险命令始终确认）</label>
+          <label class="check" title="开启后所有命令都要确认；关闭时仅危险命令需要确认"><input type="checkbox" bind:checked={agentConfirm} /> 全部命令确认</label>
         </div>
+
         <label>初始模式
           <select bind:value={initMode}>
             <option value="qa">问答</option>
             <option value="agent">Agent</option>
           </select>
         </label>
-      </div>
+      </section>
     {:else}
-      <div class="form">
+      <!-- 窗口 -->
+      <section class="card">
+        <div class="sec-title"><span class="sec-ico"></span>窗口</div>
+
         <div class="row2">
           <label>窗口宽度
             <input bind:value={winWidth} type="number" />
@@ -309,22 +342,36 @@
             <input bind:value={winHeight} type="number" />
           </label>
         </div>
+      </section>
+
+      <!-- 布局 -->
+      <section class="card">
+        <div class="sec-title"><span class="sec-ico"></span>布局</div>
+
         <div class="row2">
           <label>会话面板宽度%
             <input bind:value={sessionsPct} type="number" min="12" max="40" />
           </label>
-          <label>主题
-            <select bind:value={theme}>
-              <option value="light">白天</option>
-              <option value="dark">黑夜</option>
-              <option value="system">跟随系统</option>
-            </select>
-          </label>
+          <span></span>
         </div>
+
         <div class="checks">
           <label class="check"><input type="checkbox" bind:checked={dockSessions} /> 显示会话面板</label>
         </div>
-      </div>
+      </section>
+
+      <!-- 外观 -->
+      <section class="card">
+        <div class="sec-title"><span class="sec-ico"></span>外观</div>
+
+        <label>主题
+          <select bind:value={theme}>
+            <option value="light">白天</option>
+            <option value="dark">黑夜</option>
+            <option value="system">跟随系统</option>
+          </select>
+        </label>
+      </section>
     {/if}
 
     {#if error}
@@ -357,7 +404,7 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow);
-    width: 490px;
+    width: 500px;
     max-height: 90vh;
     display: flex;
     flex-direction: column;
@@ -367,13 +414,13 @@
     display: flex;
     align-items: center;
     gap: 0.8rem;
-    padding: 0.6rem 1rem;
+    padding: 0.7rem 1.1rem;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
   h3 {
     margin: 0;
-    font-size: 0.95rem;
+    font-size: 0.96rem;
   }
   .tabs {
     display: flex;
@@ -402,7 +449,7 @@
     border: none;
     background: transparent;
     color: var(--fg-muted);
-    font-size: 1.15rem;
+    font-size: 1.2rem;
     cursor: pointer;
     padding: 0 0.35rem;
     border-radius: var(--radius-sm);
@@ -413,23 +460,57 @@
     background: var(--hover);
   }
   .modal-body {
-    padding: 0.7rem 1rem 0.9rem;
+    padding: 0.9rem;
     overflow-y: auto;
   }
-  .form label {
-    display: block;
-    font-size: 0.8rem;
-    color: var(--fg-muted);
-    margin: 0.55rem 0 0.2rem;
+
+  .card {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 0.9rem 1rem 1rem;
   }
-  .form label:first-child {
+  .card + .card {
+    margin-top: 0.8rem;
+  }
+  .sec-title {
+    display: flex;
+    align-items: center;
+    gap: 0.42rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--fg);
+    letter-spacing: 0.03em;
+    margin-bottom: 0.6rem;
+  }
+  .sec-ico {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    background: var(--accent);
+    box-shadow: 0 0 6px var(--accent);
+  }
+
+  .card label {
+    display: block;
+    font-size: 0.78rem;
+    color: var(--fg-muted);
+    margin: 0.55rem 0 0.22rem;
+  }
+  .card label:first-child {
     margin-top: 0;
+  }
+  .card label:has(> input),
+  .card label:has(> select),
+  .card label:has(> textarea) {
+    font-size: 0.76rem;
   }
   input,
   select,
   textarea {
     width: 100%;
-    padding: 0.45rem 0.55rem;
+    margin-top: 0.22rem;
+    padding: 0.48rem 0.6rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     font-size: 0.9rem;
@@ -438,11 +519,17 @@
     color: var(--fg);
     transition: border-color 0.12s ease;
   }
+  input:hover,
+  select:hover,
+  textarea:hover {
+    border-color: color-mix(in srgb, var(--border) 60%, var(--accent));
+  }
   input:focus,
   select:focus,
   textarea:focus {
     outline: none;
     border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
   }
   textarea {
     resize: vertical;
@@ -450,7 +537,7 @@
   .row2,
   .row3 {
     display: grid;
-    gap: 0.6rem;
+    gap: 0.7rem;
   }
   .row2 {
     grid-template-columns: 1fr 1fr;
@@ -460,8 +547,9 @@
   }
   .checks {
     display: flex;
+    flex-wrap: wrap;
     gap: 1rem;
-    margin-top: 0.6rem;
+    margin-top: 0.7rem;
   }
   .check {
     display: inline-flex !important;
@@ -469,15 +557,16 @@
     gap: 0.3rem;
     margin: 0 !important;
     color: var(--fg) !important;
-    font-size: 0.9rem !important;
+    font-size: 0.88rem !important;
   }
   .check input {
     width: auto;
+    margin-top: 0;
   }
   .error {
     color: var(--danger);
     font-size: 0.85rem;
-    margin: 0.6rem 0 0;
+    margin: 0.7rem 0 0;
   }
   .test-row {
     display: flex;
@@ -486,7 +575,7 @@
     margin-top: 0.45rem;
   }
   .test-row button {
-    padding: 0.32rem 0.9rem;
+    padding: 0.4rem 0.9rem;
     font-size: 0.82rem;
     flex-shrink: 0;
   }
@@ -513,9 +602,10 @@
     min-width: 0;
   }
   .model-row button {
-    padding: 0.32rem 0.8rem;
+    padding: 0.4rem 0.8rem;
     font-size: 0.82rem;
     flex-shrink: 0;
+    white-space: nowrap;
   }
   .model-pick {
     margin-top: 0.35rem;
@@ -529,18 +619,19 @@
     display: flex;
     justify-content: flex-end;
     gap: 0.6rem;
-    padding: 0.7rem 1rem;
+    padding: 0.75rem 1.1rem;
     border-top: 1px solid var(--border);
     flex-shrink: 0;
   }
   button {
-    padding: 0.45rem 1.2rem;
+    padding: 0.46rem 1.25rem;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     background: var(--bg-panel);
     color: var(--fg);
     cursor: pointer;
     font-size: 0.88rem;
+    font-family: inherit;
     transition: background 0.12s ease;
   }
   button:hover {
@@ -554,8 +645,5 @@
   }
   button.primary:hover {
     background: var(--accent-hover);
-  }
-  button.ghost:hover {
-    background: var(--hover);
   }
 </style>

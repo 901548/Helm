@@ -39,6 +39,17 @@ pub fn task_exec_cmd(cwd: &str, cmd: &str) -> String {
     )
 }
 
+/// 将单步命令注入远端 Docker 容器执行（kind=Docker）。
+/// 复用 `task_exec_cmd` 生成的内层脚本（含 cd + ###HELM_*### 标记），
+/// 经 `docker exec -i <container> sh` 送入容器运行；内层含引号，故先 base64
+/// 编码再管道解码，规避 docker exec 参数引号冲突。容器内需有 `sh` 与
+/// `base64 -d`（coreutils/busybox 常见已内置）。标记解析与 Linux 版完全一致。
+pub fn docker_exec_cmd(container: &str, cwd: &str, cmd: &str) -> String {
+    let inner = task_exec_cmd(cwd, cmd);
+    let b64 = data_encoding::BASE64.encode(inner.as_bytes());
+    format!("docker exec -i {container} sh -c \"printf '%s' '{b64}' | base64 -d | sh\"")
+}
+
 /// Windows 版 Agent 单步执行命令（P34）：经 `powershell -EncodedCommand` 调用，
 /// 不依赖远端默认 shell（cmd/PowerShell 均可），避免层层引号转义。
 /// `Set-Location -LiteralPath` 切目录，`###HELM_*###` 标记与 Linux 版一致，
@@ -106,9 +117,15 @@ pub async fn run_task_exec(
     cwd: &str,
     timeout_secs: u64,
     kind: SessionKind,
+    container: Option<&str>,
 ) -> Result<TaskExecResult> {
     let full = if kind == SessionKind::Windows {
         task_exec_cmd_windows(cwd, cmd)
+    } else if kind == SessionKind::Docker {
+        let container = container
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| anyhow!("Docker 会话缺少容器名"))?;
+        docker_exec_cmd(container, cwd, cmd)
     } else {
         task_exec_cmd(cwd, cmd)
     };
@@ -239,5 +256,23 @@ mod tests {
         let mut s = "hello".to_string();
         trim_to_tail(&mut s, 64);
         assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn docker_exec_cmd_embeds_base64_decodeable_inner() {
+        let out = docker_exec_cmd("my-app", "/opt", "ls -la");
+        // 注入远端 docker CLI：`docker exec -i <container> sh -c ...`
+        assert!(out.starts_with("docker exec -i my-app sh -c "));
+        // 内层命令经 base64 编码后由容器内 sh 解码执行
+        let b64 = out
+            .rsplit_once("printf '%s' '")
+            .and_then(|(_, rest)| rest.split("'").next())
+            .expect("should contain base64 payload");
+        let decoded = String::from_utf8(data_encoding::BASE64.decode(b64.as_bytes()).unwrap())
+            .unwrap();
+        assert!(decoded.contains("cd '/opt'"));
+        assert!(decoded.contains("ls -la"));
+        assert!(decoded.contains("###HELM_END###"));
+        assert!(decoded.contains("###HELM_PWD###"));
     }
 }

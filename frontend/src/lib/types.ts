@@ -1,7 +1,7 @@
 // 类型定义(与 core.rs serde 对齐)
 // ---------- 类型(与 core.rs serde 对齐) ----------
 
-export type SessionKind = "linux" | "windows" | "rdp";
+export type SessionKind = "linux" | "windows" | "rdp" | "docker";
 
 export interface SessionInfo {
   name: string;
@@ -11,6 +11,7 @@ export interface SessionInfo {
   user: string;
   key_file: string | null;
   password: string | null;
+  container?: string | null;
 }
 
 export type SessionStatus = "Connected" | "Disconnected" | "Connecting";
@@ -58,16 +59,32 @@ export interface ConnectionPayload {
   error?: string;
 }
 
+export type AiState =
+  | "idle"
+  | "parsing"
+  | "planning"
+  | "awaitingConfirm"
+  | "executing"
+  | "readingBack";
+
+export interface PlanCommandUi {
+  command: string;
+  level: DangerLevel;
+  reason: string;
+}
+
 export type AiPayload =
-  | { kind: "stepBegin" }
-  | { kind: "streaming"; text: string }
-  | { kind: "reasoning"; text: string }
-  | { kind: "stepOutputEnd" }
-  | { kind: "commandStep"; command: string; success: boolean; message: string; output: string }
-  | { kind: "done"; message: string }
-  | { kind: "error"; message: string }
-  | { kind: "pendingCommand"; command: string; level: DangerLevel; reason: string }
-  | { kind: "busy"; busy: boolean };
+  | { kind: "stepBegin"; name: string }
+  | { kind: "streaming"; name: string; text: string }
+  | { kind: "reasoning"; name: string; text: string }
+  | { kind: "stepOutputEnd"; name: string }
+  | { kind: "commandStep"; name: string; command: string; success: boolean; message: string; output: string }
+  | { kind: "done"; name: string; message: string }
+  | { kind: "error"; name: string; message: string }
+  | { kind: "pendingCommand"; name: string; command: string; level: DangerLevel; reason: string }
+  | { kind: "state"; name: string; state: AiState }
+  | { kind: "planning"; name: string; commands: PlanCommandUi[] }
+  | { kind: "busy"; name: string; busy: boolean };
 
 export interface TerminalOutputPayload {
   name: string;
@@ -133,5 +150,12 @@ export interface AiStepCard {
   reason?: string;
 }
 
-export type AiCard = AiQaCard | AiStepCard;
+export interface AiPlanCard {
+  id: number;
+  kind: "plan";
+  commands: PlanCommandUi[];
+  status: "plan" | "running" | "skipped";
+}
+
+export type AiCard = AiQaCard | AiStepCard | AiPlanCard;
 

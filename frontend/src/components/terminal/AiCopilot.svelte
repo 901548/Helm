@@ -13,10 +13,12 @@
     focusSeq: number;
     logOpen: boolean;
     thinking?: string;
-    onSubmit: (text: string) => void;
+    container?: string | null;
+    onSubmit: (text: string, container?: string | null) => void;
     onStop: () => void;
     onApprove: () => void;
     onReject: () => void;
+    onEditPlan: (commands: string[]) => void;
     onModeChange: (m: "qa" | "agent") => void;
     onToggleStream: () => void;
     onToggleLog: () => void;
@@ -33,10 +35,12 @@
     focusSeq,
     logOpen,
     thinking = "",
+    container = null,
     onSubmit,
     onStop,
     onApprove,
     onReject,
+    onEditPlan,
     onModeChange,
     onToggleStream,
     onToggleLog,
@@ -44,6 +48,11 @@
   } = $props<Props>();
 
   let text = $state("");
+  // §8.7.4 Docker 会话运行时容器选择（每次提交携带）
+  let containerInput = $state(container ?? "");
+  // §8.7.3 计划可改：本地编辑中状态
+  let editingPlanId = $state<number | null>(null);
+  let planEditText = $state("");
   let inputEl = $state<HTMLInputElement | null>(null);
   let bodyEl = $state<HTMLDivElement | null>(null);
   let expanded = $state<Set<number>>(new Set());
@@ -59,7 +68,7 @@
   function submit() {
     const t = text.trim();
     if (!t || busy) return;
-    onSubmit(t);
+    onSubmit(t, containerInput.trim() || null);
     text = "";
   }
 
@@ -82,6 +91,20 @@
 
   function statusIcon(s: string): string {
     return s === "ok" ? "✓" : s === "fail" ? "✗" : s === "skipped" ? "⊘" : s === "confirm" ? "⚠" : "⏳";
+  }
+
+  function startEditPlan(c: { id: number; commands: { command: string }[] }) {
+    editingPlanId = c.id;
+    planEditText = c.commands.map((x) => x.command).join("\n");
+  }
+
+  function applyEditPlan() {
+    const cmds = planEditText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    editingPlanId = null;
+    onEditPlan(cmds);
   }
 
   // Alt+I → 聚焦输入框(focusSeq 递增触发)
@@ -127,6 +150,38 @@
             <div class="card qa" class:done={c.done}>
               <div class="qa-text">{c.text}{#if !c.done}<span class="cursor">▋</span>{/if}</div>
             </div>
+          {:else if c.kind === "plan"}
+            <div class="card plan {c.status}">
+              <div class="card-head plan-head">
+                <span class="st" aria-hidden="true">{statusIcon(c.status)}</span>
+                <span class="plan-title">计划（{c.commands.length} 条命令）</span>
+                {#if c.status === "plan"}
+                  <button class="mini ghost" onclick={() => startEditPlan(c)}>修改</button>
+                  <button class="mini" onclick={() => toggleOut(c.id)}>查看命令</button>
+                  <button class="mini ghost" onclick={onReject}>放弃</button>
+                  <button class="mini go" onclick={onApprove}>执行</button>
+                {/if}
+              </div>
+              {#if editingPlanId === c.id}
+                <textarea class="plan-edit" bind:value={planEditText} rows={Math.max(3, c.commands.length)}></textarea>
+                <div class="plan-edit-actions">
+                  <button class="mini ghost" onclick={() => (editingPlanId = null)}>取消</button>
+                  <button class="mini go" onclick={applyEditPlan}>应用并执行</button>
+                </div>
+              {:else if expanded.has(c.id)}
+                <div class="plan-cmds">
+                  {#each c.commands as pc (pc.command)}
+                    <div class="plan-cmd">
+                      <span class="plan-cmd-level" class:critical={pc.level !== "Safe"}>{(levelText as Record<string, string>)[pc.level] ?? pc.level}</span>
+                      <code class="cmd">$ {pc.command}</code>
+                      {#if pc.reason && pc.level !== "Safe"}
+                        <span class="msg">{pc.reason}</span>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
           {:else}
             <div class="card step {c.status}">
               <div class="card-head">
@@ -158,6 +213,13 @@
       <button class="mode-btn" class:on={mode === "qa"} title="问答模式：聊天式提问" onclick={() => onModeChange("qa")}>⌘ 问答</button>
       <button class="mode-btn" class:on={mode === "agent"} title="Agent 模式：描述任务，AI 自动执行" onclick={() => onModeChange("agent")}>▶ Agent</button>
     </div>
+    <input
+      class="ai-bar-container"
+      bind:value={containerInput}
+      aria-label="目标容器（Docker 会话）"
+      placeholder="容器(可选)"
+      title="Docker 会话运行时目标容器；留空回落会话持久化容器"
+    />
     <input
       bind:this={inputEl}
       bind:value={text}
@@ -465,5 +527,69 @@
   .act:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+  .ai-bar-container {
+    flex-shrink: 0;
+    width: 104px;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    padding: 0.3rem 0.5rem;
+    font-size: 0.75rem;
+  }
+  .ai-bar-container::placeholder {
+    color: var(--fg-muted);
+  }
+
+  /* ---------- §8.7.2/8.7.3 计划卡 ---------- */
+  .plan-title {
+    font-weight: 600;
+    color: var(--fg);
+    margin-right: auto;
+  }
+  .plan-cmds {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.4rem 0.6rem;
+  }
+  .plan-cmd {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .plan-cmd-level {
+    flex-shrink: 0;
+    font-size: 0.68rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: 999px;
+    background: var(--track-bg);
+    color: var(--fg-muted);
+  }
+  .plan-cmd-level.critical {
+    background: var(--danger);
+    color: #fff;
+  }
+  .plan-edit {
+    width: 100%;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    padding: 0.4rem 0.6rem;
+    font: 0.75rem/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+  .plan-edit-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.4rem;
+    padding: 0.4rem 0.6rem 0;
+  }
+  .card.plan {
+    border-left-color: var(--accent);
   }
 </style>

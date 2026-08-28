@@ -8,6 +8,7 @@
 //   - 输出推送：后台任务等 Notify 事件 → drain_output → emit "terminal-output"
 // ============================================================================
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -28,7 +29,7 @@ use crate::ssh::{SshManager, SessionStatus};
 
 
 /// 主循环 → 后台 AI 任务控制
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum AiControl {
     /// 确认执行
     Approve,
@@ -36,6 +37,93 @@ pub enum AiControl {
     Reject,
     /// 取消任务
     Cancel,
+    /// 用新命令列表整体覆盖计划后执行（计划级编辑）
+    Edit(Vec<String>),
+}
+
+/// AI 任务显式状态（§8.7.1：唯一状态机，前端只订阅 State 判态）
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AiRunState {
+    Idle,
+    Parsing,
+    Planning,
+    AwaitingConfirm,
+    Executing,
+    ReadingBack,
+}
+
+// ---------- AI 会话槽（每会话独立 Agent/busy/ctl/mode，支持多会话并行） ----------
+
+/// 单个会话的 AI 运行槽：Agent 历史、忙碌标记、控制通道、模式缓存彼此隔离，
+/// 不同会话的槽操作互不阻塞，可在多个会话上同时跑 AI 任务。
+struct AiSlot {
+    /// 本会话的 Agent（含该会话独立的对话/任务历史）
+    agent: Arc<Mutex<Agent>>,
+    /// 本会话 AI 忙碌标记（原子抢占，同一会话并发提交只有一个能进入）
+    busy: AtomicBool,
+    /// 本会话模式缓存（true=Agent）：免锁查询，QA 聊天持锁期间也能即时返回
+    mode_agent: AtomicBool,
+    /// 本会话控制通道发送端（每次任务启动时重建）
+    ctl: Arc<Mutex<Option<UnboundedSender<AiControl>>>>,
+}
+
+impl AiSlot {
+    fn new(ai_cfg: Option<&crate::config::AiConfig>) -> Self {
+        let agent = match ai_cfg {
+            Some(c) => Agent::new(c).unwrap_or_default(),
+            None => Agent::default(),
+        };
+        let mode_agent = matches!(agent.mode(), AgentMode::Agent);
+        Self {
+            agent: Arc::new(Mutex::new(agent)),
+            busy: AtomicBool::new(false),
+            mode_agent: AtomicBool::new(mode_agent),
+            ctl: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+/// 所有会话的 AI 槽集合（懒创建）
+pub struct AiManager {
+    slots: Mutex<HashMap<String, Arc<AiSlot>>>,
+}
+
+impl AiManager {
+    fn new() -> Self {
+        Self { slots: Mutex::new(HashMap::new()) }
+    }
+
+    /// 取/建某会话的运行槽；调用方应已持有 config 锁（保证 lazy 构建用最新配置）
+    async fn slot_locked(&self, name: &str, ai_cfg: Option<&crate::config::AiConfig>) -> Arc<AiSlot> {
+        let mut m = self.slots.lock().await;
+        m.entry(name.to_string())
+            .or_insert_with(|| Arc::new(AiSlot::new(ai_cfg)))
+            .clone()
+    }
+
+    /// 会话删除时移除其槽
+    pub async fn remove(&self, name: &str) {
+        self.slots.lock().await.remove(name);
+    }
+
+    /// 用最新 AI 配置重建所有空闲会话槽（运行中的跳过，避免与进行中请求互踩）
+    async fn rebuild_idle(&self, ai_cfg: Option<&crate::config::AiConfig>) {
+        let mut m = self.slots.lock().await;
+        for slot in m.values_mut() {
+            if !slot.busy.load(Ordering::SeqCst) {
+                let agent = match ai_cfg {
+                    Some(c) => Agent::new(c).unwrap_or_default(),
+                    None => Agent::default(),
+                };
+                slot.mode_agent.store(
+                    ai_cfg.map(|c| c.mode.eq_ignore_ascii_case("agent")).unwrap_or(false),
+                    Ordering::SeqCst,
+                );
+                *slot.agent.lock().await = agent;
+            }
+        }
+    }
 }
 
 // ---------- 事件负载（emit 到前端） ----------
@@ -51,18 +139,30 @@ pub enum ConnectionPayload {
 
 /// AI 事件
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanCommand {
+    pub command: String,
+    pub level: DangerLevel,
+    pub reason: String,
+}
+
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum AiPayload {
-    StepBegin,
-    Streaming { text: String },
+    StepBegin { name: String },
+    Streaming { name: String, text: String },
     /// 推理型模型的思考过程增量（仅供 UI 展示，不写入答案）
-    Reasoning { text: String },
-    StepOutputEnd,
-    CommandStep { command: String, success: bool, message: String, output: String },
-    Done { message: String },
-    Error { message: String },
-    PendingCommand { command: String, level: DangerLevel, reason: String },
-    Busy { busy: bool },
+    Reasoning { name: String, text: String },
+    StepOutputEnd { name: String },
+    CommandStep { name: String, command: String, success: bool, message: String, output: String },
+    Done { name: String, message: String },
+    Error { name: String, message: String },
+    PendingCommand { name: String, command: String, level: DangerLevel, reason: String },
+    /// §8.7.1 唯一状态机：前端只订阅本事件判态，其余事件仅作 delta 内容
+    State { name: String, state: AiRunState },
+    /// §8.7.2 计划卡：parse_commands 之后、逐命令确认之前的整份计划
+    Planning { name: String, commands: Vec<PlanCommand> },
+    Busy { name: String, busy: bool },
 }
 
 /// 终端输出事件
@@ -83,15 +183,8 @@ pub struct CoreState {
     pub config: Mutex<HelmConfig>,
     /// SSH 管理器（内部细粒度锁，网络操作锁外执行）
     pub ssh: Arc<SshManager>,
-    /// AI Agent
-    pub agent: Arc<Mutex<Agent>>,
-    /// AI 任务忙碌标记
-    pub ai_busy: Arc<AtomicBool>,
-    /// AI 模式缓存(true=Agent):查询不碰 agent 锁,
-    /// 避免 QA 聊天持锁期间 ai_mode 被阻塞最长 60s
-    pub ai_mode_agent: Arc<AtomicBool>,
-    /// AI 控制通道发送端（每次任务启动时重建）
-    pub ai_ctl: Arc<Mutex<Option<UnboundedSender<AiControl>>>>,
+    /// AI 会话槽集合（每会话独立 Agent/busy/ctl/mode，支持多会话并行）
+    pub ai: Arc<AiManager>,
     /// 文件浏览器各会话当前目录
     pub fs_cwd: Mutex<std::collections::HashMap<String, String>>,
     /// 主机密钥库（TOFU）
@@ -101,11 +194,6 @@ pub struct CoreState {
 impl CoreState {
     /// 从配置创建状态；AI 配置缺失或失败时退回默认 Agent
     pub fn new(config_path: PathBuf, config: HelmConfig) -> Self {
-        let agent = match config.ai.as_ref() {
-            Some(ai_cfg) => Agent::new(ai_cfg).unwrap_or_default(),
-            None => Agent::default(),
-        };
-        let mode_agent = config.ai.as_ref().map(|a| a.mode.eq_ignore_ascii_case("agent")).unwrap_or(false);
         let known_hosts = Arc::new(Mutex::new(crate::known_hosts::KnownHostsStore::load(
             config_path.parent().map(PathBuf::from).unwrap_or_default().join("known_hosts.json"),
         )));
@@ -113,13 +201,16 @@ impl CoreState {
             config_path,
             config: Mutex::new(config),
             ssh: Arc::new(SshManager::with_known_hosts(known_hosts.clone())),
-            agent: Arc::new(Mutex::new(agent)),
-            ai_busy: Arc::new(AtomicBool::new(false)),
-            ai_mode_agent: Arc::new(AtomicBool::new(mode_agent)),
-            ai_ctl: Arc::new(Mutex::new(None)),
+            ai: Arc::new(AiManager::new()),
             fs_cwd: Mutex::new(std::collections::HashMap::new()),
             known_hosts,
         }
+    }
+
+    /// 取/建某会话的 AI 运行槽（懒创建；用已保存的 AI 配置构建）
+    async fn ai_slot(&self, name: &str) -> Arc<AiSlot> {
+        let cfg = self.config.lock().await;
+        self.ai.slot_locked(name, cfg.ai.as_ref()).await
     }
 
     /// 读取当前会话列表
@@ -244,6 +335,8 @@ pub async fn update_session(
         }
         // 迁移文件面板跟踪目录,避免残留旧键
         state.fs_cwd.lock().await.remove(&old_name);
+        // 迁移 AI 槽:旧名历史/忙碌/控制通道不残留(新名会懒创建)
+        state.ai.remove(&old_name).await;
     }
     state.persist_sessions().await.map_err(|e| e.to_string())
 }
@@ -254,6 +347,7 @@ pub async fn delete_session(state: State<'_, CoreState>, name: String) -> Result
     {
         state.ssh.remove(&name).await;
         state.fs_cwd.lock().await.remove(&name);
+        state.ai.remove(&name).await;
     }
     {
         let mut config = state.config.lock().await;
@@ -301,9 +395,12 @@ pub async fn connect_session(
             if !ok {
                 anyhow::bail!("认证未通过");
             }
-            if let Err(e) = ssh.open_shell(&info.name, cols, rows, info.kind).await {
-                ssh.disconnect(&info.name).await;
-                return Err(e);
+            // Docker 会话首版只有 AI 命令执行通道,不请求容器 PTY 交互终端
+            if info.kind != crate::config::SessionKind::Docker {
+                if let Err(e) = ssh.open_shell(&info.name, cols, rows, info.kind).await {
+                    ssh.disconnect(&info.name).await;
+                    return Err(e);
+                }
             }
             ssh.set_active(&info.name).await;
             Ok::<(), anyhow::Error>(())
@@ -430,107 +527,108 @@ pub async fn resize_sessions(
 pub async fn ai_submit(
     app: AppHandle,
     state: State<'_, CoreState>,
+    name: String,
     input: String,
     pwd: Option<String>,
+    // §8.7.4：可选容器名（Docker 会话运行时动态选择；None 回落到会话持久化的容器）
+    container: Option<String>,
 ) -> Result<(), String> {
-    // 原子抢占 busy 标记:并发提交只有一个能进入(修复 TOCTOU;
+    // 取/建该会话的运行槽(懒建),不同会话各自独立 → 支持多会话并行
+    let slot = state.ai_slot(&name).await;
+    // 原子抢占本会话 busy:同一会话并发提交只有一个能进入(修复 TOCTOU;
     // 早退路径必须复位,否则任务永远"忙")
-    if state
-        .ai_busy
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("AI 任务正在执行中，请先停止或等待".to_string());
+    if slot.busy.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err(format!("会话【{}】正在执行 AI 任务，请先停止或等待", name));
     }
-    let rollback = |state: &State<'_, CoreState>, app: &AppHandle| {
-        state.ai_busy.store(false, Ordering::SeqCst);
-        let _ = app.emit("ai", AiPayload::Busy { busy: false });
+    let rollback = |slot: &AiSlot, app: &AppHandle| {
+        slot.busy.store(false, Ordering::SeqCst);
+        let _ = app.emit("ai", AiPayload::Busy { name: name.clone(), busy: false });
     };
-    let mode = {
-        let agent = state.agent.lock().await;
-        agent.mode()
-    };
+    let mode = { slot.agent.lock().await.mode() };
     let input = input.trim().to_string();
     if input.is_empty() {
-        rollback(&state, &app);
+        rollback(&slot, &app);
         return Ok(());
     }
 
-    // Agent 模式锁定当前活动会话为任务执行目标（防中途切标签命令发去别的机器）
+    // Agent 模式锁定该会话为任务执行目标（命令发去 name 会话，防切标签误发去别的机器）
     let ctx = if mode == AgentMode::Agent {
-        let ssh = state.ssh.clone();
-        let name = ssh.active_name().await;
         let sessions = state.config.lock().await.sessions.clone();
-        let Some(name) = name else {
-            rollback(&state, &app);
-            return Err("未连接会话：请先连接一个会话，再发起 Agent 任务".to_string());
+        let info = sessions.iter().find(|s| s.name == name).cloned();
+        let (host, user, persist_container) = match info {
+            Some(info) => (info.host, info.user, info.container),
+            None => (name.clone(), String::new(), None),
         };
-        let info = sessions.iter().find(|s| s.name == name);
-        let (host, user) = match info {
-            Some(info) => (info.host.clone(), info.user.clone()),
-            None => (name.clone(), String::new()),
-        };
+        // §8.7.4：运行时容器选择优先于会话持久化容器
+        let container = container.or(persist_container);
         Some(TaskCtx {
-            name,
+            name: name.clone(),
             host,
             user,
             pwd: pwd.unwrap_or_default().trim().to_string(),
+            container,
         })
     } else {
         None
     };
 
-    let _ = app.emit("ai", AiPayload::Busy { busy: true });
+    let _ = app.emit("ai", AiPayload::Busy { name: name.clone(), busy: true });
 
-    // 为本次任务建立控制通道
-    let (ctl_tx, mut ctl_rx) = mpsc::unbounded_channel();
-    {
-        let mut ctl = state.ai_ctl.lock().await;
-        *ctl = Some(ctl_tx);
-    }
+    // 为本次任务建立控制通道（写本会话槽，不干扰其他会话）
+    let (ctl_tx, ctl_rx) = mpsc::unbounded_channel();
+    *slot.ctl.lock().await = Some(ctl_tx);
 
     let ssh = state.ssh.clone();
-    let agent = state.agent.clone();
-    let busy = state.ai_busy.clone();
-    let ctl_slot = state.ai_ctl.clone();
+    let slot2 = slot.clone();
+    let app2 = app.clone();
+    let session = name.clone();
     tokio::spawn(async move {
-        run_ai_job(&agent, &ssh, &app, &mut ctl_rx, &input, mode, ctx).await;
-        busy.store(false, Ordering::SeqCst);
-        let _ = app.emit("ai", AiPayload::Busy { busy: false });
-        // 清空控制通道槽位
-        let mut ctl = ctl_slot.lock().await;
-        *ctl = None;
+        let mut ctl_rx = ctl_rx;
+        run_ai_job(&session, &slot2.agent, &ssh, &app2, &mut ctl_rx, &input, mode, ctx).await;
+        slot2.busy.store(false, Ordering::SeqCst);
+        let _ = app2.emit("ai", AiPayload::Busy { name: session, busy: false });
+        // 清空本会话控制通道槽位
+        *slot2.ctl.lock().await = None;
     });
     Ok(())
 }
 
-/// AI 控制：批准/跳过待确认命令，或取消任务
+/// AI 控制：批准/跳过待确认命令，或取消任务（作用于指定会话）
 #[tauri::command]
-pub async fn ai_control(state: State<'_, CoreState>, action: String) -> Result<(), String> {
+pub async fn ai_control(
+    state: State<'_, CoreState>,
+    name: String,
+    action: String,
+    // 仅 "edit" 使用：整份覆盖计划的新命令列表
+    commands: Option<Vec<String>>,
+) -> Result<(), String> {
     let ctl = match action.as_str() {
         "approve" => AiControl::Approve,
         "reject" => AiControl::Reject,
         "cancel" => AiControl::Cancel,
+        "edit" => AiControl::Edit(commands.unwrap_or_default()),
         _ => return Err(format!("未知控制动作: {}", action)),
     };
-    let ctl_slot = state.ai_ctl.lock().await;
+    let slot = state.ai_slot(&name).await;
+    let ctl_slot = slot.ctl.lock().await;
     match ctl_slot.as_ref() {
         Some(tx) => tx.send(ctl).map_err(|_| "AI 任务已结束".to_string()),
         None => Err("AI 任务未在运行".to_string()),
     }
 }
 
-/// 中止当前 AI 任务
+/// 中止指定会话的 AI 任务
 #[tauri::command]
-pub async fn ai_stop(state: State<'_, CoreState>) -> Result<(), String> {
+pub async fn ai_stop(state: State<'_, CoreState>, name: String) -> Result<(), String> {
+    let slot = state.ai_slot(&name).await;
     {
-        let ctl_slot = state.ai_ctl.lock().await;
+        let ctl_slot = slot.ctl.lock().await;
         if let Some(tx) = ctl_slot.as_ref() {
             let _ = tx.send(AiControl::Cancel);
         }
     }
     {
-        let mut agent = state.agent.lock().await;
+        let mut agent = slot.agent.lock().await;
         agent.reset_task();
         if agent.mode() == AgentMode::Agent {
             agent.clear_history();
@@ -539,21 +637,27 @@ pub async fn ai_stop(state: State<'_, CoreState>) -> Result<(), String> {
     Ok(())
 }
 
-/// 清空 AI 对话历史（忙碌时拒绝）
+/// 清空指定会话的 AI 对话历史（忙碌时拒绝）
 #[tauri::command]
-pub async fn ai_clear_history(state: State<'_, CoreState>) -> Result<(), String> {
-    if state.ai_busy.load(Ordering::SeqCst) {
+pub async fn ai_clear_history(state: State<'_, CoreState>, name: String) -> Result<(), String> {
+    let slot = state.ai_slot(&name).await;
+    if slot.busy.load(Ordering::SeqCst) {
         return Err("请先停止当前 AI 任务".to_string());
     }
-    let mut agent = state.agent.lock().await;
+    let mut agent = slot.agent.lock().await;
     agent.clear_history();
     Ok(())
 }
 
-/// 切换 AI 工作模式
+/// 切换指定会话的 AI 工作模式
 #[tauri::command]
-pub async fn ai_set_mode(state: State<'_, CoreState>, mode: String) -> Result<(), String> {
-    if state.ai_busy.load(Ordering::SeqCst) {
+pub async fn ai_set_mode(
+    state: State<'_, CoreState>,
+    name: String,
+    mode: String,
+) -> Result<(), String> {
+    let slot = state.ai_slot(&name).await;
+    if slot.busy.load(Ordering::SeqCst) {
         return Err("请先停止当前 AI 任务".to_string());
     }
     let mode = match mode.as_str() {
@@ -562,20 +666,19 @@ pub async fn ai_set_mode(state: State<'_, CoreState>, mode: String) -> Result<()
         _ => return Err(format!("未知模式: {}", mode)),
     };
     {
-        let mut agent = state.agent.lock().await;
+        let mut agent = slot.agent.lock().await;
         agent.set_mode(mode);
     }
     // 同步缓存,供 ai_mode 免锁查询
-    state
-        .ai_mode_agent
-        .store(mode == AgentMode::Agent, Ordering::SeqCst);
+    slot.mode_agent.store(mode == AgentMode::Agent, Ordering::SeqCst);
     Ok(())
 }
 
-/// 查询当前 AI 模式(读缓存不碰 agent 锁,QA 聊天持锁期间也能即时返回)
+/// 查询指定会话的 AI 模式(读缓存不碰 agent 锁,QA 聊天持锁期间也能即时返回)
 #[tauri::command]
-pub async fn ai_mode(state: State<'_, CoreState>) -> Result<String, String> {
-    Ok(if state.ai_mode_agent.load(Ordering::SeqCst) {
+pub async fn ai_mode(state: State<'_, CoreState>, name: String) -> Result<String, String> {
+    let slot = state.ai_slot(&name).await;
+    Ok(if slot.mode_agent.load(Ordering::SeqCst) {
         "agent".to_string()
     } else {
         "qa".to_string()
@@ -607,10 +710,6 @@ pub async fn update_ai_config(
     state: State<'_, CoreState>,
     mut config: crate::config::AiConfig,
 ) -> Result<(), String> {
-    // busy 守卫:任务运行中替换 Agent 会与进行中的请求互踩(且会阻塞等 agent 锁)
-    if state.ai_busy.load(Ordering::SeqCst) {
-        return Err("AI 任务执行中，请先停止再修改配置".to_string());
-    }
     {
         let cfg = state.config.lock().await;
         let old_cipher = cfg.ai.as_ref().and_then(|a| a.api_key.clone());
@@ -622,15 +721,13 @@ pub async fn update_ai_config(
     {
         let mut cfg = state.config.lock().await;
         cfg.ai = Some(config);
+        // 持久化
+        let snap = cfg.clone();
+        save_config(&state.config_path, &snap).map_err(|e| e.to_string())?;
+        // 重建所有空闲会话槽（运行中的跳过，不与进行中请求互踩；不阻塞等 agent 锁）
+        state.ai.rebuild_idle(cfg.ai.as_ref()).await;
     }
-    let agent = {
-        let cfg = state.config.lock().await;
-        let ai_cfg = cfg.ai.as_ref().ok_or_else(|| "AI 配置为空".to_string())?;
-        Agent::new(ai_cfg).map_err(|e| e.to_string())?
-    };
-    *state.agent.lock().await = agent;
-    let cfg = state.config.lock().await.clone();
-    save_config(&state.config_path, &cfg).map_err(|e| e.to_string())
+    Ok(())
 }
 
 /// 以已保存 AI 配置为底，合并设置弹窗表单值（非空才覆盖；api_key 空/哨兵=沿用已存密文）

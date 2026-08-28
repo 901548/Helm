@@ -43,20 +43,25 @@ export const resizeSessions = (cols: number, rows: number) =>
   invoke<void>("resize_sessions", { cols, rows });
 
 // ---------- AI commands ----------
+// AI 操作按会话隔离：所有调用携带目标会话名（多会话并行）
 
-export const aiSubmit = (input: string, pwd?: string) =>
-  invoke<void>("ai_submit", { input, pwd });
+export const aiSubmit = (name: string, input: string, pwd?: string, container?: string | null) =>
+  invoke<void>("ai_submit", { name, input, pwd, container: container ?? null });
 
-export const aiControl = (action: "approve" | "reject" | "cancel") =>
-  invoke<void>("ai_control", { action });
+export const aiControl = (
+  name: string,
+  action: "approve" | "reject" | "cancel" | "edit",
+  commands?: string[],
+) => invoke<void>("ai_control", { name, action, commands: commands ?? null });
 
-export const aiStop = () => invoke<void>("ai_stop");
+export const aiStop = (name: string) => invoke<void>("ai_stop", { name });
 
-export const aiClearHistory = () => invoke<void>("ai_clear_history");
+export const aiClearHistory = (name: string) => invoke<void>("ai_clear_history", { name });
 
-export const aiSetMode = (mode: "qa" | "agent") => invoke<void>("ai_set_mode", { mode });
+export const aiSetMode = (name: string, mode: "qa" | "agent") =>
+  invoke<void>("ai_set_mode", { name, mode });
 
-export const aiMode = () => invoke<"qa" | "agent">("ai_mode");
+export const aiMode = (name: string) => invoke<"qa" | "agent">("ai_mode", { name });
 
 // ---------- 配置 commands ----------
 

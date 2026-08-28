@@ -14,7 +14,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::Mutex;
 
 use crate::agent::{parse_commands, truncate_text, Agent, AgentMode, AiStreamEvent};
-use crate::core::{AiControl, AiPayload};
+use crate::core::{AiControl, AiPayload, AiRunState, PlanCommand};
 use crate::safety::{check_danger, DangerLevel};
 use crate::ssh::SshManager;
 use crate::task_exec::run_task_exec;
@@ -28,18 +28,21 @@ pub struct TaskCtx {
     pub user: String,
     /// 任务开始时的权威 PWD（前端 OSC7）
     pub pwd: String,
+    /// Docker 会话目标容器名（kind=Docker 时 AI 命令注入该容器）
+    pub container: Option<String>,
 }
 
-/// 将流式事件映射为前端口径的 AI 事件（正文 → Streaming，思考 → Reasoning）
-fn stream_to_payload(evt: AiStreamEvent) -> AiPayload {
+/// 将流式事件映射为前端口径的 AI 事件（正文 → Streaming，思考 → Reasoning），并附会话名
+fn stream_to_payload(session: &str, evt: AiStreamEvent) -> AiPayload {
     match evt {
-        AiStreamEvent::Content(t) => AiPayload::Streaming { text: t },
-        AiStreamEvent::Reasoning(t) => AiPayload::Reasoning { text: t },
+        AiStreamEvent::Content(t) => AiPayload::Streaming { name: session.to_string(), text: t },
+        AiStreamEvent::Reasoning(t) => AiPayload::Reasoning { name: session.to_string(), text: t },
     }
 }
 
-/// 后台 AI 任务状态机：按模式驱动 Agent 引擎，事件经 app emit 回传
+/// 后台 AI 任务状态机：按模式驱动 Agent 引擎，事件经 app emit 回传（均带会话名）
 pub(crate) async fn run_ai_job(
+    session: &str,
     agent: &Arc<Mutex<Agent>>,
     ssh: &Arc<SshManager>,
     app: &AppHandle,
@@ -52,7 +55,7 @@ pub(crate) async fn run_ai_job(
         AgentMode::QA => {
             let mut ag = agent.lock().await;
             let mut sink = Some(|evt: AiStreamEvent| {
-                let _ = app.emit("ai", stream_to_payload(evt));
+                let _ = app.emit("ai", stream_to_payload(session, evt));
             });
             let sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)> = sink.as_mut().map(|f| f as _);
             let chat_fut = ag.chat(input, sink);
@@ -60,16 +63,16 @@ pub(crate) async fn run_ai_job(
             tokio::select! {
                 result = &mut chat_fut => match result {
                     Ok(reply) => {
-                        let _ = app.emit("ai", AiPayload::Done { message: reply });
+                        let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: reply });
                     }
                     Err(e) => {
-                        let _ = app.emit("ai", AiPayload::Error { message: e.to_string() });
+                        let _ = app.emit("ai", AiPayload::Error { name: session.to_string(), message: e.to_string() });
                     }
                 },
                 // 收到 Cancel(ai_stop)时,drop chat_fut 会中断进行中的 HTTP 请求
                 ctl = ctl_rx.recv() => {
                     if ctl == Some(AiControl::Cancel) {
-                        let _ = app.emit("ai", AiPayload::Done { message: "已停止".to_string() });
+                        let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
                     }
                 }
             }
@@ -79,7 +82,7 @@ pub(crate) async fn run_ai_job(
             let ctx = match ctx {
                 Some(ctx) => ctx,
                 None => {
-                    let _ = app.emit("ai", AiPayload::Done { message: "任务已结束（会话未锁定）".to_string() });
+                    let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "任务已结束（会话未锁定）".to_string() });
                     return;
                 }
             };
@@ -100,12 +103,22 @@ pub(crate) async fn run_ai_job(
             let mut invalid_steps = 0;
             const MAX_INVALID_STEPS: u32 = 2;
 
+            // §8.7.1 唯一状态机：显式迁态并广播，前端只订阅 State 判态
+            let emit_state = |st: AiRunState| {
+                let _ = app.emit("ai", AiPayload::State { name: session.to_string(), state: st });
+            };
+            // 计划级确认前清空推理/执行期间滞留的陈旧信号，防误消费
+            let flush_stale = |ctl_rx: &mut UnboundedReceiver<AiControl>| {
+                while let Ok(_) = ctl_rx.try_recv() {}
+            };
+
             for _step in 0..max_steps {
                 if ctl_rx.try_recv().ok() == Some(AiControl::Cancel) {
                     finished = true;
                     break;
                 }
-                let _ = app.emit("ai", AiPayload::StepBegin);
+                let _ = app.emit("ai", AiPayload::StepBegin { name: session.to_string() });
+                emit_state(AiRunState::Parsing);
                 let ctx_desc = if ctx.user.is_empty() {
                     format!("会话 {}，当前目录 {}", ctx.name, cwd)
                 } else {
@@ -118,7 +131,7 @@ pub(crate) async fn run_ai_job(
                 {
                     let mut ag = agent.lock().await;
                     let mut sink = Some(|evt: AiStreamEvent| {
-                        let _ = app.emit("ai", stream_to_payload(evt));
+                        let _ = app.emit("ai", stream_to_payload(session, evt));
                     });
                     let sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)> =
                         sink.as_mut().map(|f| f as _);
@@ -131,7 +144,7 @@ pub(crate) async fn run_ai_job(
                             r = &mut fut => { next = Some(r); break; }
                             ctl = ctl_rx.recv() => {
                                 if ctl == Some(AiControl::Cancel) {
-                                    let _ = app.emit("ai", AiPayload::Done { message: "已停止".to_string() });
+                                    let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
                                     finished = true;
                                     break;
                                 }
@@ -139,7 +152,7 @@ pub(crate) async fn run_ai_job(
                         }
                     }
                 }
-                let _ = app.emit("ai", AiPayload::StepOutputEnd);
+                let _ = app.emit("ai", AiPayload::StepOutputEnd { name: session.to_string() });
                 if finished {
                     break;
                 }
@@ -148,13 +161,13 @@ pub(crate) async fn run_ai_job(
                 let next = match next {
                     Ok(s) => s,
                     Err(e) => {
-                        let _ = app.emit("ai", AiPayload::Error { message: e.to_string() });
+                        let _ = app.emit("ai", AiPayload::Error { name: session.to_string(), message: e.to_string() });
                         finished = true;
                         break;
                     }
                 };
                 if next.trim().eq_ignore_ascii_case("DONE") {
-                    let _ = app.emit("ai", AiPayload::Done { message: "任务完成".to_string() });
+                    let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "任务完成".to_string() });
                     finished = true;
                     break;
                 }
@@ -165,6 +178,7 @@ pub(crate) async fn run_ai_job(
                     let _ = app.emit(
                         "ai",
                         AiPayload::CommandStep {
+                            name: session.to_string(),
                             command: next,
                             success: false,
                             message: "模型未给出可执行命令".to_string(),
@@ -175,6 +189,7 @@ pub(crate) async fn run_ai_job(
                         let _ = app.emit(
                             "ai",
                             AiPayload::Done {
+                                name: session.to_string(),
                                 message: "模型连续未给出可执行命令，任务已中止".to_string(),
                             },
                         );
@@ -186,17 +201,74 @@ pub(crate) async fn run_ai_job(
                 }
                 invalid_steps = 0;
 
+                // §8.7.2 整份计划卡：parse_commands 之后、逐命令之前广播计划
+                let plan_cmds: Vec<PlanCommand> = commands
+                    .iter()
+                    .map(|c| {
+                        let (level, reason) = check_danger(c);
+                        PlanCommand { command: c.clone(), level, reason }
+                    })
+                    .collect();
+                let any_danger = plan_cmds.iter().any(|c| c.level != DangerLevel::Safe);
+                emit_state(AiRunState::Planning);
+                let _ = app.emit("ai", AiPayload::Planning { name: session.to_string(), commands: plan_cmds });
+
+                // §8.7.3 计划级一次性确认：整份批准/编辑/放弃。
+                // 安全保证：批准计划 = 对本步全部命令（含计划卡上带风险标记的危险命令）的一次性显式授权，
+                // 故后续不再对已批准命令二次逐条确认（消除"双确认"冲突）；
+                // 用户「编辑」则视为新命令，preapproved 复位，改后新增的危险命令重新逐条确认，
+                // 绝不因编辑绕过授权。严格确认模式(confirm_all)仍逐条确认，见下方 need_confirm。
+                let mut preapproved = false;
+                let commands: Vec<String> = if confirm_all || any_danger {
+                    emit_state(AiRunState::AwaitingConfirm);
+                    flush_stale(ctl_rx);
+                    match ctl_rx.recv().await {
+                        Some(AiControl::Approve) => {
+                            preapproved = true;
+                            let _ = app.emit(
+                                "ai",
+                                AiPayload::StepOutputEnd { name: session.to_string() },
+                            );
+                            commands
+                        }
+                        Some(AiControl::Edit(cmds)) => cmds,
+                        Some(AiControl::Reject) => {
+                            let _ = app.emit(
+                                "ai",
+                                AiPayload::Done { name: session.to_string(), message: "已放弃本步计划".to_string() },
+                            );
+                            finished = true;
+                            break;
+                        }
+                        Some(AiControl::Cancel) | None => {
+                            finished = true;
+                            break;
+                        }
+                    }
+                } else {
+                    commands
+                };
+                if finished {
+                    break;
+                }
+                emit_state(AiRunState::Executing);
+
                 for command in commands {
                     if ctl_rx.try_recv().ok() == Some(AiControl::Cancel) {
                         finished = true;
                         break;
                     }
                     let (level, reason) = check_danger(&command);
-                    let need_confirm = confirm_all || level != DangerLevel::Safe;
+                    // 危险命令授权判定：
+                    // - confirm_all(严格确认模式)恒置真 → 每条命令无论是否为已批准计划仍在逐条确认，绝不裸执行；
+                    // - 非严格模式 && 计划已批准(preapproved) → 该命令已被整份授权，跳过二次确认；
+                    // - 否则(未批准/编辑后)危险命令仍逐条确认。
+                    let need_confirm = confirm_all || (!preapproved && level != DangerLevel::Safe);
                     if need_confirm {
                         let _ = app.emit(
                             "ai",
                             AiPayload::PendingCommand {
+                                name: session.to_string(),
                                 command: command.clone(),
                                 level,
                                 reason,
@@ -220,6 +292,7 @@ pub(crate) async fn run_ai_job(
                                 let _ = app.emit(
                                     "ai",
                                     AiPayload::CommandStep {
+                                        name: session.to_string(),
                                         command,
                                         success: false,
                                         message: "已跳过".to_string(),
@@ -229,6 +302,8 @@ pub(crate) async fn run_ai_job(
                                 last_output = "命令已由用户跳过".to_string();
                                 continue;
                             }
+                            // 计划级 Edit 若滞留到逐条确认（异常时序），按跳过处理，不执行
+                            Some(AiControl::Edit(_)) => { continue; }
                             Some(AiControl::Cancel) | None => {
                                 finished = true;
                                 break;
@@ -236,7 +311,7 @@ pub(crate) async fn run_ai_job(
                         }
                     }
                     let (output, code, new_pwd) =
-                        task_exec(ssh, app, &ctx.name, &command, &cwd, timeout_secs).await;
+                        task_exec(ssh, app, &ctx.name, &command, &cwd, timeout_secs, ctx.container.as_deref()).await;
                     // 权威 cwd 跟随：命令内部 cd 后由 ###HELM_PWD### 回传
                     if !new_pwd.is_empty() {
                         cwd = new_pwd;
@@ -248,6 +323,7 @@ pub(crate) async fn run_ai_job(
                         truncate_text(&output, max_output_chars),
                     );
                 }
+                emit_state(AiRunState::ReadingBack);
                 if finished {
                     break;
                 }
@@ -258,10 +334,12 @@ pub(crate) async fn run_ai_job(
                 let _ = app.emit(
                     "ai",
                     AiPayload::Done {
+                        name: session.to_string(),
                         message: format!("已达到最大执行步数（{}），任务中止", max_steps),
                     },
                 );
             }
+            emit_state(AiRunState::Idle);
             let mut ag = agent.lock().await;
             ag.clear_history();
             ag.reset_task();
@@ -277,12 +355,14 @@ async fn task_exec(
     command: &str,
     cwd: &str,
     timeout_secs: u64,
+    container: Option<&str>,
 ) -> (String, i32, String) {
     let handle = ssh.exec_handle(name).await;
     let Some(handle) = handle else {
         let _ = app.emit(
             "ai",
             AiPayload::CommandStep {
+                name: name.to_string(),
                 command: command.to_string(),
                 success: false,
                 message: "会话已断开".to_string(),
@@ -292,11 +372,12 @@ async fn task_exec(
         return (format!("错误: 会话 {} 已断开", name), 1, String::new());
     };
     let kind = ssh.kind_of(name).await;
-    match run_task_exec(handle, command, cwd, timeout_secs, kind).await {
+    match run_task_exec(handle, command, cwd, timeout_secs, kind, container).await {
         Ok(r) => {
             let _ = app.emit(
                 "ai",
                 AiPayload::CommandStep {
+                    name: name.to_string(),
                     command: command.to_string(),
                     success: r.exit_code == 0,
                     message: if r.exit_code == 0 {
@@ -313,6 +394,7 @@ async fn task_exec(
             let _ = app.emit(
                 "ai",
                 AiPayload::CommandStep {
+                    name: name.to_string(),
                     command: command.to_string(),
                     success: false,
                     message: e.to_string(),

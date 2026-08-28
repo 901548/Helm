@@ -425,12 +425,14 @@ pub async fn connect_session(
             if !ok {
                 anyhow::bail!("认证未通过");
             }
-            // Docker 会话首版只有 AI 命令执行通道,不请求容器 PTY 交互终端
-            if info.kind != crate::config::SessionKind::Docker {
-                if let Err(e) = ssh.open_shell(&info.name, cols, rows, info.kind).await {
-                    ssh.disconnect(&info.name).await;
-                    return Err(e);
-                }
+            // Docker 会话（P71）：经 docker exec -it 进入容器交互 shell；容器未运行/不存在
+            // 时 docker 报错走 Failed 事件展示。Linux/Windows 正常宿主 shell。
+            if let Err(e) = ssh
+                .open_shell(&info.name, cols, rows, info.kind, info.container.as_deref())
+                .await
+            {
+                ssh.disconnect(&info.name).await;
+                return Err(e);
             }
             ssh.set_active(&info.name).await;
             Ok::<(), anyhow::Error>(())

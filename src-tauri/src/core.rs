@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::Mutex;
 
@@ -833,36 +833,22 @@ pub async fn get_ui_config(
 /// 位置由窗口移动事件记录、退出时统一落盘（见 main.rs）。
 #[tauri::command]
 pub async fn update_ui_config(
-    app: AppHandle,
     state: State<'_, CoreState>,
     mut config: crate::config::UiConfig,
 ) -> Result<(), String> {
     {
         let mut cfg = state.config.lock().await;
+        // 窗口几何(宽高/位置)只由 P26-6 的"拖拽 + 退出落盘"管理，设置弹窗不再改写：
+        // 一律保留磁盘现值，防止表单透传的陈旧值把窗口拉回旧尺寸/旧位置
         if let Some(existing) = cfg.ui.as_ref() {
-            if config.window_x.is_none() {
-                config.window_x = existing.window_x;
-            }
-            if config.window_y.is_none() {
-                config.window_y = existing.window_y;
-            }
+            config.window_width = existing.window_width;
+            config.window_height = existing.window_height;
+            config.window_x = existing.window_x;
+            config.window_y = existing.window_y;
         }
         cfg.ui = Some(config.clone());
     }
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.set_size(tauri::LogicalSize::new(
-            config.window_width as f64,
-            config.window_height as f64,
-        ));
-        if let (Some(x), Some(y)) = (config.window_x, config.window_y) {
-            // 跳过离屏哨兵坐标（最小化遗留的 -32000 等）
-            if x.abs() < 20000 && y.abs() < 20000 {
-                let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
-            }
-        }
-    }
-    let cfg = state.config.lock().await.clone();
-    save_config(&state.config_path, &cfg).map_err(|e| e.to_string())
+    save_config(&state.config_path, &state.config.lock().await.clone()).map_err(|e| e.to_string())
 }
 
 // ---------- 后台任务 ----------

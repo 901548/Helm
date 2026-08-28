@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -356,9 +357,13 @@ pub fn load_config_with_path(cli_path: Option<&str>) -> Result<(PathBuf, HelmCon
 /// 将配置写回指定的 YAML 文件
 pub fn save_config(path: &Path, config: &HelmConfig) -> Result<()> {
     let content = serde_yaml::to_string(config)?;
-    // 原子写入:先写同目录临时文件再 rename,避免写一半崩溃损坏 config.yaml
-    // (会丢掉全部会话含 DPAPI 密文密码)。Windows 上 rename 对已存在目标等同替换。
-    let tmp = path.with_extension("yaml.tmp");
+    // 原子写入:先写同目录唯一临时文件再 rename 替换,避免写一半崩溃损坏 config.yaml
+    // (会丢掉全部会话含 DPAPI 密文密码)。临时文件用 进程ID+序号 保证唯一,并发保存
+    // (persist_sessions 锁外 save、update_* 锁内 save)不再双写同一 tmp 相互踩踏;
+    // 崩溃残留至多一个唯一 tmp,rename 对已存在目标等同替换(Windows 亦然)。
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nonce = SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("yaml.tmp-{}-{}", std::process::id(), nonce));
     std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, path)?;
     Ok(())

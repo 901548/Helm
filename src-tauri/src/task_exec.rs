@@ -47,7 +47,9 @@ pub fn task_exec_cmd(cwd: &str, cmd: &str) -> String {
 pub fn docker_exec_cmd(container: &str, cwd: &str, cmd: &str) -> String {
     let inner = task_exec_cmd(cwd, cmd);
     let b64 = data_encoding::BASE64.encode(inner.as_bytes());
-    format!("docker exec -i {container} sh -c \"printf '%s' '{b64}' | base64 -d | sh\"")
+    // container 经单引号转义后再包裹,防止容器名含 shell 元字符(空格/;/$())时注入
+    let container = container.replace('\'', "'\\''");
+    format!("docker exec -i '{container}' sh -c \"printf '%s' '{b64}' | base64 -d | sh\"")
 }
 
 /// Windows 版 Agent 单步执行命令（P34）：经 `powershell -EncodedCommand` 调用，
@@ -157,7 +159,7 @@ pub async fn run_task_exec(
     })
     .await;
 
-    read_result.map_err(|_| anyhow!("命令执行超时（{}秒）: {}", timeout_secs, cmd))?;
+    read_result.map_err(|_| anyhow!("命令执行超时（{}秒）", timeout_secs))?;
     let (output, exit_code, pwd) = parse_task_output(&buf);
     Ok(TaskExecResult { output, exit_code, pwd })
 }
@@ -261,8 +263,12 @@ mod tests {
     #[test]
     fn docker_exec_cmd_embeds_base64_decodeable_inner() {
         let out = docker_exec_cmd("my-app", "/opt", "ls -la");
-        // 注入远端 docker CLI：`docker exec -i <container> sh -c ...`
-        assert!(out.starts_with("docker exec -i my-app sh -c "));
+        // 注入远端 docker CLI:容器名经单引号转义包裹,`docker exec -i '<container>' sh -c ...`
+        assert!(out.starts_with("docker exec -i 'my-app' sh -c "));
+        // 含 shell 元字符($, ;, 空格)的容器名被单引号包裹,不会破坏外层命令结构
+        let evil = docker_exec_cmd("$(touch /tmp/pwn);", "/", "true");
+        assert!(evil.starts_with("docker exec -i '$(touch /tmp/pwn);")); // 整个元字符串在单引号内
+        assert!(evil.contains("' sh -c "), "evil={evil}"); // 单引号闭合后才到 sh -c
         // 内层命令经 base64 编码后由容器内 sh 解码执行
         let b64 = out
             .rsplit_once("printf '%s' '")

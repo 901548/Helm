@@ -705,17 +705,32 @@ pub async fn ai_mode(state: State<'_, CoreState>, name: String) -> Result<String
 // ---------- 配置 commands ----------
 
 /// 读取 AI 配置（None 表示未配置）
-/// API Key 密文不直接下发：有 key 时以哨兵 "·" 标识（前端仅用于显示"已保存"）
+/// API Key 密文不直接下发：有 key 时以哨兵 "·" 标识（前端仅用于显示"已保存"）；
+/// extra_headers 中等于明文 API Key 的值同步脱敏(防止用户把 key 放进 x-api-key/authorization 等头)
 #[tauri::command]
 pub async fn get_ai_config(
     state: State<'_, CoreState>,
 ) -> Result<Option<crate::config::AiConfig>, String> {
     let mut cfg = state.config.lock().await.ai.clone();
     if let Some(ai) = cfg.as_mut() {
+        // 先在屏蔽主字段前解密出明文 key,用于识别 extra_headers 中的同值项
+        let plain = ai
+            .api_key
+            .as_deref()
+            .and_then(|k| crate::crypto::decrypt_api_key(k).ok())
+            .filter(|p| !p.is_empty());
         ai.api_key = match ai.api_key.as_ref().filter(|k| !k.is_empty()) {
             Some(_) => Some("·".to_string()),
             None => None,
         };
+        if let Some(plain) = plain {
+            for v in ai.extra_headers.values_mut() {
+                if *v == plain {
+                    v.clear();
+                    v.push('·');
+                }
+            }
+        }
     }
     Ok(cfg)
 }

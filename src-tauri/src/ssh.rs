@@ -243,13 +243,25 @@ impl SshManager {
         }
 
         // 成功：复用 mark_connecting 的占位会话写入句柄；未占位则新建
+        // 锁序注意：先取 connecting(单独锁并释放)再取 sessions,与 mark_connecting 的
+        // connecting→sessions 保持一致,避免握手期间 delete/rename/disconnect 竞态造成死锁。
+        let is_placeholder = self.connecting.lock().await.contains(&name);
         let handle = Arc::new(handle);
         let mut sessions = self.sessions.lock().await;
         match sessions.get_mut(&name) {
             Some(session) => {
                 session.lock().await.handle = Some(handle);
             }
+            None if is_placeholder => {
+                // 占位会话在连接建立期间已被删除/改名/断开(有标记但 map 已无该会话)：
+                // 不复活"幽灵连接",丢弃刚建立的句柄(index Drop 关闭 SSH 传输),避免常驻泄漏。
+                drop(sessions);
+                drop(handle);
+                self.clear_connecting(&name).await;
+                return Err(anyhow!("{} 在连接建立期间已被删除或断开，连接已取消", name));
+            }
             None => {
+                // 直连(无 mark_connecting 占位,如测试):正常新建
                 sessions.insert(
                     name.clone(),
                     Arc::new(Mutex::new(SshSession {
@@ -601,7 +613,7 @@ pub async fn run_exec(
     })
     .await;
 
-    read_result.map_err(|_| anyhow!("命令执行超时（30秒）: {}", cmd))?;
+    read_result.map_err(|_| anyhow!("命令执行超时（30秒）"))?;
 
     if stdout.is_empty() {
         Ok(stderr)

@@ -23,6 +23,8 @@ pub enum SessionKind {
     Windows,
     /// Windows 远程桌面(RDP，经 mstsc 控屏)
     Rdp,
+    /// 远端主机上的 Docker 容器（经 SSH 到主机，AI 命令用 docker exec 注入）
+    Docker,
 }
 
 /// 一个 SSH 会话的配置信息
@@ -45,6 +47,9 @@ pub struct SessionInfo {
     pub key_file: Option<String>,
     /// 登录密码（可选）
     pub password: Option<String>,
+    /// Docker 容器名/ID（仅 kind=Docker 时使用：AI 命令经 docker exec 注入该容器）
+    #[serde(default)]
+    pub container: Option<String>,
 }
 
 /// 默认 SSH 端口

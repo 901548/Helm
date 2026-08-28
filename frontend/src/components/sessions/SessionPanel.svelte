@@ -2,7 +2,7 @@
   import type { SessionInfo, SessionKind, SessionStatus } from "../../lib/api";
 
   function kindLabel(k: SessionKind | undefined): string {
-    return k === "windows" ? "Win" : k === "rdp" ? "RDP" : "";
+    return k === "windows" ? "Win" : k === "rdp" ? "RDP" : k === "docker" ? "Docker" : "";
   }
 
   interface Props {
@@ -128,12 +128,21 @@
             <div class="s-row">
               <span class="name">{s.name}</span>
               {#if kindLabel(s.kind)}
-                <span class="badge {s.kind}" title={s.kind === "windows" ? "Windows（SSH）" : "远程桌面（RDP）"}>
+                <span
+                  class="badge {s.kind}"
+                  title={s.kind === "windows"
+                    ? "Windows（SSH）"
+                    : s.kind === "rdp"
+                      ? "远程桌面（RDP）"
+                      : s.kind === "docker"
+                        ? "Docker 容器（SSH）"
+                        : ""}
+                >
                   {kindLabel(s.kind)}
                 </span>
               {/if}
             </div>
-            <span class="meta">{s.user}@{s.host}</span>
+            <span class="meta">{s.user}@{s.host}{s.kind === "docker" && s.container ? `  › 容器 ${s.container}` : ""}</span>
           </div>
         </div>
       {/each}
@@ -328,6 +337,9 @@
   }
   .badge.rdp {
     color: #c792ea;
+  }
+  .badge.docker {
+    color: #3db2ff;
   }
 
   .name {

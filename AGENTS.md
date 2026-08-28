@@ -375,6 +375,12 @@ F:\Helm\
   2. **修复(SettingsModal.svelte)**:预设下拉改 **`bind:value={presetSel}` 持久选中**(与主题/初始模式下拉同模式),删除中途复位;`onPresetChange` 从 `e.currentTarget.value` 读值填 model/apiBaseUrl 并清 testResult/modelOptions/modelsError;打开弹窗时按已存 `api_base_url`(trim 相等)**预选匹配预设**;手改 base URL(oninput)**读 `e.currentTarget.value`** 与所选预设 base 不一致时 presetSel 回占位符(程序化赋值不触发 oninput,无循环)。
   3. **验证(CDP:vite dev + debug exe @9229)**:选 DeepSeek→下拉显示 DeepSeek + 填入 deepseek-chat/api.deepseek.com;切 OpenAI 正常;手改 base→回占位符;重选 Gemini 正常;弹窗关闭无残留;console 零错误。
   4. **坑**:a) **Svelte 5 `bind:value` 对 option 值严格匹配**:`{#each ... as p, i}<option value={i}>`(数字)与字符串状态 `"0"` 不等 → select 被置为无匹配值,**selectedIndex=-1 显示空白**(不是回落占位符!修复:option value 一律 `String(i)`);b) **debug exe 走 devUrl**:调试构建按 tauri.conf 连 localhost:1420,vite 没跑时 WebView 显示 `chrome-error://chromewebdata`(标题"localhost"、只有一个"刷新"按钮),CDP 测的是错误页还查不出异常——**CDP 前先 `npm run dev` 或改用 release exe(embedded dist)**;c) 自定义 oninput 与 bind:value 的 input 监听执行顺序不保证,handler 里读状态变量会踩旧值,一律读 `e.currentTarget.value`。
+- [x] **P51 本地 Ollama 联调批(已完成,`cargo test` 70 项+`npm run build` 通过;commit fe02fab)**:推理型模型思考过程实时显示(`AiStreamEvent::Reasoning`,`AiPayload::Reasoning`);Agent 命令回显防死循环(`is_command_line` 过滤提示词回显/散文行 + `contains_done_line` 按行识 DONE + 连续无有效命令即中止);Agent 命令镜像进终端(`[AI] $` 青/绿红标注);AI 活动流高度封顶 `min(38vh,300px)` 收拢布局。
+- [x] **P52 Agent 专属提示词(已完成,commit 17088a0)**:agent.rs 加内置 `default_system_prompt_agent()`(config 未配 `system_prompt_agent` 时不再复用 QA 提示词);本地 `config.yaml` 亦写入专属提示词。
+- [x] **P53 会话折叠柄 UI 打磨(已完成,commit 0a0cdf9)**:折叠栏收回宽度归 0,左上角 28×28 圆角矩形展开柄。
+- [x] **P54 Docker 容器连接(首版,已完成,`cargo test` 71 项+`npm run build` 通过;未提交)**:`SessionKind::Docker` + `SessionInfo.container`(config.rs,serde default 兼容旧配置);`task_exec.rs` 新增 `docker_exec_cmd`(base64 编码后经容器 `sh -c` 解码执行,避开引号冲突);core.rs Docker 会话连接跳过 PTY 终端(首版无容器交互终端),`TaskCtx.container` 透传;ai_job 经 `docker exec -i <容器> sh` 注入执行。
+- [x] **P55 多会话并行 + 事件按会话隔离(已完成,commit a2e0c3b + 后续未提交修复)**:core.rs 全局 AI 状态改 `AiManager`(每会话懒建 `AiSlot`,各自独立 `Agent/busy/mode/ctl`);所有 AI 命令(`ai_submit/ai_control/ai_stop/ai_clear_history/ai_set_mode/ai_mode`)带会话名;`update_ai_config` 只重建空闲槽。修复:前端 `aiBusy` 由单一布尔改 `Record<会话名,boolean>`(按会话存,提交只拦当前会话);`AiPayload` 非 busy 事件统一带 `name`,前端面板按 `activeTab` 过滤、镜像写回各自会话终端;`delete_session/rename_session` 补 `ai.remove` 清理 AI 槽。
+- [x] **P56 §8 AI 状态机落地(已完成,`cargo test` 71 项+`npm run build` 通过;未提交)**:core.rs 加 `AiRunState` 枚举 + `AiPayload::{State,Planning}` + `AiControl::Edit(Vec<String>)`,`ai_control` 加 `"edit"` 分支,`ai_submit` 加 `container` 覆盖;ai_job `run_ai_job` 用 `set_state()` 显式迁态(§8.7.1 映射),解析命令后广播 `Planning` 计划卡(§8.7.2),计划级一次性确认 `Approve/Edit/Reject/Cancel`(§8.7.3,裁决为"**一次批准 + 编辑回退 + 严格模式逐条**":批准整份=对本步全部命令(含危险标记)一次性显式授权,后续不再二次逐条确认,消除"双确认"冲突;`Edit` 复位 `preapproved`,编辑后新增危险命令重新逐条兜底,绝不因编辑绕过授权;`confirm_all` 严格模式恒逐条确认);前端 AiCopilot 渲染计划卡(修改/查看命令/放弃/执行)+ Dock 容器输入(Docker 会话运行时选容器,§8.7.4)。**同会话多执行体暂缓**(§8.2 并发语义本期按"每会话单执行体 + 跨会话 name 隔离"落地)。
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)
 - 全栈开发:`cargo tauri dev`
@@ -471,3 +477,69 @@ F:\Helm\
   - **非交互元素不能挂交互 role**:`<li role="button">` → `a11y_no_noninteractive_element_to_interactive_role`;`<div role="button">` 合法。交互行首选 div + `role="button"` + `tabindex="0"` + `onkeydown`(Enter/空格触发同动作,`e.preventDefault()` 防空格滚动)。
   - **`state_referenced_locally`(仅提示,非错误)**:`$state(prop.x)` 初始化只取初值——弹窗 `{#if}` 重挂载场景语义正确,属预期;Svelte 无表达式级豁免,保留即可,勿为此改 `$derived`。
   - **label 关联**:`<label>文本</label><input/>` 报 `a11y_label_has_associated_control`,改包裹式 `<label>文本<input/></label>`(隐式关联)最省事,与 SettingsModal 既有写法一致。
+
+## 8. AI 协作层设计(冻结稿)
+
+> 本节是对 Helm「终端原生 AI 协作层」设计方案的**权威记录与版本锁定**。任何涉及 AI 交互的改动/实现,一律先对照本节的"状态机 → 控件 → 缺口",不得因现状分栏 UI 而偏离。
+> 提出时间 2026-08-28。修订前须先更新本节并说明变更理由。
+
+### 8.1 核心命题
+- 一句话:**AI 不拥有自己的"地盘",它活在终端的坐标系里。** 每一刻 AI 都处于「某个会话 · 某个 cwd · 某个任务」这条链上,而不是一个悬浮的聊天框。
+- QA(解释)与 Agent(执行)不是两种产品,而是同一个"协作者"的**解释模式 / 执行模式**,共用同一个状态机。
+
+### 8.2 唯一状态机(全应用只有一个,所有面板只订阅它)
+```
+空闲 → 解析意图 → 计划确认 → 执行 → 回读 →(循环)空闲
+```
+- 空闲态:提示符旁一个光点可唤起,无常驻聊天栏。
+- 解析意图态:「意图条」就地浮现,解析结果=目标会话·目录·命令(可选容器),可直接改。
+- 计划确认态:「计划卡」展示每条命令+风险标记,可 确认 / 修改 / 丢弃。
+- 执行态:命令以卡片就地铺进终端命令流,实时输出可见,可 停止。
+- 回读态:退出码 + 摘要,成败一目了然,可 再下一步(回到解析/执行) 或 归位(回到空闲)。
+- 危险命令确认 / 推理黄卡 / 退出码回喂,都是该状态机某一态下的**渲染**,而非独立 UI。
+- 并发:一次会话可存在多个执行体,以 `AiPayload.name` 区分;各面板只订阅对应 `name` 的状态。**2026-08-28 决议:本期按"每会话单执行体 + 跨会话 name 隔离"落地,同会话多执行体暂缓**(`AiSlot.busy` CAS 保持同会话单任务;`name` 现等价于会话名)。若未来开放同会话多执行体,name 需扩展为"会话×任务"。
+
+### 8.3 三条设计轴
+- **状态轴(引擎)**:8.2 的唯一状态机。
+- **空间轴**:不建常驻聊天栏;AI 的意图/计划/推理在**上下文帧**随需展开,执行结果以卡片就地入终端流。
+- **输入轴**:所有"给 AI 的话"从同一入口进(命令面板 / Alt+I / `!` 增强),与打字共用入口。
+
+### 8.4 设计方法(防"不知道怎么做设计")
+1. 挑一个真实任务,从一句话触发开始逐瞬间走一遍,不许跳步。
+2. 每个瞬间回答同一组 5 问:当前状态 / 用户看到什么 / AI 给什么信息 / 用户能做什么 / 下一步去哪。
+3. 把所有瞬间"用户能做什么"合并:重复项=通用控件,不重复项=该任务特有的边缘控件。
+
+### 8.5 对照现状的落地缺口(走 Docker 任务得出)
+真正需要新增/改动仅 4 处,其余全部复用现有零件:
+1. 新增 `AiPayload` 事件 `plan/confirmation`(现仅有 `commandStep`/`pendingCommand`)。
+2. 计划卡要能「修改」(现 `pendingCommand` 仅确认/拒绝,不可编辑)。
+3. 意图条要把目标解析成「会话 → 容器 → 命令」(现只到 会话 → 命令);容器目标对应 `SessionKind::Docker` + `SessionInfo.container`(config.rs 已就绪)。
+4. 容器选择器(Docker kind 的边缘控件,承接上一点)。
+
+### 8.6 泛化验证清单
+用 8.4 方法再走第二个真实任务(如"帮我搜这台服务报错"),核验 8.5 的 4 个缺口是否仍成立;若出现只属于第二个任务的控件,补充为新增边缘控件。
+
+### 8.7 实现逻辑(后端锚点映射,2026-08-28 冻结)
+> 关键认知:后端 `src-tauri/src/ai_job.rs::run_ai_job` 已是这整套循环,`src-tauri/src/core.rs` 定义了 `AiControl`/`AiPayload`/`AiSlot`/`TaskCtx`。实现不是"从零写状态机",而是把隐含在 for 循环顺序里的状态显式化 + 补 8.5 的 4 处缺口。
+> 现状循环:emit StepBegin → agent_step(流式 Reasoning+Streaming) → parse_commands(next) → 逐命令 check_danger → 危险 emit PendingCommand、等 ctl_rx 收 Approve/Reject/Cancel → task_exec → emit CommandStep → 输出喂回 agent → 下一轮;DONE/超步 → Done → clear_history/reset_task。
+> 现状两处错位:(a) 无显式状态,前端靠 `event.kind` 猜态(违反 8.2"唯一状态机");(b) 计划确认与逐命令确认混在一轮,没有"整份计划卡"。
+
+#### 8.7.1 状态显式化(核心,优先做)
+- `core.rs` 加 `pub enum AiRunState { Idle, Parsing, Planning, AwaitingConfirm, Executing, ReadingBack }`;`AiPayload` 加变体 `State { name, state }`。
+- `run_ai_job` 用 `set_state()` 辅助,每次换态前 emit `State`;前端 `AiCopilot`/`PromptPanel`/`StatusBar` **只订阅 `kind==="state"`**,其余事件降级为只带内容的 delta payload,不参与判态。
+- 状态映射:StepBegin→Parsing;parse_commands 出命令→Planning;首条危险命令 PendingCommand→AwaitingConfirm;task_exec→Executing;CommandStep→ReadingBack;循环回 agent_step→Parsing;Done→Idle。
+
+#### 8.7.2 缺口1:计划卡事件
+- `parse_commands` 之后、逐命令确认之前,emit `AiPayload::Planning { name, commands: Vec<{command, level, reason}> }`,给前端整份计划卡。
+- 现有 `PendingCommand` 保留:它只"卡住单条确认",与计划卡不冲突。
+
+#### 8.7.3 缺口2:计划可改
+- `core.rs::AiControl` 加 `Edit(Vec<String>)`;`ai_control` 命令加 `"edit"` 分支。
+- 计划确认态一次性 recv:收 `Edit(cmd)` 用新列表覆盖 commands 再执行;`Reject` 跳过;`Cancel` 停。改动集中在控制通道加一个带负载变体。
+
+#### 8.7.4 缺口3+4:容器定位(后端已就绪,补前端)
+- 后端已完成:`core.rs` task 启动时从 `SessionInfo.container` 取 `TaskCtx.container`(core.rs ~524-540);`task_exec` 已把 container 透传给 `run_task_exec`。缺"动态选择"(现在 task 开始时由会话 kind 定死)。
+- 前端:`ai_task` 命令加可选 `container: Option<String>`,构建 `TaskCtx` 时覆盖;AiCopilot 对 kind=Docker 会话在意图条/任务启动处加容器下拉。
+
+#### 8.7.5 实施顺序
+① 状态显式化(纯增量,四组件统一) → ② 计划卡 + Edit(一次控制通道改动) → ④ 前端容器选择器。改完各跑 `cargo build` / `npm run build` 验证。

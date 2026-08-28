@@ -35,12 +35,13 @@
     onModeChange: (m: "qa" | "agent") => void;
     onApprove: () => void;
     onReject: () => void;
+    onEditPlan: (commands: string[]) => void;
     onStop: () => void;
     onClear: () => void;
     onOpenTask: () => void;
     onToggleLog: () => void;
     onToggleStream: () => void;
-    onDockSubmit: (text: string) => void;
+    onDockSubmit: (text: string, container?: string | null) => void;
   }
 
   let {
@@ -67,6 +68,7 @@
     onModeChange,
     onApprove,
     onReject,
+    onEditPlan,
     onStop,
     onClear,
     onOpenTask,
@@ -579,6 +581,7 @@
   onStop={onStop}
   onApprove={onApprove}
   onReject={onReject}
+  onEditPlan={onEditPlan}
   onModeChange={onModeChange}
   onToggleStream={onToggleStream}
   onToggleLog={onToggleLog}

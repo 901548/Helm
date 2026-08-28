@@ -13,7 +13,10 @@
   let statuses = $state<Record<string, SessionStatus>>({});
   let tabs = $state<string[]>([]);
   let activeTab = $state<string | null>(null);
-  let aiBusy = $state(false);
+  // 多会话：按会话名记录忙碌态，面板/提交只取当前活动会话的那一份
+  let aiBusy = $state<Record<string, boolean>>({});
+  // §8.7.1 唯一状态机：按会话记录当前执行态（Idle/Parsing/Planning/AwaitingConfirm/Executing/ReadingBack）
+  let aiState = $state<Record<string, string>>({});
   let aiMode = $state<"qa" | "agent">("qa");
   let aiConfig = $state<AiConfig | null>(null);
   let uiConfig = $state<UiConfig | null>(null);
@@ -70,9 +73,9 @@
     );
   }
 
-  async function refreshAiMode() {
+  async function refreshAiMode(name?: string) {
     try {
-      aiMode = await api.aiMode();
+      aiMode = await api.aiMode(name ?? activeTab ?? "");
     } catch {
       /* ignore */
     }
@@ -134,13 +137,16 @@
       }
     });
     const unsubAi = api.onAi((p) => {
+      // 多会话下，AI 活动面板只反映当前活动会话；终端镜像则写回到各自会话
+      const isActive = p.name === activeTab;
       switch (p.kind) {
         case "busy":
-          aiBusy = p.busy;
+          // 多会话：忙碌按会话命名，互不覆盖；面板只读当前会话那一份
+          aiBusy[p.name] = p.busy;
           break;
         case "streaming": {
           // QA 流式追加进活动流卡片;Agent 模式的模型原始输出不展示(等解析后的命令卡片)
-          if (!p.text || aiMode !== "qa") break;
+          if (!p.text || aiMode !== "qa" || !isActive) break;
           const last = aiCards[aiCards.length - 1];
           if (last && last.kind === "qa" && !last.done) {
             aiCards = [...aiCards.slice(0, -1), { ...last, text: last.text + p.text }];
@@ -150,36 +156,46 @@
           break;
         }
         case "reasoning": {
-          // 推理型模型思考过程：实时展示（QA 卡未完成时可见），不写入答案文本
+          // 推理型模型思考过程：仅活动会话时实时展示（QA 卡未完成时可见）
+          if (!isActive) break;
           aiThinking = (aiThinking + (p.text || "")).slice(-4000);
           break;
         }
         case "commandStep": {
-          // 更新既有卡片(运行中/待确认/已跳过同命令),否则新建
-          const idx = [...aiCards]
-            .reverse()
-            .findIndex((c) => c.kind === "step" && c.command === p.command && ["running", "confirm", "skipped"].includes(c.status));
-          if (idx >= 0) {
-            const i = aiCards.length - 1 - idx;
-            const c = aiCards[i] as (typeof aiCards)[number] & { kind: "step" };
-            aiCards = [
-              ...aiCards.slice(0, i),
-              { ...c, status: p.success ? "ok" : "fail", message: p.message, output: p.output || undefined },
-              ...aiCards.slice(i + 1),
-            ];
-          } else {
-            aiCards = [
-              ...aiCards,
-              { id: ++cardId, kind: "step", command: p.command, status: p.success ? "ok" : "fail", message: p.message, output: p.output || undefined },
-            ];
+          // 仅活动会话更新 AI 活动面板；命令仍镜像到其所属会话的终端（含后台并行）
+          if (isActive) {
+            const idx = [...aiCards]
+              .reverse()
+              .findIndex((c) => c.kind === "step" && c.command === p.command && ["running", "confirm", "skipped"].includes(c.status));
+            if (idx >= 0) {
+              const i = aiCards.length - 1 - idx;
+              const c = aiCards[i] as (typeof aiCards)[number] & { kind: "step" };
+              aiCards = [
+                ...aiCards.slice(0, i),
+                { ...c, status: p.success ? "ok" : "fail", message: p.message, output: p.output || undefined },
+                ...aiCards.slice(i + 1),
+              ];
+            } else {
+              aiCards = [
+                ...aiCards,
+                { id: ++cardId, kind: "step", command: p.command, status: p.success ? "ok" : "fail", message: p.message, output: p.output || undefined },
+              ];
+            }
+            aiStreamOpen = true;
+            addLog({
+              id: ++logId,
+              name: p.name,
+              type: "cmd",
+              command: p.command,
+              success: p.success,
+              message: p.message,
+              output: p.output,
+            });
           }
-          aiStreamOpen = true;
-          // 镜像到终端：在当前终端窗口实时展示 agent 执行了哪些命令及其状态，
-          // 让用户直观看到命令在跑（agent 仍走独立后台通道真实执行，退出码/输出可靠）
-          const echoName = activeTab ?? "";
-          if (echoName && p.command) {
+          // 镜像到各自会话的终端：让用户直观看到每条命令及其状态（agent 仍走独立后台通道真实执行）
+          if (p.name && p.command) {
             pushEcho(
-              echoName,
+              p.name,
               p.success
                 ? `\r\n\x1b[36m[AI] $ \x1b[0m${p.command}\x1b[90m ✓\x1b[0m\r\n`
                 : `\r\n\x1b[36m[AI] $ \x1b[0m${p.command}\x1b[31m ✗${p.message ? ` ${p.message}` : ""}\x1b[0m\r\n`,
@@ -187,64 +203,73 @@
             if (p.output) {
               const limited =
                 p.output.length > 800 ? `${p.output.slice(0, 800)}\n…[已截断]` : p.output;
-              pushEcho(echoName, `\x1b[90m${limited}\x1b[0m\r\n`);
+              pushEcho(p.name, `\x1b[90m${limited}\x1b[0m\r\n`);
             }
           }
-          addLog({
-            id: ++logId,
-            name: echoName,
-            type: "cmd",
-            command: p.command,
-            success: p.success,
-            message: p.message,
-            output: p.output,
-          });
           break;
         }
         case "pendingCommand":
-          if ((activeTab ?? "") && p.command) {
-            pushEcho(
-              activeTab ?? "",
-              `\r\n\x1b[33m[AI] ⏸ 待确认: \x1b[0m${p.command}\r\n`,
-            );
+          // 待确认命令镜像到所属会话终端；确认按钮只在活动会话面板显示
+          if (p.name && p.command) {
+            pushEcho(p.name, `\r\n\x1b[33m[AI] ⏸ 待确认: \x1b[0m${p.command}\r\n`);
           }
-          aiCards = [
-            ...aiCards,
-            { id: ++cardId, kind: "step", command: p.command, status: "confirm", level: p.level, reason: p.reason },
-          ];
-          aiStreamOpen = true;
+          if (isActive) {
+            aiCards = [
+              ...aiCards,
+              { id: ++cardId, kind: "step", command: p.command, status: "confirm", level: p.level, reason: p.reason },
+            ];
+            aiStreamOpen = true;
+          }
+          break;
+        case "planning":
+          // §8.7.2 整份计划卡：一次展示该步全部命令，整份确认/编辑/放弃
+          if (isActive && p.commands?.length) {
+            aiCards = [
+              ...aiCards,
+              { id: ++cardId, kind: "plan", commands: p.commands, status: "plan" },
+            ];
+            aiStreamOpen = true;
+          }
+          break;
+        case "state":
+          // §8.7.1 唯一状态机广播：目前仅用于驱动 busy UI，按会话记录
+          aiState[p.name] = p.state;
           break;
         case "done":
-          aiSummary = { text: p.message, ok: true };
-          finishQaCard();
-          if (aiMode === "agent" && activeTab) {
-            pushEcho(activeTab, `\r\n\x1b[32m[AI] ✓ ${p.message}\x1b[0m\r\n`);
+          if (isActive) {
+            aiSummary = { text: p.message, ok: true };
+            finishQaCard();
+            addLog({
+              id: ++logId,
+              name: p.name,
+              type: "info",
+              command: "",
+              success: true,
+              message: "✓ " + p.message,
+              output: "",
+            });
           }
-          addLog({
-            id: ++logId,
-            name: activeTab ?? "",
-            type: "info",
-            command: "",
-            success: true,
-            message: "✓ " + p.message,
-            output: "",
-          });
+          if (aiMode === "agent" && p.name) {
+            pushEcho(p.name, `\r\n\x1b[32m[AI] ✓ ${p.message}\x1b[0m\r\n`);
+          }
           break;
         case "error":
-          aiSummary = { text: p.message, ok: false };
-          finishQaCard();
-          if (aiMode === "agent" && activeTab) {
-            pushEcho(activeTab, `\r\n\x1b[31m[AI] ✗ ${p.message}\x1b[0m\r\n`);
+          if (isActive) {
+            aiSummary = { text: p.message, ok: false };
+            finishQaCard();
+            addLog({
+              id: ++logId,
+              name: p.name,
+              type: "info",
+              command: "",
+              success: false,
+              message: "✗ " + p.message,
+              output: "",
+            });
           }
-          addLog({
-            id: ++logId,
-            name: activeTab ?? "",
-            type: "info",
-            command: "",
-            success: false,
-            message: "✗ " + p.message,
-            output: "",
-          });
+          if (aiMode === "agent" && p.name) {
+            pushEcho(p.name, `\r\n\x1b[31m[AI] ✗ ${p.message}\x1b[0m\r\n`);
+          }
           break;
       }
     });
@@ -260,6 +285,8 @@
     if (kinds[name] === "rdp") return;
     activeTab = name;
     api.setActive(name);
+    // 每会话模式隔离：切到该会话时加载它自己的 AI 模式
+    refreshAiMode(name);
     if (!tabs.includes(name)) {
       // 未打开终端标签时，先连接
       connectSession(name);
@@ -395,8 +422,9 @@
   }
 
   /// AI 命令条提交:重置活动流 + 调后端;Agent 任务在终端留一行锚点
-  async function submitFromDock(text: string) {
-    if (!text.trim() || aiBusy) return;
+  /// `container`：Docker 会话运行时目标容器（§8.7.4）
+  async function submitFromDock(text: string, container?: string | null) {
+    if (!text.trim() || aiBusy[activeTab ?? ""]) return;
     aiCards = aiMode === "qa" ? [{ id: ++cardId, kind: "qa", text: "", done: false }] : [];
     aiTaskText = text;
     aiSummary = null;
@@ -408,7 +436,7 @@
     }
     const pwd = pwds[name] ?? "";
     try {
-      await api.aiSubmit(text, pwd || undefined);
+      await api.aiSubmit(name, text, pwd || undefined, container || null);
     } catch (e) {
       aiSummary = { text: String(e), ok: false };
       finishQaCard();
@@ -426,7 +454,7 @@
 
   function handleModeChange(m: "qa" | "agent") {
     aiMode = m;
-    api.aiSetMode(m).catch(() => {});
+    api.aiSetMode(activeTab ?? "", m).catch(() => {});
   }
 
   /// Alt+I:聚焦命令条输入框
@@ -444,14 +472,38 @@
 
   async function decide(approve: boolean) {
     // 乐观更新确认卡片;拒绝时后端会回发 CommandStep(已跳过)统一收口
-    const idx = [...aiCards].reverse().findIndex((c) => c.kind === "step" && c.status === "confirm");
-    if (idx >= 0) {
-      const i = aiCards.length - 1 - idx;
+    // 优先找逐条确认卡(step/confirm),否则找整份计划卡(plan/plan)
+    let i = -1;
+    const ci = [...aiCards].reverse().findIndex((c) => c.kind === "step" && c.status === "confirm");
+    if (ci >= 0) {
+      i = aiCards.length - 1 - ci;
       const c = aiCards[i] as (typeof aiCards)[number] & { kind: "step" };
       aiCards = [...aiCards.slice(0, i), { ...c, status: approve ? "running" : "skipped" }, ...aiCards.slice(i + 1)];
+    } else {
+      const pi = [...aiCards].reverse().findIndex((c) => c.kind === "plan" && c.status === "plan");
+      if (pi >= 0) {
+        i = aiCards.length - 1 - pi;
+        const c = aiCards[i] as (typeof aiCards)[number] & { kind: "plan" };
+        aiCards = [...aiCards.slice(0, i), { ...c, status: approve ? "running" : "skipped" }, ...aiCards.slice(i + 1)];
+      }
     }
     try {
-      await api.aiControl(approve ? "approve" : "reject");
+      await api.aiControl(activeTab ?? "", approve ? "approve" : "reject");
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /// §8.7.3 整份计划修改：用编辑后的命令列表覆盖并执行
+  async function editPlan(commands: string[]) {
+    const pi = [...aiCards].reverse().findIndex((c) => c.kind === "plan" && c.status === "plan");
+    if (pi >= 0) {
+      const i = aiCards.length - 1 - pi;
+      const c = aiCards[i] as (typeof aiCards)[number] & { kind: "plan" };
+      aiCards = [...aiCards.slice(0, i), { ...c, commands: c.commands, status: "running" }, ...aiCards.slice(i + 1)];
+    }
+    try {
+      await api.aiControl(activeTab ?? "", "edit", commands);
     } catch {
       /* ignore */
     }
@@ -459,7 +511,7 @@
 
   async function stopAi() {
     try {
-      await api.aiStop();
+      await api.aiStop(activeTab ?? "");
     } catch {
       /* ignore */
     }
@@ -467,7 +519,7 @@
 
   async function clearAi() {
     try {
-      await api.aiClearHistory();
+      await api.aiClearHistory(activeTab ?? "");
     } catch {
       /* ignore */
     }
@@ -484,7 +536,7 @@
       if (ai.model) {
         await api.updateAiConfig(ai);
         aiConfig = ai;
-        refreshAiMode();
+        refreshAiMode(activeTab ?? "");
       }
       await api.updateUiConfig(ui);
       uiConfig = ui;
@@ -533,7 +585,7 @@
           onCd={handleCd}
           onPwd={handlePwd}
           {aiMode}
-          {aiBusy}
+          aiBusy={aiBusy[activeTab ?? ""] ?? false}
           {aiCards}
           {aiTaskText}
           {aiSummary}
@@ -546,6 +598,7 @@
           onModeChange={handleModeChange}
           onApprove={() => decide(true)}
           onReject={() => decide(false)}
+          onEditPlan={editPlan}
           onStop={stopAi}
           onClear={clearAi}
           onOpenTask={focusAi}

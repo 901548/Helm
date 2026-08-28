@@ -741,4 +741,91 @@ mod tests {
 
         mgr.disconnect(&info.name).await;
     }
+
+    /// P59 核心修复冒烟：握手期间会话被删除 → 不复活"幽灵连接"。
+    /// 确定性复现：mark_connecting 建占位 → 立即 remove 移除占位(connecting 标记仍在)
+    /// → connect 认证完成写回时发现 is_placeholder=true 但 map 已无该会话 → 应取消并丢弃句柄。
+    #[tokio::test]
+    async fn ghost_connection_removed_during_handshake_not_revived() {
+        let Some(mut info) = live_session() else {
+            eprintln!("跳过：无可用会话配置");
+            return;
+        };
+        info.name = "ghost-smoke".to_string();
+        let mgr = SshManager::new();
+        assert!(
+            mgr.mark_connecting(&info.name).await,
+            "首次标记应返回 new"
+        );
+        // 模拟握手期间会话被删除：占位从 map 移除，但 connecting 标记仍保留
+        mgr.remove(&info.name).await;
+        assert!(
+            !mgr.session_names().await.contains(&info.name),
+            "占位应已被移除"
+        );
+        // 握手完成、认证通过，但占位已不在 map 中 → 应取消连接而非复活
+        let r = mgr.connect(&info).await;
+        assert!(r.is_err(), "应拒绝复活幽灵连接");
+        let msg = r.unwrap_err().to_string();
+        assert!(msg.contains("已被删除或断开"), "错误信息不明确: {msg}");
+        // 不应残留任何连接：map 无该会话、状态未连接、connecting 标记已清除
+        assert!(!mgr.session_names().await.contains(&info.name));
+        assert_eq!(
+            mgr.get_status(&info.name).await,
+            SessionStatus::Disconnected
+        );
+        assert!(
+            !mgr.connecting.lock().await.contains(&info.name),
+            "connecting 标记应清除"
+        );
+    }
+
+    /// P59：task_exec 组装命令经真实 SSH 通道执行，标记解析完整（退出码/结束目录回访）。
+    /// 验证 execute + task_exec_cmd + parse_task_output 全链路（docker exec 的兄弟路径）。
+    #[tokio::test]
+    async fn task_exec_markers_over_live_connection() {
+        let Some(info) = live_session() else {
+            eprintln!("跳过：无可用会话配置");
+            return;
+        };
+        let mgr = SshManager::new();
+        mgr.connect(&info).await.expect("连接失败");
+        let cmd = crate::task_exec::task_exec_cmd("/tmp", "echo HELM_SMOKE_MARKERS && pwd");
+        let raw = mgr.execute(&info.name, &cmd).await.expect("执行失败");
+        mgr.disconnect(&info.name).await;
+        let (output, code, pwd) = crate::task_exec::parse_task_output(&raw);
+        assert_eq!(code, 0, "退出码应为 0: {output:?}");
+        assert!(
+            output.contains("HELM_SMOKE_MARKERS"),
+            "输出缺失: {output:?}"
+        );
+        assert_eq!(pwd, "/tmp", "结束目录应回传 /tmp: {pwd:?}");
+    }
+
+    /// P59：超时错误不内联命令文本（防命令/敏感串经 stderr 泄漏到 UI）。
+    /// 长命令触发 30s 超时，断言错误信息只描述超时、不含命令内容。
+    #[tokio::test]
+    async fn exec_timeout_error_does_not_leak_command() {
+        let Some(info) = live_session() else {
+            eprintln!("跳过：无可用会话配置");
+            return;
+        };
+        let mgr = SshManager::new();
+        mgr.connect(&info).await.expect("连接失败");
+        let marker = "HELM_LEAK_PROBE_xyz";
+        let r = mgr
+            .execute(&info.name, &format!("sleep 35; echo {marker}"))
+            .await;
+        mgr.disconnect(&info.name).await;
+        assert!(r.is_err(), "长命令应触发超时");
+        let msg = r.unwrap_err().to_string();
+        assert!(
+            !msg.contains("sleep") && !msg.contains(marker),
+            "超时错误泄露命令文本: {msg}"
+        );
+        assert!(
+            msg.contains("超时") || msg.contains("timeout"),
+            "错误应指明超时: {msg}"
+        );
+    }
 }

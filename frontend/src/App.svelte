@@ -7,7 +7,7 @@
   import SettingsModal from "./components/chrome/SettingsModal.svelte";
   import StatusBar from "./components/chrome/StatusBar.svelte";
   import * as api from "./lib/api";
-  import type { AiCard, AiLogEntry, AiConfig, SessionInfo, SessionKind, SessionStatus, Theme, UiConfig } from "./lib/api";
+  import type { AiCard, AiLogEntry, AiConfig, AiState, SessionInfo, SessionKind, SessionStatus, Theme, UiConfig } from "./lib/api";
 
   let sessions = $state<SessionInfo[]>([]);
   let statuses = $state<Record<string, SessionStatus>>({});
@@ -15,6 +15,8 @@
   let activeTab = $state<string | null>(null);
   // 多会话：按会话名记录忙碌态，面板/提交只取当前活动会话的那一份
   let aiBusy = $state<Record<string, boolean>>({});
+  // §8.7.1 唯一状态机前端侧：ai_job 广播的 State 事件按会话落盘，dock 只读活动会话那份
+  let aiState = $state<Record<string, AiState>>({});
   let aiMode = $state<"qa" | "agent">("qa");
   let aiConfig = $state<AiConfig | null>(null);
   let uiConfig = $state<UiConfig | null>(null);
@@ -144,6 +146,10 @@
         case "busy":
           // 多会话：忙碌按会话命名，互不覆盖；面板只读当前会话那一份
           aiBusy[p.name] = p.busy;
+          break;
+        case "state":
+          // §8.7.1 显式状态迁移，dock 状态 chip 唯一判态来源
+          aiState[p.name] = p.state;
           break;
         case "streaming": {
           // QA 流式追加进活动流卡片;Agent 模式的模型原始输出不展示(等解析后的命令卡片)
@@ -599,6 +605,7 @@
           onPwd={handlePwd}
           {aiMode}
           aiBusy={aiBusy[activeTab ?? ""] ?? false}
+          aiState={aiState[activeTab ?? ""] ?? "idle"}
           {aiCards}
           {aiTaskText}
           {aiSummary}

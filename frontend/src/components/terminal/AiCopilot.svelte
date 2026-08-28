@@ -1,11 +1,12 @@
 <script lang="ts">
-  import type { AiCard, DangerLevel } from "../../lib/api";
+  import type { AiCard, AiState, DangerLevel } from "../../lib/api";
 
   // AI 常驻命令条 + 活动流(P39):所有 AI 触点收敛于此——
   // 模式切换、任务输入、步骤卡片、危险确认、停止/日志,终端保持纯净。
   interface Props {
     mode: "qa" | "agent";
     busy: boolean;
+    aiState?: AiState;
     cards: AiCard[];
     taskText: string;
     summary: { text: string; ok: boolean } | null;
@@ -28,6 +29,7 @@
   let {
     mode,
     busy,
+    aiState = "idle",
     cards,
     taskText,
     summary,
@@ -61,6 +63,16 @@
     Safe: "安全",
     Warning: "警告",
     Critical: "危险",
+  };
+
+  // §8.7.1 状态 chip 文案：ai_job 广播的 State 事件是唯一判态来源，idle 不显示
+  const stateText: Record<AiState, string> = {
+    idle: "",
+    parsing: "解析中",
+    planning: "生成计划",
+    awaitingConfirm: "等待确认",
+    executing: "执行中",
+    readingBack: "读取回显",
   };
 
   const hasContent = $derived(cards.length > 0 || !!summary || !!taskText);
@@ -218,6 +230,11 @@
       <button class="mode-btn" class:on={mode === "qa"} title="问答模式：聊天式提问" onclick={() => onModeChange("qa")}>⌘ 问答</button>
       <button class="mode-btn" class:on={mode === "agent"} title="Agent 模式：描述任务，AI 自动执行" onclick={() => onModeChange("agent")}>▶ Agent</button>
     </div>
+    {#if busy && aiState !== "idle"}
+      <span class="state-chip" class:wait={aiState === "awaitingConfirm"} title="AI 任务状态机当前阶段">
+        <span class="dot" aria-hidden="true"></span>{stateText[aiState]}
+      </span>
+    {/if}
     <input
       class="ai-bar-container"
       bind:value={containerInput}
@@ -480,6 +497,34 @@
     background: var(--bg-panel);
     color: var(--accent);
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  }
+  /* §8.7.1 状态机 chip：busy 期间显示当前阶段，等待确认时转警告色 */
+  .state-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
+    flex-shrink: 0;
+    padding: 0.14rem 0.55rem;
+    border-radius: 999px;
+    background: var(--track-bg);
+    color: var(--accent);
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .state-chip .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    animation: state-pulse 1.1s ease-in-out infinite;
+  }
+  .state-chip.wait {
+    color: var(--warning);
+  }
+  @keyframes state-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
   }
   .ai-input {
     flex: 1;

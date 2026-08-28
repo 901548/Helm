@@ -386,6 +386,11 @@ F:\Helm\
 - [x] **P60 三审加固(已完成,commit ff4923f)**:`read_file`/`read_snippet` 对不可信 `limit` 参数按 `preview_cap`(1MiB~16MiB+容量上限)钳制,杜绝超大 limit 触发内存 OOM abort;补 `preview_cap` 单元测试。
 - [x] **P61 纯安全计划只读自动执行(已完成,commit d07cb08)**:ai_job 解析命令后 `need_confirm = confirm_all || 存在非 Safe 命令` 并写进 `AiPayload::Planning`;纯安全计划前端只读展示「安全·自动执行」蓝胶囊,隐藏 执行/放弃/修改 按钮(仅留「查看命令」),消除装饰性按钮假交互。
 - [x] **P62 计划卡 needConfirm 序列化补 camelCase(已完成,commit 4276a4c)**:P61 为 `Planning` 新加 `need_confirm` 字段,但漏加 `#[serde(rename_all="camelCase")]`(与 P57 `GoalStarted/GoalDone` 同款陷阱),后端以 snake_case 序列化为 `need_confirm`→前端 `p.needConfirm` 得 `undefined`→`p.needConfirm ?? true` 兜底为 true→纯安全计划仍误显示执行/放弃/修改按钮。给 `Planning` 补 camelCase,新增 2 条回归断言(`needConfirm` 键存在、`need_confirm` snake 键不存在),`cargo test` 93 项全过;计算机真机端到端验证:agent 模式提交纯安全任务(uptime/cat hostname/ls -la /tmp)→3 张计划卡均显示「安全·自动执行」且无执行/放弃/修改按钮,截图 `docs` P0#1 关闭。
+- [x] **P63 §8.7.1 状态机前端半边补齐(state 事件消费 + dock 状态 chip,已完成,CDP 五态注入 ALL PASS + Vitest 26 项/`npm run build` 通过)**:
+  1. **缺口(UI 巡检发现)**:P56 只做了状态机后端半边——ai_job 在全部 6 个迁移点(行 226/411/422/463/577/593)广播 `AiPayload::State`,但 App.svelte 事件 switch **无 `case "state"`**,无人消费→前端仍靠 busy/cards 猜态,§8.2"唯一状态机、面板不判态"未成立,界面也无任务阶段指示。
+  2. **修复(纯前端三跳)**:App.svelte 增 `aiState: Record<会话,AiState>`(与 aiBusy 同款按会话生命周期)+ `case "state"` 落盘 + 传 `aiState[activeTab]`(缺省 "idle");TerminalTabs 透传;AiCopilot 墽 `aiState` prop + 命令条**状态 chip**(模式胶囊与容器输入之间):`busy && state!=="idle"` 才显示,五态文案 解析中/生成计划/等待确认/执行中/读取回显,脉动圆点 accent 色,`awaitingConfirm` 转 `--warning` 警告色,idle 自动消失。
+  3. **验证(CDP 事件注入)**:初始 idle 无 chip→busy+五态依次迁移,chip 文案逐一正确且 awaitingConfirm 带 wait 类→state idle+busy false 复位后 chip 消失,ALL PASS;截图 `docs/screenshots/ui-review-state-chip.png`。类型层本就对齐(`AiRunState` serde camelCase = TS `AiState`),零后端改动。
+  4. **坑**:a) chip 只在 busy 时显示——后端 `Idle` 迁移先于 `Busy{false}` 发出,若只判 state 会闪一帧"有 state 无 busy";绑定 `busy &&` 双条件最稳;b) Edit 工具大段替换会吃行尾换行(本次 levelText 对象尾行被并排),替换后必须核对邻行结构。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

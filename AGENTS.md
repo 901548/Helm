@@ -421,6 +421,12 @@ F:\Helm\
   6. **多行粘贴警告**:paste() 读剪贴板后按非空行数 >1 时 confirm「粘贴内容包含 N 行命令」——运维安全件,防粘贴块误执行破坏性命令。
   7. **验证(CDP 真机,连接 192.168.79.150)**:WebGL 3 canvas ✓;缩放先 Ctrl+0 归零定基线→Ctrl+= ×2+wheel→canvas 背板尺寸变化→Ctrl+0 精确复位 ✓;右键菜单四项+veil 关闭 ✓;stub 剪贴板两行→Ctrl+V→confirm「2 行命令」✓;单标签 Ctrl+Tab/1 no-throw ✓;`open_external` https 放行真开浏览器/file:// 拒绝 ✓。
   8. **坑**:a) **WebGL 渲染器下所有视觉尺寸被 fit 拉齐区域大小,字号无 DOM 指标**——`.xterm-rows > div` 为 null、`.xterm-screen` 高度恒等于区域、canvas 背板仅重排噪声级变化,断言只能以「重排发生(canvas 尺寸变)+Ctrl+0 精确回到基线」为证(P67 的 DOM 渲染器行高断言在 WebGL 下失效);b) **测试脚本自身会污染被测状态**——探针残留 zoomOffset=7 导致首轮 base 不在零位,断言前必须显式归零;c) clipboard.readText 需文档焦点,CDP 合成事件下直接 stub `navigator.clipboard.readText` 最稳;d) CDP 断言 Svelte DOM 更新须 sleep 等 flush,同步连查恒为旧 DOM。
+- [x] **P69 §8.6 泛化验证 + 弱模型输出解析三修复(已完成,真机 glm4:latest 两轮对照 + `cargo test` 98 项全过)**:
+  1. **验证方法(§8.6 定稿落地)**:CDP 走真实用户路径(连接 → dock 切 Agent → 输入框提交「检查 sshd 服务报错」) → 每 3s 轮询 DOM(chip/cards/summary)记录全轨迹。**四缺口确认泛化**:计划卡全 step 正确(安全命令自动执行零假确认)、状态 chip 全程正确迁移、退出码判败→模型自动换思路、无新控件需求。容器选择器属 Docker 任务范围(本任务不涉及,P56 已有 dock 入口)。
+  2. **实测抓出三个解析缺陷(glm4 不守 P57 输出协议)**:a) **中文反思散文被当命令执行**——「对策：使用 systemctl status...」行含 ASCII 词元(反引号命令)骗过 `is_command_line`,发到 shell 报错退出;b) **同行多 GOAL 零识别**——「GOAL 1. x GOAL 2. y」挤一行,extract_goals 按行前缀匹配得 0 目标;c) **`journalctl -f` 烧满 60s 超时**——follow 类命令永不退出。
+  3. **修复(agent.rs)**:a) `is_command_line` 加 **CJK 首字符过滤**(shell 命令必以 ASCII 程序名开头;含中文参数的合法命令如 `echo 你好` 首词元 ASCII 不受影响)+ `strip_enumerator` 剥行首序号("1. 检查磁盘"剥后仍 CJK → 散文;"1. ls -la"剥出真命令,parse_commands 同步应用序号剥除);b) `extract_goals` 加 **goal_segments 同行切段**(按 GOAL 关键字出现位置切,大小写不敏感);`extract_reflexion` 加**中文别名**「对策：/反思：」同等采纳(喂重规划循环);c) 内置两处 agent 提示词加**输出纪律**(GOAL 独占一行/每行至多一条命令/无解释文字)+**禁止 -f/--follow**(须自然退出,看日志用 -n/--since)。
+  4. **复测对照(同任务)**:散文执行 3 次→0;`-f` 超时→0(改用 `-n 100 --since`);12 步内 ✓ 任务完成零超时浪费。剩余瑕疵属模型质量(glm4 重复重试一次失败命令、GOAL 不换行),提示词约束兜底,非代码缺陷。
+  5. **坑**:a) **用户 config.yaml 的自定义 `system_prompt_agent` 会覆盖内置提示词**——提示词加固必须同步改用户配置(按 P57 先例,已追加输出纪律与禁 -f 两行;config.yaml gitignore 不入库);b) 空命令分支的 CommandStep 卡展示原始 GOAL 文本是**透明化设计**(消息"模型未给出可执行命令"准确),非解析泄漏——GOAL 已被 extract_goals 正常入库并推进;c) 轮询 DOM 断言 AI 轨迹每 3s 一拍即可,chip/cards/summary 三元组足够还原状态机全程。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

@@ -84,6 +84,9 @@ export type AiPayload =
   | { kind: "pendingCommand"; name: string; command: string; level: DangerLevel; reason: string }
   | { kind: "state"; name: string; state: AiState }
   | { kind: "planning"; name: string; commands: PlanCommandUi[] }
+  // P57 L2 子目标事件
+  | { kind: "goalStarted"; name: string; goalIndex: number; title: string }
+  | { kind: "goalDone"; name: string; goalIndex: number; status: "ok" | "failed" }
   | { kind: "busy"; name: string; busy: boolean };
 
 export interface TerminalOutputPayload {

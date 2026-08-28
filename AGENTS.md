@@ -439,6 +439,13 @@ F:\Helm\
   3. **前端零改动**:App 只门控 rdp,Docker 会话本就按普通 SSH 建标签/路由输入;SessionForm 已有容器名字段(docker 会话强制填);SysMonitor 对 Docker 显示宿主统计(exec 通道在宿主,可接受);AI Agent 的 docker_exec_cmd 分支(P54)不受影响。
   4. **验证与限制**:本机唯一服务器 192.168.79.150 **无 docker**(agent 实测 `docker: 未找到命令`,连 apt-get 都无——记录器完整捕获了弱模型"尝试安装 docker"的发散轨迹,ai_stop 兜住)。已验证:错误路径(无 docker 宿主上建 docker 会话连接→exec 请求发出→docker 报错文本进终端缓冲+通道 EOF→poller 心跳转 Disconnected,标签仍建)+ 输入路由(dock-test 会话敲命令→recorder 正确记录)。**容器内真实交互(debian/ubuntu 容器 sh 提示符/resize/exit)待有 Docker 环境时复验**。
   5. **坑**:a) docker exec 失败在 SSH 协议层是"成功"(exec 被接受),错误经通道数据+EOF 才暴露——连接瞬时绿点后转断开,属诚实表现未做连接时探测(等待探测会拖慢所有 docker 连接);b) ai_set_mode 在 AI busy 时拒绝("请先停止当前 AI 任务"),CDP 切模式前须确认任务已结束。
+- [x] **P72 断线重连横幅 + 远端断开检测存量 bug 修复(已完成,CDP 全链路 ALL PASS + `cargo test` 102 项/Vitest 26 项)**:
+  1. **横幅(前端)**:活动会话意外断开时终端区顶部浮「连接已断开 · 重新连接」胶囊(警告色边框),点击走既有 connectSession(后端 mark_connecting 防重入)。TerminalTabs 加 `status`/`onReconnect` props,App 传 `statuses[activeTab]`。UI 主动断开(右键断开)移除标签无横幅——设计如此;横幅只服务意外断线。
+  2. **存量 bug 实证(P26-4c 以来被掩盖)**:CDP 验证发现 **poller 从不发 Disconnected**——UI 断开路径前端本地置 statuses 掩盖了它,远端关闭(exit)后圆点恒绿。写临时 live 诊断测试直证:**exit 后 10s `Handle::is_closed()` 永不翻转**(russh 0.44 对服务端主动断开,is_closed 语义与 P26-4c 预期不符)。
+  3. **修复(权威死亡标记)**:`SshSession` 加 `dead: AtomicBool`;**shell 读任务在通道 EOF(None)分支置位**(EOF=远端关闭,比 is_closed 可靠);`get_status` 优先查 dead;connect 复用占位会话时复位 dead(防上次断开标记带进新连接)。诊断测试实测 exit 后 **t+1s 翻转**,随即删除临时模块。
+  4. **配套修复(横幅依赖 activeTab)**:断开事件处理原先把 activeTab 无条件让位(pickNextActive 空手时 `clearActive`)→ activeTab=null → onReconnect 空转。改为**仅当有其他已连接会话可接棒时才让位**,否则保留断线标签为当前视图(横幅可作用)。
+  5. **验证(CDP)**:连接→终端敲 `exit`→横幅 1s 内出现+标签保留→点重连→圆点恢复 ok→记录器持续工作,ALL PASS。修复后远端断开同步(P7 兜兜转转)才真正可靠。
+  6. **坑**:a) **UI 本地状态更新会掩盖后端事件链路断裂**——验证"断开同步"必须绕开 UI 自更新路径(用 exit 而非右键断开);b) russh Handle::is_closed 实测语义:只对主动 close 可靠,服务端断开不翻转,勿再依赖;c) vite HMR 全量 reload 清前端状态后,连接事件在监听器注册前飞失→CDP 测试开头先 location.reload 清场;d) node 内联改含反引号模板串的脚本必炸(bash 命令替换),改脚本用 Edit 工具。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

@@ -79,6 +79,9 @@ struct SshSession {
     shell: Option<InteractiveShell>,
     /// SFTP 会话（懒建缓存，P26：文件操作经 SFTP 而非 exec 通道）
     sftp: Option<Arc<SftpSession>>,
+    /// 远端已关闭（P72：shell 通道 EOF 置位。russh Handle::is_closed 对远端主动断开
+    /// 不可靠——实测 exit 后永不翻转，poller 的断开同步因此失效，此标志为权威信号）
+    dead: std::sync::atomic::AtomicBool,
 }
 
 /// 发送给交互 shell 的任务命令
@@ -142,6 +145,7 @@ impl SshManager {
             handle: None,
             shell: None,
             sftp: None,
+            dead: std::sync::atomic::AtomicBool::new(false),
         }));
         self.sessions
             .lock()
@@ -269,13 +273,17 @@ impl SshManager {
                         handle: Some(handle),
                         shell: None,
                         sftp: None,
+                        dead: std::sync::atomic::AtomicBool::new(false),
                     })),
                 );
             }
         }
         // 复用占位会话时同步写入 kind（P32：open_shell/exec 语法按此分支）
+        // 并复位死亡标记（P72：上次远端断开留下的 dead=true 不能带进新连接）
         if let Some(session) = sessions.get_mut(&name) {
-            session.lock().await.kind = info.kind;
+            let mut s = session.lock().await;
+            s.kind = info.kind;
+            s.dead.store(false, std::sync::atomic::Ordering::SeqCst);
         }
         self.clear_connecting(&name).await;
         Ok(true)
@@ -351,6 +359,8 @@ impl SshManager {
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<ShellCommand>();
         let (data_tx, data_rx) = mpsc::unbounded_channel::<Vec<u8>>();
         let notify = self.notify.clone();
+        // P72：读任务在通道 EOF 时给会话打死亡标记（is_closed 对远端断开不可靠）
+        let dead_session = session.clone();
 
         // 独立的双向任务：读取远端输出 → UI；UI 按键/尺寸 → 远端。
         // 每送出一次输出/通道结束都 notify 一次，poller 由此被即时唤醒。
@@ -372,7 +382,12 @@ impl SshManager {
                         // 部分 shell 在 ExitStatus 后还会 flush 尾部输出,提前 break 会丢
                         Some(ChannelMsg::ExitStatus { .. }) => {}
                         Some(_) => {}
-                        None => break,
+                        // 通道 EOF = 远端关闭（exit/网络断）。P72：在此打权威死亡标记——
+                        // russh Handle::is_closed 对远端主动断开不可靠（实测永不翻转）
+                        None => {
+                            dead_session.lock().await.dead.store(true, std::sync::atomic::Ordering::SeqCst);
+                            break;
+                        }
                     },
                     cmd = cmd_rx.recv() => match cmd {
                         Some(ShellCommand::Input(bytes)) => {
@@ -552,6 +567,10 @@ impl SshManager {
             return SessionStatus::Disconnected;
         };
         let session = session.lock().await;
+        // P72：shell 通道 EOF 的死亡标记是远端断开的权威信号（优先于 is_closed）
+        if session.dead.load(std::sync::atomic::Ordering::SeqCst) {
+            return SessionStatus::Disconnected;
+        }
         match &session.handle {
             Some(handle) if handle.is_closed() => SessionStatus::Disconnected,
             Some(_) => SessionStatus::Connected,

@@ -8,7 +8,7 @@
   import type { ITheme } from "@xterm/xterm";
   import "@xterm/xterm/css/xterm.css";
   import * as api from "../../lib/api";
-  import type { AiCard, AiLogEntry, AiState, SessionKind } from "../../lib/api";
+  import type { AiCard, AiLogEntry, AiState, SessionKind, SessionStatus } from "../../lib/api";
   import { normalizePwd, parseOscPwd, stripAnsi as stripAnsiLib } from "../../lib/osc";
   import SysMonitor from "./SysMonitor.svelte";
   import AiCopilot from "./AiCopilot.svelte";
@@ -18,6 +18,8 @@
     activeTab: string | null;
     theme: "light" | "dark";
     kinds?: Record<string, SessionKind>;
+    status?: SessionStatus;
+    onReconnect: () => void;
     onSelect: (name: string) => void;
     onClose: (name: string) => void;
     onAdd: () => void;
@@ -54,6 +56,8 @@
     activeTab,
     theme,
     kinds = {},
+    status = "Disconnected",
+    onReconnect,
     onSelect,
     onClose,
     onAdd,
@@ -622,6 +626,14 @@
     </div>
   {/if}
 
+  {#if tabs.length > 0 && status === "Disconnected"}
+    <!-- P72 断线重连横幅:活动会话断开时浮于终端顶部,一键重连 -->
+    <div class="reconnect-bar">
+      <span class="reconnect-text">连接已断开</span>
+      <button onclick={onReconnect} title="重新连接当前会话">重新连接</button>
+    </div>
+  {/if}
+
   {#if tabs.length === 0}
     <!-- 空状态提示:无会话标签时占据终端区,纯展示不拦事件 -->
     <div class="term-empty">
@@ -914,6 +926,40 @@
     position: fixed;
     inset: 0;
     z-index: 99;
+  }
+  /* P72 断线重连横幅:终端区顶部居中浮层 */
+  .reconnect-bar {
+    position: absolute;
+    top: 0.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 6;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.3rem 0.4rem 0.3rem 0.8rem;
+    background: var(--modal-bg);
+    border: 1px solid var(--warning);
+    border-radius: 999px;
+    box-shadow: var(--shadow);
+  }
+  .reconnect-text {
+    font-size: 0.78rem;
+    color: var(--warning);
+    white-space: nowrap;
+  }
+  .reconnect-bar button {
+    padding: 0.22rem 0.8rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .reconnect-bar button:hover {
+    background: var(--accent-hover);
   }
   .term-container {
     position: absolute;

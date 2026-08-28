@@ -29,3 +29,6 @@ Thumbs.db
 .trae-html-share-packages/
 git-graph.html
 helm-board.html
+
+# P70 操作记录(终端输入+AI轨迹,含敏感内容不入库)
+logs/

@@ -242,6 +242,9 @@ pub struct UiConfig {
     /// 终端滚动缓冲行数（P67）
     #[serde(default = "default_term_scrollback")]
     pub term_scrollback: u32,
+    /// 操作记录开关（P70：终端输入 + AI 轨迹落 JSONL，训练数据采集；默认开）
+    #[serde(default = "default_recording_enabled")]
+    pub recording_enabled: bool,
 }
 
 impl Default for UiConfig {
@@ -258,6 +261,7 @@ impl Default for UiConfig {
             theme: default_theme(),
             term_font_size: default_term_font_size(),
             term_scrollback: default_term_scrollback(),
+            recording_enabled: default_recording_enabled(),
         }
     }
 }
@@ -305,6 +309,11 @@ fn default_term_font_size() -> u32 {
 /// 默认终端滚动缓冲行数
 fn default_term_scrollback() -> u32 {
     5000
+}
+
+/// 默认开启操作记录
+fn default_recording_enabled() -> bool {
+    true
 }
 
 /// Helm 顶层配置

@@ -212,9 +212,16 @@ pub(crate) async fn run_ai_job(
             let emit_state = |st: AiRunState| {
                 let _ = app.emit("ai", AiPayload::State { name: session.to_string(), state: st });
             };
-            // 计划级确认前清空推理/执行期间滞留的陈旧信号，防误消费
-            let flush_stale = |ctl_rx: &mut UnboundedReceiver<AiControl>| {
-                while let Ok(_) = ctl_rx.try_recv() {}
+            // 计划级确认前清空推理/执行期间滞留的陈旧信号，防误消费；
+            // 滞留中的 Cancel 必须兑现（返回 true），否则用户点停止会被当陈旧信号吞掉
+            let flush_stale = |ctl_rx: &mut UnboundedReceiver<AiControl>| -> bool {
+                let mut cancelled = false;
+                while let Ok(msg) = ctl_rx.try_recv() {
+                    if msg == AiControl::Cancel {
+                        cancelled = true;
+                    }
+                }
+                cancelled
             };
 
             for _step in 0..max_steps {
@@ -420,7 +427,11 @@ pub(crate) async fn run_ai_job(
                 let mut preapproved = false;
                 let commands: Vec<String> = if confirm_all || any_danger {
                     emit_state(AiRunState::AwaitingConfirm);
-                    flush_stale(ctl_rx);
+                    if flush_stale(ctl_rx) {
+                        // 滞留 Cancel 兑现：用户已停止，不再弹计划卡等待
+                        finished = true;
+                        break;
+                    }
                     match recv_confirm(ctl_rx).await {
                         Ok(Some(AiControl::Approve)) => {
                             preapproved = true;

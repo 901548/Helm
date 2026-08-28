@@ -391,6 +391,11 @@ F:\Helm\
   2. **修复(纯前端三跳)**:App.svelte 增 `aiState: Record<会话,AiState>`(与 aiBusy 同款按会话生命周期)+ `case "state"` 落盘 + 传 `aiState[activeTab]`(缺省 "idle");TerminalTabs 透传;AiCopilot 墽 `aiState` prop + 命令条**状态 chip**(模式胶囊与容器输入之间):`busy && state!=="idle"` 才显示,五态文案 解析中/生成计划/等待确认/执行中/读取回显,脉动圆点 accent 色,`awaitingConfirm` 转 `--warning` 警告色,idle 自动消失。
   3. **验证(CDP 事件注入)**:初始 idle 无 chip→busy+五态依次迁移,chip 文案逐一正确且 awaitingConfirm 带 wait 类→state idle+busy false 复位后 chip 消失,ALL PASS;截图 `docs/screenshots/ui-review-state-chip.png`。类型层本就对齐(`AiRunState` serde camelCase = TS `AiState`),零后端改动。
   4. **坑**:a) chip 只在 busy 时显示——后端 `Idle` 迁移先于 `Busy{false}` 发出,若只判 state 会闪一帧"有 state 无 busy";绑定 `busy &&` 双条件最稳;b) Edit 工具大段替换会吃行尾换行(本次 levelText 对象尾行被并排),替换后必须核对邻行结构。
+- [x] **P64 逻辑审查双修复(已完成,`cargo build` 零警告 + `cargo test` 93 项全过)**:
+  1. **任务收尾清理竞态(core.rs ai_submit,低概率高危)**:spawned 任务收尾在 `busy=false`(有 await 点位:ctl/task 锁)之后执行 `ctl=None`/`task=None`——若此刻执行器暂停旧任务、用户立刻提交新任务 B(CAS 成功写 B 的通道+句柄),旧任务恢复后把 **B 的控制通道与 JoinHandle 一并抹掉**→B 的危险命令确认/停止全部报"任务未在运行"(卡到 120s 超时)、删除会话 abort 不掉(僵尸任务)。**修复:删除这两行清理**——陈旧通道留着只让 ai_control 报"任务已结束"(语义正确),下次 submit 自然覆盖;陈旧 JoinHandle abort 已完成任务是 no-op。`busy=false`+`Busy{false}` 保留。
+  2. **flush_stale 吞 Cancel(ai_job.rs)**:计划级确认前 drain 陈旧信号的闭包不检查 Cancel——用户在模型推理刚结束的窗口点「停止」,Cancel 被当陈旧信号吞掉,任务继续弹计划卡干等 120s(与逐条确认处 drain 检查 Cancel 的行为不一致)。**修复:flush_stale 返回 bool(是否见 Cancel),调用处 true 即 finished+break**。
+  3. **审查确认不改**:严格模式(confirm_all)计划卡+逐条双确认是 P56 设计意图;container 参数有 kind 闸门(Linux 误传走 task_exec_cmd,无危害);授权链(批准=整份授权/Edit 复位 preapproved)闭合;退出码确定性判成败+重试上限+premature_done 上限收敛有界;账本/输出有截断上限;确认双超时保证 busy 必回落;sender 存活全任务期,recv() None 路径不可达。
+  4. **遗留小瑕疵(评估过,暂不处理)**:premature_done 提示文案插值 goals.len() 而非剩余数(模型侧轻微失真);Linux 会话 dock 也渲染「容器(可选)」输入(输入无效果,纯观感)。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

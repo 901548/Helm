@@ -602,10 +602,9 @@ pub async fn ai_submit(
         run_ai_job(&session, &slot2.agent, &ssh, &app2, &mut ctl_rx, &input, mode, ctx).await;
         slot2.busy.store(false, Ordering::SeqCst);
         let _ = app2.emit("ai", AiPayload::Busy { name: session, busy: false });
-        // 清空本会话控制通道槽位
-        *slot2.ctl.lock().await = None;
-        // 任务结束，清掉本槽保存的 JoinHandle（防止陈旧句柄占用；新任务会覆盖）
-        *slot2.task.lock().await = None;
+        // 此处刻意不清理 slot.ctl / slot.task：busy 复位后有 await 点位，新任务可能已写入
+        // 自己的通道与 JoinHandle，本任务的迟到清理会把它们抹掉（确认/停止失灵、删除会话 abort 不掉）。
+        // 陈旧通道留着只会让 ai_control 报"任务已结束"（语义正确），下次 submit 自然覆盖。
     });
     // 保存 JoinHandle 供 delete_session abort
     *slot.task.lock().await = Some(task);

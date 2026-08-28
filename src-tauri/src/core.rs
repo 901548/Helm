@@ -9,6 +9,7 @@
 // ============================================================================
 
 use std::collections::HashMap;
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -452,6 +453,26 @@ pub async fn set_active(state: State<'_, CoreState>, name: String) -> Result<(),
 pub async fn clear_active(state: State<'_, CoreState>) -> Result<(), String> {
     state.ssh.clear_active().await;
     Ok(())
+}
+
+/// 用系统默认浏览器打开外部链接（P68 终端链接点击；只放行 http/https，防命令注入）
+#[tauri::command]
+pub fn open_external(url: String) -> Result<(), String> {
+    let ok = url.starts_with("http://") || url.starts_with("https://");
+    if !ok {
+        return Err(format!("不允许的链接协议: {url}"));
+    }
+    // `start` 首个带引号参数是窗口标题占位，防 URL 被解析为命令
+    let status = std::process::Command::new("cmd")
+        .args(["/c", "start", "", &url])
+        .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+        .status()
+        .map_err(|e| format!("打开浏览器失败: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("打开浏览器失败".into())
+    }
 }
 
 /// 远程桌面控屏(P33)：为 kind=rdp 会话生成临时 .rdp 文件并拉起系统 mstsc。

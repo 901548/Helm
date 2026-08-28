@@ -392,6 +392,19 @@
     }
   }
 
+  /// 忘记会话主机的 TOFU 指纹（服务器重装后重置信任），结果经确认框反馈
+  async function forgetHostKey(name: string) {
+    const info = sessions.find((s) => s.name === name);
+    if (!info || info.kind === "rdp") return;
+    if (!window.confirm(`忘记【${name}】(${info.host}:${info.port ?? 22}) 已记录的主机密钥？\n服务器重装后密钥变更连不上时使用；下次连接将重新信任新密钥。`)) return;
+    try {
+      const removed = await api.forgetHostKey(info.host, info.port ?? 22);
+      window.alert(removed ? "已忘记主机密钥，下次连接将重新记录。" : "该主机没有已记录的密钥。");
+    } catch (e) {
+      window.alert(`操作失败: ${String(e)}`);
+    }
+  }
+
   async function deleteSession(name: string) {
     try {
       await api.disconnectSession(name);
@@ -588,6 +601,7 @@
         onNew={openNewSession}
         onEdit={openEditSession}
         onDelete={deleteSession}
+        onForgetKey={forgetHostKey}
       />
     {/if}
 
@@ -615,6 +629,8 @@
           {logOpen}
           {aiEcho}
           {aiThinking}
+          termFontSize={uiConfig?.term_font_size ?? 14}
+          termScrollback={uiConfig?.term_scrollback ?? 5000}
           onModeChange={handleModeChange}
           onApprove={() => decide(true)}
           onReject={() => decide(false)}

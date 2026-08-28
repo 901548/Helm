@@ -47,6 +47,8 @@ export interface UiConfig {
   sessions_panel_pct: number;
   chat_panel_pct: number;
   theme: Theme;
+  term_font_size: number;
+  term_scrollback: number;
 }
 
 export type DangerLevel = "Safe" | "Warning" | "Critical";

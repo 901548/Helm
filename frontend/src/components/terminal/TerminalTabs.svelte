@@ -33,6 +33,8 @@
     logOpen: boolean;
     aiEcho: { seq: number; name: string; text: string }[];
     aiThinking?: string;
+    termFontSize?: number;
+    termScrollback?: number;
     onModeChange: (m: "qa" | "agent") => void;
     onApprove: () => void;
     onReject: () => void;
@@ -67,6 +69,8 @@
     logOpen,
     aiEcho,
     aiThinking = "",
+    termFontSize = 14,
+    termScrollback = 5000,
     onModeChange,
     onApprove,
     onReject,
@@ -234,11 +238,11 @@
   function createTerminal(name: string): Terminal {
     const term = new Terminal({
       fontFamily: '"Cascadia Mono", monospace',
-      fontSize: 14,
+      fontSize: termFontSize,
       lineHeight: 1.2,
       cursorBlink: true,
       convertEol: true,
-      scrollback: 5000,
+      scrollback: termScrollback,
       theme: XTERM_THEMES[theme],
     });
     const fit = new FitAddon();
@@ -453,6 +457,17 @@
     for (const e of terminals.values()) {
       e.term.options.theme = XTERM_THEMES[t];
     }
+  });
+
+  // P67 终端设置即时生效：字体变化后须 refit，缓冲行数 xterm 支持运行时调整
+  $effect(() => {
+    const size = termFontSize;
+    const back = termScrollback;
+    for (const e of terminals.values()) {
+      e.term.options.fontSize = size;
+      e.term.options.scrollback = back;
+    }
+    tick().then(() => fitActive());
   });
 </script>
 

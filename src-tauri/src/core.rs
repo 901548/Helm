@@ -167,8 +167,9 @@ pub enum AiPayload {
     PendingCommand { name: String, command: String, level: DangerLevel, reason: String },
     /// §8.7.1 唯一状态机：前端只订阅本事件判态，其余事件仅作 delta 内容
     State { name: String, state: AiRunState },
-    /// §8.7.2 计划卡：parse_commands 之后、逐命令确认之前的整份计划
-    Planning { name: String, commands: Vec<PlanCommand> },
+    /// §8.7.2 计划卡：parse_commands 之后、逐命令确认之前的整份计划。
+    /// need_confirm=true 需整份批准/编辑/放弃；false 为纯安全计划，只读展示并自动执行。
+    Planning { name: String, commands: Vec<PlanCommand>, need_confirm: bool },
     /// P57 L2：子目标开始推进（title 为模型起的短标题）
     #[serde(rename_all = "camelCase")]
     GoalStarted { name: String, goal_index: u32, title: String },

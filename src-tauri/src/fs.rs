@@ -393,6 +393,15 @@ pub async fn download(
     }
 }
 
+/// 预览读取上限（字节）。`limit` 直接来自 IPC 不可信，读取前按
+/// `limit` 预分配 `cap+1` 缓冲，若不钳制，传入极大值会预分配海量内存 → OOM abort。
+const MAX_PREVIEW_BYTES: u64 = 16 * 1024 * 1024;
+
+/// 预览读取字节数：钳制到 [1, MAX_PREVIEW_BYTES]，超限请求返回上限
+fn preview_cap(limit: u64) -> u64 {
+    limit.clamp(1, MAX_PREVIEW_BYTES)
+}
+
 /// 读取文件前 N 字节用于预览；二进制（含 NUL）拒绝，超限标记 truncated
 pub async fn read_file(
     ssh: &Arc<SshManager>,
@@ -401,7 +410,7 @@ pub async fn read_file(
     limit: u64,
 ) -> Result<FsResult, String> {
     let sftp = sftp_session(ssh, name).await?;
-    let cap = limit.max(1);
+    let cap = preview_cap(limit);
     let mut file = match sftp.open(path).await {
         Ok(f) => f,
         Err(e) => return Ok(FsResult::err(format!("打开失败: {}", e))),
@@ -503,6 +512,18 @@ mod tests {
         let s = fmt_mtime(Some(t));
         assert!(s.starts_with("2026-08-15"), "got: {}", s);
         assert!(s.ends_with(":04:05"), "got: {}", s);
+    }
+
+    #[test]
+    fn preview_cap_clamps_untrusted_limit() {
+        // 正常/边界值原样
+        assert_eq!(preview_cap(0), 1);
+        assert_eq!(preview_cap(1), 1);
+        assert_eq!(preview_cap(256), 256);
+        assert_eq!(preview_cap(MAX_PREVIEW_BYTES), MAX_PREVIEW_BYTES);
+        // 不可信超限一律钳到上限，杜绝按极大 limit 预分配海量内存
+        assert_eq!(preview_cap(MAX_PREVIEW_BYTES + 1), MAX_PREVIEW_BYTES);
+        assert_eq!(preview_cap(u64::MAX), MAX_PREVIEW_BYTES);
     }
 
     #[test]

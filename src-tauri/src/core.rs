@@ -162,6 +162,12 @@ pub enum AiPayload {
     State { name: String, state: AiRunState },
     /// §8.7.2 计划卡：parse_commands 之后、逐命令确认之前的整份计划
     Planning { name: String, commands: Vec<PlanCommand> },
+    /// P57 L2：子目标开始推进（title 为模型起的短标题）
+    #[serde(rename_all = "camelCase")]
+    GoalStarted { name: String, goal_index: u32, title: String },
+    /// P57 L2：子目标终结（status: "ok"/"failed"）
+    #[serde(rename_all = "camelCase")]
+    GoalDone { name: String, goal_index: u32, status: String },
     Busy { name: String, busy: bool },
 }
 

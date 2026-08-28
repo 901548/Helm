@@ -171,28 +171,43 @@ impl Agent {
     /// - 首次调用：记录 current_task，向模型描述任务并返回第一步命令
     /// - 后续调用：把上一步输出作为上下文，返回下一步命令或 "DONE"
     /// - `ctx`：当前执行环境描述（如 `会话 1 (root@192.168.79.150)，当前目录 /opt`）
+    /// - `progress`：已完成/失败步骤的工作记忆账本，注入本次输入（防长任务被 max_history 裁剪后遗忘目标）
     pub async fn agent_step(
         &mut self,
         task: &str,
         prev_output: &str,
         ctx: &str,
+        progress: &str,
         sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)>,
     ) -> Result<String> {
         self.ensure_ready()?;
+        // 任务目标 + 步骤账本作为"工作记忆"：即使聊天历史被 max_history 裁剪，
+        // 仍保留已完成/失败的决策事实，引导模型不重做已完成步骤、只重规划失败子集。
+        let progress_block = if progress.trim().is_empty() {
+            "（尚未执行任何步骤）".to_string()
+        } else {
+            format!("已完成/失败步骤账本：\n{}", progress.trim())
+        };
         let user_msg = match &self.current_task {
             None => {
                 self.current_task = Some(task.to_string());
                 format!(
-                    "当前环境：{}\n新任务：{}\n请判断要执行的第一个 shell 命令，只输出命令本身，不要解释。",
+                    "当前环境：{}\n新任务：{}\n{}\n\
+                     对复杂长任务，请先把它拆成若干子目标，每个子目标一行 `GOAL <序号> <短标题>`（如 `GOAL 1. 预检环境`），\
+                     然后接着输出当前第一个子目标要执行的 shell 命令，只输出命令本身，不要解释。简单任务可跳过 GOAL 行直接给命令。",
                     ctx.trim(),
-                    task
+                    task,
+                    progress_block
                 )
             }
             Some(_) => {
                 format!(
-                    "当前目录：{}\n这是上一步命令的执行输出：\n{}\n\
-                     请判断下一步要执行的 shell 命令，只输出命令本身；如果任务已完成则只输出 DONE。",
+                    "当前目录：{}\n{}\n这是上一步命令的执行输出：\n{}\n\
+                     请判断下一步要执行的 shell 命令，只输出命令本身；如果任务已完成则只输出 DONE。\
+                     当前子目标完成后输出 `GOAL_OK` 再给下一个子目标的命令；\
+                     某子目标命令失败时，先输出一行 `REFLEXION 失败原因与对策`，再重规划该子目标、继续输出修正后的命令，不要重复重试已完成或已失败的步骤。",
                     ctx.trim(),
+                    progress_block,
                     prev_output
                 )
             }
@@ -708,7 +723,15 @@ pub fn is_command_line(line: &str) -> bool {
         return false;
     }
     // 真命令至少含一个 ASCII 命令词元（剔除纯标点/纯中文散文行）
-    t.bytes().any(|b| b.is_ascii_graphic() && !b.is_ascii_digit())
+    let has_word = t.bytes().any(|b| b.is_ascii_graphic() && !b.is_ascii_digit());
+    if !has_word {
+        return false;
+    }
+    // P57 L2 协议标记：GOAL/REFLEXION/EXPECT 开头的是子目标/反思/校验指令,不是 shell 命令
+    let pfx = |p: &str| upper.starts_with(p);
+    pfx("GOAL ") == false && pfx("GOAL:") == false && pfx("GOAL_") == false && upper != "GOAL"
+        && pfx("REFLEXION ") == false && pfx("REFLEXION:") == false
+        && pfx("EXPECT ") == false && pfx("EXPECT:") == false
 }
 
 /// 判断清洗后的回复中是否含一行独立的 DONE（不区分大小写），
@@ -737,6 +760,88 @@ pub fn truncate_text(text: &str, max: usize) -> String {
         s.push_str("…[已截断]");
         s
     }
+}
+
+/// 提取模型回复中的子目标行 `GOAL <序号> <短标题>`（P57 L2）。
+/// 仅取纯标题（去掉序号），容错：无序号也可。非 `GOAL` 开头行一律忽略。
+pub fn extract_goals(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| {
+            let t = l.trim();
+            let upper = t.to_ascii_uppercase();
+            if !(upper.starts_with("GOAL ") || upper.starts_with("GOAL:")) {
+                return None;
+            }
+            let body = &t[4..].trim_start_matches([':', ' ']).trim();
+            if body.is_empty() {
+                return None;
+            }
+            // 去掉常见序号前缀："1."、"1)"、"1、"、"0x" 等
+            let title = strip_goal_number(body);
+            Some(title.to_string())
+        })
+        .collect()
+}
+
+/// 去掉子目标标题的开头序号（"1." "1)" "01-" "2." 等），保留其余。
+fn strip_goal_number(s: &str) -> &str {
+    let t = s.trim_start();
+    let v: Vec<(usize, char)> = t.char_indices().collect();
+    let len = v.len();
+    if len == 0 {
+        return t;
+    }
+    let mut i = 0usize;
+    // 0x/0X 十六进制序号或十进制序号
+    let mut is_hex = false;
+    if len >= 2 && v[0].1 == '0' && (v[1].1 == 'x' || v[1].1 == 'X') {
+        is_hex = true;
+        i = 2;
+    }
+    while i < len && v[i].1.is_numeric() {
+        i += 1;
+    }
+    if is_hex {
+        while i < len && v[i].1.is_ascii_hexdigit() {
+            i += 1;
+        }
+    }
+    // 吃掉紧跟的序号分隔符："." ")" "、" " " "-"
+    while i < len && matches!(v[i].1, '.' | ')' | '、' | '-' | '：' | ':' | ' ') {
+        i += 1;
+    }
+    if i >= len {
+        return "";
+    }
+    &t[v[i].0..]
+}
+
+/// 提取模型回复中的失败反思行 `REFLEXION <描述>`（P57 L2 Reflexion）。
+pub fn extract_reflexion(text: &str) -> Option<String> {
+    text.lines().find_map(|l| {
+        let t = l.trim();
+        let upper = t.to_ascii_uppercase();
+        if upper.starts_with("REFLEXION ") || upper.starts_with("REFLEXION:") {
+            let body = t["REFLEXION".len()..].trim_start_matches([':', ' ']).trim();
+            if !body.is_empty() {
+                return Some(body.to_string());
+            }
+        }
+        None
+    })
+}
+
+/// 子目标显式终结标记（P57 L2）：`GOAL_OK` / `GOAL_DONE` / `GOAL_FAIL`。
+/// 命中返回终结状态，否则返回 None。模型可用它声明某子目标完成/失败（如"校验"类空命令目标）。
+pub fn goal_marker(text: &str) -> Option<bool> {
+    text.lines().find_map(|l| {
+        let u = l.trim().to_ascii_uppercase();
+        match u.as_str() {
+            "GOAL_OK" | "GOAL_DONE" => Some(true),
+            "GOAL_FAIL" => Some(false),
+            _ => None,
+        }
+    })
 }
 
 #[cfg(test)]
@@ -903,6 +1008,57 @@ mod tests {
     fn parse_commands_drops_instruction_echo_lines() {
         let raw = "ls -la\n（如果任务完成，请输出 \"DONE\"）\n# 注释\n";
         assert_eq!(parse_commands(raw), vec!["ls -la"]);
+    }
+
+    #[test]
+    fn is_command_line_filters_goal_and_reflexion_marks() {
+        // P57 L2 协议标记绝不当作命令
+        assert!(!is_command_line("GOAL 1. 安装 JDK"));
+        assert!(!is_command_line("GOAL: 解包安装"));
+        assert!(!is_command_line("REFLEXION 缺少依赖,下次先 apt"));
+        assert!(!is_command_line("EXPECT file:/opt/hadoop/conf exists"));
+        // 正常命令不误杀
+        assert!(is_command_line("hdfs namenode -format"));
+        assert!(is_command_line("export HADOOP_HOME=/opt/hadoop"));
+    }
+
+    #[test]
+    fn extract_goals_parses_titles() {
+        let raw = "GOAL 1. 预检环境\nGOAL: 解包安装到 /opt/hadoop\nGOAL 3 配置三个 xml\n随便一行\nGOAL ";
+        assert_eq!(
+            extract_goals(raw),
+            vec![
+                "预检环境".to_string(),
+                "解包安装到 /opt/hadoop".to_string(),
+                "配置三个 xml".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_goals_ignores_no_title_and_keeps_lowercase_case_insensitive() {
+        assert!(extract_goals("GOAL").is_empty());
+        assert_eq!(extract_goals("goal 启动服务"), vec!["启动服务".to_string()]); // 大小写不敏感
+        assert!(extract_goals("来历不明的 GOAL 不解析").is_empty());
+    }
+
+    #[test]
+    fn parse_commands_skips_goal_marker_lines() {
+        let raw = "GOAL 1. 预检\njava -version\nGOAL_OK\nREFLEXION 端口被占\nfree -h";
+        assert_eq!(parse_commands(raw), vec!["java -version", "free -h"]);
+    }
+
+    #[test]
+    fn reflexion_and_goal_marker_extract() {
+        assert_eq!(
+            extract_reflexion("REFLEXION 端口被占用,改用 8044"),
+            Some("端口被占用,改用 8044".to_string())
+        );
+        assert_eq!(extract_reflexion("REFLEXION:"), None);
+        assert_eq!(goal_marker("GOAL_OK"), Some(true));
+        assert_eq!(goal_marker("GOAL_DONE"), Some(true));
+        assert_eq!(goal_marker("GOAL_FAIL"), Some(false));
+        assert_eq!(goal_marker("随便"), None);
     }
 
     #[test]

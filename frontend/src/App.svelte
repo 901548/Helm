@@ -231,6 +231,22 @@
             aiStreamOpen = true;
           }
           break;
+        case "goalStarted":
+          // P57 L2 子目标开始：镜像到所属会话终端（轻量提示，不新增卡片类型）
+          if (p.name) {
+            pushEcho(p.name, `\r\n\x1b[36m┌─ [AI] 子目标 ${p.goalIndex + 1}: ${p.title}\x1b[0m\r\n`);
+          }
+          break;
+        case "goalDone":
+          // P57 L2 子目标结局：成功/失败（失败将停留供重规划）
+          if (p.name) {
+            const ok = p.status === "ok";
+            pushEcho(
+              p.name,
+              `\r\n${ok ? "\x1b[32m" : "\x1b[31m"}└─ [AI] 子目标 ${p.goalIndex + 1} ${ok ? "✓ 完成" : "✗ 失败（将重规划当前子目标）"}\x1b[0m\r\n`,
+            );
+          }
+          break;
         case "state":
           // §8.7.1 唯一状态机广播：目前仅用于驱动 busy UI，按会话记录
           aiState[p.name] = p.state;

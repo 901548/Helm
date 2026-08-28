@@ -6,7 +6,7 @@
   import type { ITheme } from "@xterm/xterm";
   import "@xterm/xterm/css/xterm.css";
   import * as api from "../../lib/api";
-  import type { AiCard, AiLogEntry, SessionKind } from "../../lib/api";
+  import type { AiCard, AiLogEntry, AiState, SessionKind } from "../../lib/api";
   import { normalizePwd, parseOscPwd, stripAnsi as stripAnsiLib } from "../../lib/osc";
   import SysMonitor from "./SysMonitor.svelte";
   import AiCopilot from "./AiCopilot.svelte";
@@ -23,6 +23,7 @@
     onPwd?: (name: string, pwd: string) => void;
     aiMode: "qa" | "agent";
     aiBusy: boolean;
+    aiState?: AiState;
     aiCards: AiCard[];
     aiTaskText: string;
     aiSummary: { text: string; ok: boolean } | null;
@@ -56,6 +57,7 @@
     onPwd,
     aiMode,
     aiBusy,
+    aiState = "idle",
     aiCards,
     aiTaskText,
     aiSummary,
@@ -570,6 +572,7 @@
 <AiCopilot
   mode={aiMode}
   busy={aiBusy}
+  {aiState}
   cards={aiCards}
   taskText={aiTaskText}
   summary={aiSummary}

@@ -169,6 +169,7 @@ pub enum AiPayload {
     State { name: String, state: AiRunState },
     /// §8.7.2 计划卡：parse_commands 之后、逐命令确认之前的整份计划。
     /// need_confirm=true 需整份批准/编辑/放弃；false 为纯安全计划，只读展示并自动执行。
+    #[serde(rename_all = "camelCase")]
     Planning { name: String, commands: Vec<PlanCommand>, need_confirm: bool },
     /// P57 L2：子目标开始推进（title 为模型起的短标题）
     #[serde(rename_all = "camelCase")]
@@ -1063,5 +1064,35 @@ mod tests {
     #[test]
     fn session_password_none_clears() {
         assert_eq!(persist_session_password(None, Some("enc:old")).unwrap(), None);
+    }
+
+    #[test]
+    fn planning_need_confirm_serializes_as_camel_case() {
+        // P61 回归：Planning 变体必须把 need_confirm 字段序列化为 needConfirm，
+        // 否则前端 p.needConfirm ?? true 兜底为 true，纯安全计划也会显示执行按钮。
+        let plan = AiPayload::Planning {
+            name: "s".into(),
+            commands: vec![PlanCommand {
+                command: "ls -la".into(),
+                level: DangerLevel::Safe,
+                reason: "只读列目录".into(),
+            }],
+            need_confirm: false,
+        };
+        let body = serde_json::to_value(&plan).unwrap();
+        assert_eq!(body["needConfirm"], false, "need_confirm 必须序列化为 needConfirm");
+        assert!(body.get("need_confirm").is_none(), "不应再出现 snake_case 的 need_confirm 字段");
+    }
+
+    #[test]
+    fn planning_need_confirm_true_round_trips() {
+        let plan = AiPayload::Planning {
+            name: "s".into(),
+            commands: vec![],
+            need_confirm: true,
+        };
+        let body = serde_json::to_value(&plan).unwrap();
+        assert_eq!(body["needConfirm"], true);
+        assert!(body.get("need_confirm").is_none(), "不应再出现 snake_case 的 need_confirm 字段");
     }
 }

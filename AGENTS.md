@@ -407,6 +407,7 @@ F:\Helm\
 - **dev 模式 CWD 是 `src-tauri/`**:`cargo tauri dev` 启动后进程 CWD 为 src-tauri,`./config.yaml` 找不到 → main.rs 加载失败时回退 `../config.yaml`(源码根)。tauri.conf 的 `frontendDist: ../dist`、devUrl 同理按 src-tauri 相对。
 - **冒烟验证窗口**:`cargo tauri dev` 阻塞式,用 `Start-Process cmd.exe /c "npm run tauri dev > log 2> err"` 后台起,然后轮询 `Get-Process | Where MainWindowTitle -eq "Helm" -and MainWindowHandle -ne 0`(窗口标题 "Helm",尺寸 1214x838)。注意 `npm run tauri dev` 会 spawn cargo+vite 两个子进程,别误判退出的只是 cmd 包装壳。
 - **产物布局**:release 三件套 = `target\release\helm.exe`(~12MB)+ `bundle\msi\Helm_*.msi` + `bundle\nsis\Helm_*-setup.exe`;bundle 自带 WebView2Loader.dll。
+- **分发策略(2026-08-28 用户定)**:**不发布预编译安装包**——exe/msi/nsis 三件套不作为发布物,想要安装包的用户拉源码自行 `cargo tauri build`(README 已是源码编译导向,无需改)。后续迭代不再建议打包/发布节点,除非用户主动要求。
 - **开发命令注意**:`cargo tauri dev` 是阻塞式(窗口开着不退出)。自动化验证时用 `Start-Process` 后台启动 + `Get-Process`/窗口枚举确认,勿用长超时阻塞。
 - **进程坑**:超时强杀 `cargo tauri dev` 会留孤儿 `helm.exe`(受工具会话 Job Object 保护,`Stop-Process`/`taskkill`/提权 TerminateProcess 均拒绝,只能重启机器)。其无窗口且占 `helm.exe` 名,但不影响后续编译运行(新实例 PID 不同)。
 - 配置样例 `config.yaml`:1 个会话 `1` → 192.168.79.150:22 root/000000;AI deepseek-chat,DEEPSEEK_API_KEY 环境变量

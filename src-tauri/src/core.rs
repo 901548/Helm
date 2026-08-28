@@ -547,9 +547,13 @@ pub async fn send_input(
     state: State<'_, CoreState>,
     name: String,
     data: Vec<u8>,
+    // P73：ZMODEM 协议字节走 record=false（训练日志只记人类键入）
+    record: Option<bool>,
 ) -> Result<(), String> {
     state.ssh.send_input(&name, &data).await;
-    state.recorder.record_input(&name, &data);
+    if record.unwrap_or(true) {
+        state.recorder.record_input(&name, &data);
+    }
     Ok(())
 }
 
@@ -570,6 +574,42 @@ pub async fn recording_info(state: State<'_, CoreState>) -> Result<serde_json::V
     let dir = state.recorder.dir().display().to_string();
     let dir = dir.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(dir);
     Ok(serde_json::json!({ "dir": dir }))
+}
+
+/// ZMODEM 下载落盘（P73）：base64 载荷写 ~/Downloads/helm-zmodem/<名>，重名自动 -1 序号。
+/// 文件名剥路径分隔符防目录穿越；上限 256MiB 防内存膨胀。
+#[tauri::command]
+pub async fn zmodem_save(name: String, b64: String) -> Result<String, String> {
+    use data_encoding::BASE64;
+    let safe: String = name
+        .replace(['\\', '/', ':', '*', '?', '"', '<', '>', '|'], "_")
+        .trim()
+        .to_string();
+    if safe.is_empty() {
+        return Err("空文件名".into());
+    }
+    let bytes = BASE64
+        .decode(b64.as_bytes())
+        .map_err(|e| format!("base64 解码失败: {e}"))?;
+    if bytes.len() > 256 * 1024 * 1024 {
+        return Err("文件超过 256MiB 上限".into());
+    }
+    let mut dir = dirs::home_dir().ok_or("无法定位主目录")?;
+    dir.push("Downloads");
+    dir.push("helm-zmodem");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    let mut path = dir.join(&safe);
+    // 重名去重：name.ext → name-1.ext、name-2.ext...
+    let mut n = 1;
+    while path.exists() {
+        let file = std::path::Path::new(&safe);
+        let stem = file.with_extension("").to_string_lossy().to_string();
+        let ext = file.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        path = dir.join(format!("{stem}-{n}{ext}"));
+        n += 1;
+    }
+    std::fs::write(&path, bytes).map_err(|e| format!("写入失败: {e}"))?;
+    Ok(path.display().to_string())
 }
 
 /// 调整所有会话 PTY 尺寸

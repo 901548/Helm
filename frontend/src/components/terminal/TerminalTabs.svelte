@@ -5,6 +5,9 @@
   import { SearchAddon } from "@xterm/addon-search";
   import { WebglAddon } from "@xterm/addon-webgl";
   import { WebLinksAddon } from "@xterm/addon-web-links";
+  // P73 ZMODEM（rz/sz）：浏览器 bundle 挂 window.Zmodem（Sentry + Browser.send_files）
+  import "zmodem.js/dist/zmodem.js";
+  const ZModem = () => (window as any).Zmodem;
   import type { ITheme } from "@xterm/xterm";
   import "@xterm/xterm/css/xterm.css";
   import * as api from "../../lib/api";
@@ -238,7 +241,15 @@
 
   const terminals = new Map<
     string,
-    { term: Terminal; fit: FitAddon; search: SearchAddon; open: boolean; webgl?: WebglAddon }
+    {
+      term: Terminal;
+      fit: FitAddon;
+      search: SearchAddon;
+      open: boolean;
+      webgl?: WebglAddon;
+      zsentry?: any;
+      zsession?: any;
+    }
   >();
 
   function createTerminal(name: string): Terminal {
@@ -261,7 +272,20 @@
       e.preventDefault();
       api.openExternal(uri).catch(() => {});
     }));
+    // P73 ZMODEM 哨兵：入站字节全部经 consume（普通输出透传上屏，ZMODEM 帧拦截进协议栈）；
+    // 协议应答经 sender 回写远端（record:false，训练日志只记人类键入）
+    const zsentry = new (ZModem().Sentry)({
+      to_terminal: (octets: Uint8Array) => term.write(octets),
+      sender: (octets: Uint8Array | number[]) => {
+        const raw = octets instanceof Uint8Array ? octets : Uint8Array.from(octets);
+        api.sendInputRaw(name, raw);
+      },
+      on_detect: (d: any) => onZmodemDetect(name, d),
+      on_retract: () => clearZmodem(name),
+    });
     term.onData((data) => {
+      // P73：ZMODEM 会话进行中吞掉键入（协议字节专用通道，防破坏帧序）
+      if (terminals.get(name)?.zsession) return;
       api.sendActiveInput(new TextEncoder().encode(data));
     });
     term.onSelectionChange(() => {
@@ -274,7 +298,7 @@
         }
       }
     });
-    terminals.set(name, { term, fit, search, open: false });
+    terminals.set(name, { term, fit, search, open: false, zsentry });
     return term;
   }
 
@@ -362,9 +386,112 @@
       .catch(() => {});
   }
 
+  // ===== P73 ZMODEM（rz/sz）=====
+  // 传输浮层状态（响应式渲染）；字节累积与协议对象存 terminals 条目（非响应式）
+  type ZTransfer = { dir: "up" | "down"; name: string; size: number; done: number; note: string };
+  let ztransfers = $state<Record<string, ZTransfer | null>>({});
+  function setZTransfer(name: string, t: ZTransfer | null) {
+    ztransfers = { ...ztransfers, [name]: t };
+  }
+
+  function clearZmodem(name: string) {
+    const e = terminals.get(name);
+    if (e) e.zsession = undefined;
+    setZTransfer(name, null);
+  }
+
+  function b64Of(bytes: Uint8Array): string {
+    let bin = "";
+    const CH = 0x8000;
+    for (let i = 0; i < bytes.length; i += CH) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + CH));
+    }
+    return btoa(bin);
+  }
+
+  function onZmodemDetect(name: string, d: any) {
+    const role = d.get_session_role(); // 'receive'=远端 sz；'send'=远端 rz
+    const zsession = d.confirm();
+    const e = terminals.get(name);
+    if (!e) return;
+    e.zsession = zsession;
+
+    if (role === "receive") {
+      // sz：远端发文件过来 → 收齐经后端落 ~/Downloads/helm-zmodem/
+      zsession.on("offer", (xfer: any) => {
+        const det = xfer.get_details();
+        const fname = det.name || "file";
+        const chunks: Uint8Array[] = [];
+        let done = 0;
+        setZTransfer(name, { dir: "down", name: fname, size: det.size ?? 0, done: 0, note: "" });
+        xfer.on("input", (p: Uint8Array) => {
+          chunks.push(p);
+          done += p.length;
+          setZTransfer(name, { dir: "down", name: fname, size: det.size ?? 0, done, note: "" });
+        });
+        xfer.accept().then(() => {
+          const total = chunks.reduce((n, c) => n + c.length, 0);
+          const all = new Uint8Array(total);
+          let off = 0;
+          for (const c of chunks) {
+            all.set(c, off);
+            off += c.length;
+          }
+          api
+            .zmodemSave(fname, b64Of(all))
+            .then((path) => setZTransfer(name, { dir: "down", name: fname, size: total, done: total, note: `已保存：${path}` }))
+            .catch((err) => setZTransfer(name, { dir: "down", name: fname, size: total, done: total, note: `保存失败：${String(err)}` }));
+        });
+      });
+      zsession.on("session_end", () => {
+        // 保留 note（保存路径提示）几秒后清
+        const t = ztransfers[name];
+        if (t) setTimeout(() => clearZmodem(name), 4000);
+        else clearZmodem(name);
+      });
+      // P73 关键：Receive 会话必须 start() 才会发 ZRINIT，否则服务器永远等不到握手
+      zsession.start();
+    } else {
+      // rz：远端等我们发文件 → 浮层内嵌文件选择器
+      setZTransfer(name, { dir: "up", name: "", size: 0, done: 0, note: "" });
+      zsession.on("session_end", () => clearZmodem(name));
+    }
+  }
+
+  function zmodemPick(name: string, files: FileList | null) {
+    const e = terminals.get(name);
+    const zsession = e?.zsession;
+    if (!zsession) return;
+    if (!files || files.length === 0) {
+      zsession.abort?.();
+      clearZmodem(name);
+      return;
+    }
+    const file = files[0];
+    setZTransfer(name, { dir: "up", name: file.name, size: file.size, done: 0, note: "" });
+    ZModem().Browser.send_files(zsession, [file], {
+      on_progress: (_obj: any, _xfer: any, chunk: Uint8Array) => {
+        const t = ztransfers[name];
+        if (t) setZTransfer(name, { ...t, done: Math.min(t.size, t.done + chunk.length) });
+      },
+    })
+      .then(() => {
+        setZTransfer(name, { dir: "up", name: file.name, size: file.size, done: file.size, note: "发送完成" });
+        setTimeout(() => clearZmodem(name), 2500);
+      })
+      .catch((err: unknown) => {
+        setZTransfer(name, { dir: "up", name: file.name, size: file.size, done: 0, note: `发送失败：${String(err)}` });
+      });
+  }
+
+  function zmodemAbort(name: string) {
+    const e = terminals.get(name);
+    e?.zsession?.abort?.();
+    clearZmodem(name);
+  }
+
   // P68 终端区右键菜单（复制/粘贴/搜索/清屏）
-  let tctx = $state<{ x: number; y: number } | null>(null);
-  function openTermCtx(e: MouseEvent) {
+  let tctx = $state<{ x: number; y: number } | null>(null);  function openTermCtx(e: MouseEvent) {
     // 仅终端区域（.xterm 内）拦截；tabbar/搜索框等走默认行为
     if (!(e.target as HTMLElement | null)?.closest?.(".xterm")) return;
     e.preventDefault();
@@ -494,11 +621,20 @@
   });
 
   onMount(() => {
+    // P73 调试：dev 模式暴露终端表（哨兵/传输状态核查用），生产构建无此全局
+    if (import.meta.env.DEV) {
+      (window as any).__helmTerms = terminals;
+    }
     const unsubP = api.onTerminalOutput(({ name, data }) => {
       const e = terminals.get(name);
       if (!e) return;
       const bytes = new Uint8Array(data);
-      e.term.write(bytes);
+      // P73：输出统一过 ZMODEM 哨兵——普通字节透传上屏，ZMODEM 帧被拦截进协议栈
+      if (e.zsentry) {
+        e.zsentry.consume(bytes);
+      } else {
+        e.term.write(bytes);
+      }
       feedEcho(name, bytes);
     });
     const onResize = () => fitActive();
@@ -631,6 +767,33 @@
     <div class="reconnect-bar">
       <span class="reconnect-text">连接已断开</span>
       <button onclick={onReconnect} title="重新连接当前会话">重新连接</button>
+    </div>
+  {/if}
+
+  {#if activeTab && ztransfers[activeTab]}
+    <!-- P73 ZMODEM 传输浮层 -->
+    {@const zt = ztransfers[activeTab]}
+    <div class="zm-bar">
+      <span class="zm-icon" aria-hidden="true">⇅</span>
+      <div class="zm-info">
+        <div class="zm-title">
+          {zt.dir === "down" ? "下载" : zt.name ? "上传" : "服务器请求发送文件（rz）"}：{zt.name || "请选择本地文件"}
+        </div>
+        {#if zt.size > 0}
+          <div class="zm-progress">
+            <div class="zm-progress-fill" style:width={`${zt.size ? Math.min(100, (zt.done / zt.size) * 100) : 0}%`}></div>
+          </div>
+          <div class="zm-nums">{zt.done} / {zt.size} 字节</div>
+        {/if}
+        {#if zt.note}<div class="zm-note">{zt.note}</div>{/if}
+      </div>
+      {#if zt.dir === "up" && !zt.name}
+        <label class="zm-pick">
+          选择文件
+          <input type="file" onchange={(e) => zmodemPick(activeTab, e.currentTarget.files)} />
+        </label>
+      {/if}
+      <button class="zm-cancel" onclick={() => zmodemAbort(activeTab)} title="中止传输">取消</button>
     </div>
   {/if}
 
@@ -960,6 +1123,88 @@
   }
   .reconnect-bar button:hover {
     background: var(--accent-hover);
+  }
+  /* P73 ZMODEM 传输浮层 */
+  .zm-bar {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.6rem;
+    z-index: 7;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.4rem 0.6rem;
+    background: var(--modal-bg);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    max-width: 440px;
+  }
+  .zm-icon {
+    color: var(--accent);
+    font-size: 1rem;
+  }
+  .zm-info {
+    min-width: 0;
+    flex: 1;
+  }
+  .zm-title {
+    font-size: 0.78rem;
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .zm-progress {
+    margin-top: 0.25rem;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--track-bg);
+    overflow: hidden;
+  }
+  .zm-progress-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.2s ease;
+  }
+  .zm-nums {
+    margin-top: 0.15rem;
+    font-size: 0.68rem;
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .zm-note {
+    margin-top: 0.15rem;
+    font-size: 0.7rem;
+    color: var(--ok);
+    word-break: break-all;
+  }
+  .zm-pick {
+    flex-shrink: 0;
+    padding: 0.25rem 0.8rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .zm-pick input {
+    display: none;
+  }
+  .zm-cancel {
+    flex-shrink: 0;
+    padding: 0.25rem 0.7rem;
+    font-size: 0.75rem;
+    background: transparent;
+    color: var(--fg-muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  .zm-cancel:hover {
+    color: var(--fg);
+    background: var(--hover);
   }
   .term-container {
     position: absolute;

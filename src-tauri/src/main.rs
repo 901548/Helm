@@ -110,6 +110,7 @@ fn main() {
             core::fs_download,
             core::fs_read_file,
             core::recording_info,
+            core::zmodem_save,
             core::forget_host_key,
             core::host_key_fingerprint,
         ])

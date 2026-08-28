@@ -194,7 +194,9 @@ impl Agent {
                 format!(
                     "当前环境：{}\n新任务：{}\n{}\n\
                      对复杂长任务，请先把它拆成若干子目标，每个子目标一行 `GOAL <序号> <短标题>`（如 `GOAL 1. 预检环境`），\
-                     然后接着输出当前第一个子目标要执行的 shell 命令，只输出命令本身，不要解释。简单任务可跳过 GOAL 行直接给命令。",
+                     然后接着输出当前第一个子目标要执行的 shell 命令，只输出命令本身，不要解释。简单任务可跳过 GOAL 行直接给命令。\n\
+                     输出纪律：GOAL 行单独一行，每行至多一条命令；除 GOAL/REFLEXION/DONE/命令行外不要输出任何解释文字。\n\
+                     禁止使用实时跟随类参数（tail -f、journalctl -f、docker logs -f 等），命令必须能自然退出；查看最近日志用 -n/--since 限量读取。",
                     ctx.trim(),
                     task,
                     progress_block
@@ -205,7 +207,8 @@ impl Agent {
                     "当前目录：{}\n{}\n这是上一步命令的执行输出：\n{}\n\
                      请判断下一步要执行的 shell 命令，只输出命令本身；如果任务已完成则只输出 DONE。\
                      当前子目标完成后输出 `GOAL_OK` 再给下一个子目标的命令；\
-                     某子目标命令失败时，先输出一行 `REFLEXION 失败原因与对策`，再重规划该子目标、继续输出修正后的命令，不要重复重试已完成或已失败的步骤。",
+                     某子目标命令失败时，先输出一行 `REFLEXION 失败原因与对策`，再重规划该子目标、继续输出修正后的命令，不要重复重试已完成或已失败的步骤。\n\
+                     输出纪律：每行至多一条命令，不要输出解释文字；禁止实时跟随类参数（-f/--follow），命令必须能自然退出。",
                     ctx.trim(),
                     progress_block,
                     prev_output
@@ -729,9 +732,53 @@ pub fn is_command_line(line: &str) -> bool {
     }
     // P57 L2 协议标记：GOAL/REFLEXION/EXPECT 开头的是子目标/反思/校验指令,不是 shell 命令
     let pfx = |p: &str| upper.starts_with(p);
-    pfx("GOAL ") == false && pfx("GOAL:") == false && pfx("GOAL_") == false && upper != "GOAL"
+    if !(pfx("GOAL ") == false && pfx("GOAL:") == false && pfx("GOAL_") == false && upper != "GOAL"
         && pfx("REFLEXION ") == false && pfx("REFLEXION:") == false
-        && pfx("EXPECT ") == false && pfx("EXPECT:") == false
+        && pfx("EXPECT ") == false && pfx("EXPECT:") == false)
+    {
+        return false;
+    }
+    // P68-§8.6 弱模型散文过滤：shell 命令必以 ASCII 程序名开头（exec 通道无交互别名），
+    // 首字符为 CJK 的一律是解释文字（"对策：使用 systemctl ..."类反思散文、
+    // "检查磁盘: smartctl ..."式条目——后者剥掉行首序号后同样 CJK 开头）。
+    // 含中文**参数**的合法命令（echo 你好、grep 模式）首词元是 ASCII，不受影响。
+    if starts_cjk(t) || starts_cjk(strip_enumerator(t)) {
+        return false;
+    }
+    true
+}
+
+/// 首字符是否为 CJK 统一表意文字（含扩展 A 与兼容区）
+fn starts_cjk(s: &str) -> bool {
+    s.chars().next().map_or(false, |c| {
+        let u = c as u32;
+        (0x3400..=0x4DBF).contains(&u)
+            || (0x4E00..=0x9FFF).contains(&u)
+            || (0xF900..=0xFAFF).contains(&u)
+    })
+}
+
+/// 剥掉行首序号（"1." "1、" "1)" + 可选空格）：弱模型爱输出 "1. 检查磁盘" 式条目。
+/// 非"数字+分隔符"开头原样返回（"7z x"、"2>&1" 不受影响）。
+fn strip_enumerator(t: &str) -> &str {
+    let mut end = 0;
+    for (i, c) in t.char_indices() {
+        if c.is_ascii_digit() {
+            end = i + c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if end == 0 {
+        return t;
+    }
+    let rest = &t[end..];
+    for sep in [".", "、", ")"] {
+        if let Some(r) = rest.strip_prefix(sep) {
+            return r.trim_start();
+        }
+    }
+    t
 }
 
 /// 判断清洗后的回复中是否含一行独立的 DONE（不区分大小写），
@@ -745,7 +792,7 @@ pub fn contains_done_line(s: &str) -> bool {
 pub fn parse_commands(text: &str) -> Vec<String> {
     clean_response(text)
         .lines()
-        .map(|l| strip_cmd_prefix(l.trim()))
+        .map(|l| strip_enumerator(strip_cmd_prefix(l.trim())))
         .filter(|l| !l.is_empty() && !l.starts_with('#') && is_command_line(l))
         .map(|s| s.to_string())
         .collect()
@@ -764,23 +811,53 @@ pub fn truncate_text(text: &str, max: usize) -> String {
 
 /// 提取模型回复中的子目标行 `GOAL <序号> <短标题>`（P57 L2）。
 /// 仅取纯标题（去掉序号），容错：无序号也可。非 `GOAL` 开头行一律忽略。
+/// 弱模型常把多个 GOAL 挤在同一行（"GOAL 1. x GOAL 2. y"），按 GOAL 关键字切段逐一解析。
 pub fn extract_goals(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(|l| {
-            let t = l.trim();
+    let mut out = Vec::new();
+    for line in text.lines() {
+        for seg in goal_segments(line.trim()) {
+            let t = seg.trim();
             let upper = t.to_ascii_uppercase();
             if !(upper.starts_with("GOAL ") || upper.starts_with("GOAL:")) {
-                return None;
+                continue;
             }
             let body = &t[4..].trim_start_matches([':', ' ']).trim();
             if body.is_empty() {
-                return None;
+                continue;
             }
             // 去掉常见序号前缀："1."、"1)"、"1、"、"0x" 等
             let title = strip_goal_number(body);
-            Some(title.to_string())
-        })
-        .collect()
+            if !title.is_empty() {
+                out.push(title.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// 把一行按 `GOAL` 关键字出现位置切成若干 "GOAL..." 段（大小写不敏感；无切分时返回整行单段）
+fn goal_segments(line: &str) -> Vec<&str> {
+    let upper = line.to_ascii_uppercase();
+    let bytes = upper.as_bytes();
+    let mut marks: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i + 4 <= bytes.len() {
+        if &bytes[i..i + 4] == b"GOAL" {
+            marks.push(i);
+            i += 4;
+        } else {
+            i += 1;
+        }
+    }
+    if marks.len() <= 1 {
+        return vec![line];
+    }
+    let mut out = Vec::with_capacity(marks.len());
+    for (n, s) in marks.iter().enumerate() {
+        let end = marks.get(n + 1).copied().unwrap_or(line.len());
+        out.push(&line[*s..end]);
+    }
+    out
 }
 
 /// 去掉子目标标题的开头序号（"1." "1)" "01-" "2." 等），保留其余。
@@ -821,10 +898,29 @@ pub fn extract_reflexion(text: &str) -> Option<String> {
     text.lines().find_map(|l| {
         let t = l.trim();
         let upper = t.to_ascii_uppercase();
-        if upper.starts_with("REFLEXION ") || upper.starts_with("REFLEXION:") {
-            let body = t["REFLEXION".len()..].trim_start_matches([':', ' ']).trim();
-            if !body.is_empty() {
-                return Some(body.to_string());
+        // "对策：/反思：" 是弱模型的中文 REFLEXION 等价物（§8.6 实测 glm4 输出格式），同等采纳
+        for (tag, skip) in [
+            ("REFLEXION ", 10usize),
+            ("REFLEXION:", 10),
+            ("对策：", 0),
+            ("对策:", 0),
+            ("反思：", 0),
+            ("反思:", 0),
+        ] {
+            let hit = if skip > 0 {
+                upper.starts_with(tag)
+            } else {
+                t.starts_with(tag)
+            };
+            if hit {
+                let body = if skip > 0 {
+                    t[skip..].trim_start_matches([':', ' ']).trim()
+                } else {
+                    t[tag.len()..].trim()
+                };
+                if !body.is_empty() {
+                    return Some(body.to_string());
+                }
             }
         }
         None
@@ -992,6 +1088,51 @@ mod tests {
         assert!(!is_command_line("只输出 DONE，不要解释"));
         assert!(!is_command_line("不要解释")); // 无 ASCII 命令词元
         assert!(!is_command_line(""));
+    }
+
+    /// §8.6 泛化验证实测（glm4 输出）：中文反思散文与序号条目不得当作命令执行
+    #[test]
+    fn is_command_line_filters_cjk_prose() {
+        // 真实观测样本："对策：使用 `systemctl status ...` 命令替代 ..."
+        assert!(!is_command_line("对策：使用 `systemctl status ssh.service` 命令替代 `service ssh status` 命令来检查。"));
+        assert!(!is_command_line("检查 sshd 服务状态"));
+        // 剥序号后 CJK 开头的条目同样过滤
+        assert!(!is_command_line("1. 检查磁盘健康状态"));
+        // 但剥序号后是真命令的保留（parse_commands 会同步剥掉序号）
+        assert!(is_command_line("1. ls -la"));
+        // 序号与命令粘连无分隔（7z/2>&1）不受影响
+        assert!(is_command_line("7z x archive.7z"));
+        assert!(is_command_line("2>&1 | tee log"));
+    }
+
+    /// 同一行挤多个 GOAL（弱模型不换行）应全部解析出标题
+    #[test]
+    fn extract_goals_handles_multiple_per_line() {
+        let goals = extract_goals("GOAL 1. 检查 sshd 服务状态 GOAL 2. 查找报错日志");
+        assert_eq!(goals, vec!["检查 sshd 服务状态".to_string(), "查找报错日志".to_string()]);
+        // 常规多行格式回归
+        assert_eq!(extract_goals("GOAL 1. 预检\nGOAL: 2. 安装"), vec!["预检".to_string(), "安装".to_string()]);
+        // 无 GOAL 行为空
+        assert!(extract_goals("ls -la\necho hi").is_empty());
+    }
+
+    /// 中文反思别名（对策：/反思：）等同 REFLEXION 采纳
+    #[test]
+    fn extract_reflexion_accepts_chinese_aliases() {
+        assert_eq!(
+            extract_reflexion("对策：使用 systemctl status 替代 service ssh status"),
+            Some("使用 systemctl status 替代 service ssh status".to_string())
+        );
+        assert_eq!(extract_reflexion("反思：端口被占用，改用 8080"), Some("端口被占用，改用 8080".to_string()));
+        assert_eq!(extract_reflexion("REFLEXION: disk full"), Some("disk full".to_string()));
+        assert_eq!(extract_reflexion("无反思行"), None);
+    }
+
+    /// parse_commands 端到端：散文剔除 + 序号剥除后输出干净命令
+    #[test]
+    fn parse_commands_strips_enumerators_and_prose() {
+        let raw = "GOAL 1. 检查服务\n1. systemctl status ssh\n对策：换 journalctl 查日志\n2. journalctl -u ssh -n 50";
+        assert_eq!(parse_commands(raw), vec!["systemctl status ssh".to_string(), "journalctl -u ssh -n 50".to_string()]);
     }
 
     #[test]

@@ -310,8 +310,13 @@
     // 每会话模式隔离：切到该会话时加载它自己的 AI 模式
     refreshAiMode(name);
     if (!tabs.includes(name)) {
-      // 未打开终端标签时，先连接
-      connectSession(name);
+      // 未打开终端标签时：后端已连接的直接开标签复用（P74：reload 后 statuses 已知真实状态），
+      // 否则发起连接（Connected 事件回来再建标签）
+      if (statuses[name] === "Connected") {
+        tabs = [...tabs, name];
+      } else {
+        connectSession(name);
+      }
     }
   }
 

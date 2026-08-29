@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::sync::Mutex;
 
@@ -565,6 +565,18 @@ pub async fn send_active_input(state: State<'_, CoreState>, data: Vec<u8>) -> Re
         state.recorder.record_input(&name, &data);
     }
     Ok(())
+}
+
+/// 切换主窗口全屏（P74 F11）；返回切换后的全屏状态
+#[tauri::command]
+pub async fn toggle_fullscreen(app: AppHandle) -> Result<bool, String> {
+    if let Some(win) = app.get_webview_window("main") {
+        let cur = win.is_fullscreen().map_err(|e| e.to_string())?;
+        win.set_fullscreen(!cur).map_err(|e| e.to_string())?;
+        Ok(!cur)
+    } else {
+        Err("主窗口不存在".into())
+    }
 }
 
 /// 操作记录状态与落盘目录（P70 设置卡展示用）

@@ -46,6 +46,9 @@ export const sendInputRaw = (name: string, data: Uint8Array) =>
 export const zmodemSave = (name: string, b64: string) =>
   invoke<string>("zmodem_save", { name, b64 });
 
+// 切换主窗口全屏（F11），返回切换后的状态
+export const toggleFullscreen = () => invoke<boolean>("toggle_fullscreen");
+
 // ---------- 终端 commands ----------
 
 export const sendInput = (name: string, data: Uint8Array) =>

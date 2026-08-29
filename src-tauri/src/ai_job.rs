@@ -343,9 +343,13 @@ pub(crate) async fn run_ai_job(
                         && go_states.iter().any(|s| !matches!(s, GoalStatus::Ok));
                     if remaining {
                         premature_done += 1;
+                        let remaining_count = goals.iter().zip(&go_states)
+                            .filter(|(_, s)| !matches!(s, GoalStatus::Ok))
+                            .count();
                         last_output = format!(
-                            "[提示] 子目标任务尚未收口（共 {} 个子目标仍有未完成），不能提前结束：请针对当前失败/未完成的子目标继续输出命令;失败子目标要先输出 REFLEXION 再重规划。",
-                            goals.len()
+                            "[提示] 子目标任务尚未收口（{} 个子目标中仍有 {} 个未完成），不能提前结束：请针对当前失败/未完成的子目标继续输出命令;失败子目标要先输出 REFLEXION 再重规划。",
+                            goals.len(),
+                            remaining_count
                         );
                         if premature_done >= 2 {
                             let _ = app.emit(

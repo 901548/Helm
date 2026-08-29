@@ -464,6 +464,11 @@ F:\Helm\
   2. **真 bug:浅色主题运行时切换破损**——设置切 light 后应用框架变浅但**终端区仍是深色**(WebGL 画布清屏色不随 `term.options.theme` 运行时刷新,P68 引入 WebGL 后暴露;P12 时代纯 DOM 渲染无此问题)。
   3. **修复及二次坑**:主题 `$effect` 里对有 WebGL 的终端 **dispose 旧渲染器重建**;第一版 dispose 后同步 loadAddon 撞上渲染器拆除中间态 → `TypeError: reading '_isDisposed'` → **Svelte 组件树整个崩掉白屏**;改为 **dispose 与重挂隔帧(requestAnimationFrame)** 后往返稳定。实测浅↔深两次切换:双主题渲染全部正确、终端内容保留、零新异常(截图 audit-13/14)。
   4. **验证细节**:CDP 错误监听须在 location.reload **之前**挂才抓得到旧页崩溃残留——判失败前先分辨错误是否为切换过程新产生,否则旧页噪音导致假阴性。
+- [x] **P75 字体观感修复(用户反馈"字体变细不如之前"+"UI 不够高级",已完成,截图对比验证)**:
+  1. **根因**:P68 引入 WebGL 渲染后字形变细——canvas 灰度抗锯齿 vs 旧 DOM 渲染的亚像素加粗,同字体观感明显变瘦(用户说的"之前的粗字体"即 DOM 渲染时代的观感)。
+  2. **修复**:Terminal 选项加 `fontWeight: 600`(半粗,合成加粗自 400 Regular,补偿 WebGL 细化;不上 700 防过粗);UI 字体栈升级 `"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui`(Win11 原生更精致 + 显式中文字体保证 CJK 一致性)。
+  3. **验证**:截图对比 font-600.png vs audit-1——笔画饱满度明显回升。**待用户实机确认观感**(600/700 或回落 DOM 渲染可再调)。
+  4. **坑**:截图缩放让字重对比不精确,判断需放大原图;用户观感反馈(字体粗细/高级感)本质是渲染管线变化,先查渲染器差异再调字体参数。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

@@ -7,6 +7,7 @@
     mode: "qa" | "agent";
     busy: boolean;
     aiState?: AiState;
+    kind?: string;
     cards: AiCard[];
     taskText: string;
     summary: { text: string; ok: boolean } | null;
@@ -30,6 +31,7 @@
     mode,
     busy,
     aiState = "idle",
+    kind = "linux",
     cards,
     taskText,
     summary,
@@ -235,13 +237,15 @@
         <span class="dot" aria-hidden="true"></span>{stateText[aiState]}
       </span>
     {/if}
-    <input
-      class="ai-bar-container"
-      bind:value={containerInput}
-      aria-label="目标容器（Docker 会话）"
-      placeholder="容器(可选)"
-      title="Docker 会话运行时目标容器；留空回落会话持久化容器"
-    />
+    {#if kind === "docker"}
+      <input
+        class="ai-bar-container"
+        bind:value={containerInput}
+        aria-label="目标容器（Docker 会话）"
+        placeholder="容器(可选)"
+        title="Docker 会话运行时目标容器；留空回落会话持久化容器"
+      />
+    {/if}
     <input
       bind:this={inputEl}
       bind:value={text}

@@ -109,6 +109,7 @@ fn main() {
             core::fs_upload,
             core::fs_download,
             core::fs_read_file,
+            core::toggle_fullscreen,
             core::recording_info,
             core::zmodem_save,
             core::forget_host_key,

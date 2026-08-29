@@ -42,8 +42,7 @@
     aiThinking?: string;
     termFontSize?: number;
     termScrollback?: number;
-    onModeChange: (m: "qa" | "agent") => void;
-    onApprove: () => void;
+    onModeChange: (m: "qa" | "agent") => void;    onApprove: () => void;
     onReject: () => void;
     onEditPlan: (commands: string[]) => void;
     onStop: () => void;
@@ -586,6 +585,10 @@
         e.preventDefault();
         if (t !== activeTab) onSelect(t);
       }
+    } else if (e.key === "F11") {
+      // P74 全屏切换（全局响应，不区分输入焦点）
+      e.preventDefault();
+      api.toggleFullscreen().catch(() => {});
     } else if (e.altKey && key === "i" && !fromAppField) {
       // 聚焦 AI 命令条输入框（⌥I）;输入框内不劫持
       e.preventDefault();
@@ -855,6 +858,7 @@
   mode={aiMode}
   busy={aiBusy}
   {aiState}
+  kind={kinds[activeTab ?? ""] ?? "linux"}
   cards={aiCards}
   taskText={aiTaskText}
   summary={aiSummary}

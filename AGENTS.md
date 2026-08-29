@@ -453,6 +453,12 @@ F:\Helm\
   4. **验证(真机 192.168.79.150,agent 自装 lrzsz)**:sz 下载→浮层进度→已保存路径+内容一致;rz 上传→选文件→发送完成;**往返对照逐字节一致**;协议帧零入训练日志。
   5. **修复两个协议关键点**:a) **Receive 会话必须显式 `zsession.start()`**——不发 ZRINIT 服务器永远等不到握手(上传浮层都不出现的根因);Send 会话不需(服务器先发 ZRINIT 触发检测);b) rz 保存用**发送时原始文件名**(本地叫什么远端存什么,往返对照必须用同名)。
   6. **坑**:a) zmodem.js 的 `Sentry` 在 index.js 入口只有协议栈,`Browser.send_files` 在 dist bundle——须 `import "zmodem.js/dist/zmodem.js"` 副作用导入 + `window.Zmodem` 访问;b) 哨兵透传会把 ZRQINIT 首帧渲染成屏幕垃圾(`**B00...`)属标准行为;c) **多轮测试互相污染**——上一轮卡死的 rz 会让后续 sz 命令喂进 rz stdin(命令永远不到 shell),每步前 Ctrl+C 清场+严格串行;d) `rz waiting to receive.**<18>B0...` 里的 ZRINIT 帧 = rz 方向检测源(服务端发 ZRINIT→Session.Send);sz 方向是 ZRQINIT→Session.Receive;e) 真机文件传输验证受 vite 存活/HMR 干扰,环境重置(杀净 node+helm)后再测最省时间。
+- [x] **P74 收尾批:F11 全屏 + 两处 P64 遗留瑕疵清零(已完成,CDP ALL PASS + `cargo test` 102 项/`npm run build` 通过)**:
+  1. **F11 全屏**:后端 `toggle_fullscreen` 命令(`app.get_webview_window("main")` + is_fullscreen/set_fullscreen,返回切换后状态;core.rs 重新引入 `Manager` import——P65 删过);handleKey 加 F11 分支(全局响应不区分焦点,preventDefault 挡浏览器默认)。
+  2. **容器输入 kind 门控**:AiCopilot 加 `kind` prop(TerminalTabs 传 `kinds[activeTab]`),容器输入框仅 `kind === "docker"` 渲染——Linux 会话 dock 不再显示无效的「容器(可选)」输入(P64 遗留①)。
+  3. **premature_done 文案**:「共 N 个子目标仍有未完成」插值 goals.len() 改为**剩余未完成数**(zip filter 计数,P64 遗留②)——模型收到的重规划提示不再失真。
+  4. **验证(CDP)**:Linux 会话 dock 无容器输入且有任务输入 ✓;toggle_fullscreen true→false 往返 ✓;docker 会话容器输入出现 ✓。
+  5. **坑**:无——三处均为小改动;F11 走后端命令而非 @tauri-apps/api window,免改 capabilities 权限文件。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

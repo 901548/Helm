@@ -255,6 +255,8 @@
     const term = new Terminal({
       fontFamily: '"Cascadia Mono", monospace',
       fontSize: termFontSize,
+      // P75：WebGL 灰度抗锯齿比旧 DOM 渲染细，600 半粗还原之前的观感
+      fontWeight: 600,
       lineHeight: 1.2,
       cursorBlink: true,
       convertEol: true,

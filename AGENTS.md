@@ -467,7 +467,8 @@ F:\Helm\
 - [x] **P75 字体观感修复(用户反馈"字体变细不如之前"+"UI 不够高级",已完成,截图对比验证)**:
   1. **根因**:P68 引入 WebGL 渲染后字形变细——canvas 灰度抗锯齿 vs 旧 DOM 渲染的亚像素加粗,同字体观感明显变瘦(用户说的"之前的粗字体"即 DOM 渲染时代的观感)。
   2. **修复**:Terminal 选项加 `fontWeight: 600`(半粗,合成加粗自 400 Regular,补偿 WebGL 细化;不上 700 防过粗);UI 字体栈升级 `"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui`(Win11 原生更精致 + 显式中文字体保证 CJK 一致性)。
-  3. **验证**:截图对比 font-600.png vs audit-1——笔画饱满度明显回升。**待用户实机确认观感**(600/700 或回落 DOM 渲染可再调)。
+  3. **验证**:截图对比 font-600.png vs audit-1——笔画饱满度明显回升。**用户反馈 600 合成加粗"很怪"→ 迭代为真字重方案(见下)**。
+  5. **v2 迭代(600 合成加粗发糊 → 换真字重字体)**:合成加粗 = 浏览器描边叠画,canvas 下糊。**接入 JetBrains Mono Medium**(npm `@fontsource/jetbrains-mono` 离线 woff2 → `frontend/src/fonts/`,index.html 声明 400/500 两档 @font-face);终端 `fontFamily: "JetBrains Mono", "Cascadia Mono", monospace` + `fontWeight: 500`(真实 Medium 字面,无合成);CJK 回落系统雅黑。`document.fonts.check` 确认加载 + 截图 font-jbmono.png:字形圆润饱满无糊感。UI 字体栈回落原样(Segoe UI Variable 在无该字体的机器上观感不可控,用户未要求动 UI 字体)。
   4. **坑**:截图缩放让字重对比不精确,判断需放大原图;用户观感反馈(字体粗细/高级感)本质是渲染管线变化,先查渲染器差异再调字体参数。
 
 ## 6. 命令与验证

@@ -253,10 +253,11 @@
 
   function createTerminal(name: string): Terminal {
     const term = new Terminal({
-      fontFamily: '"Cascadia Mono", monospace',
+      // P75：JetBrains Mono Medium——真实中等字重，WebGL 渲染下饱满不发糊
+      // （Cascadia 400 经 WebGL 偏细，合成 600 发糊；CJK 回落系统雅黑）
+      fontFamily: '"JetBrains Mono", "Cascadia Mono", monospace',
       fontSize: termFontSize,
-      // P75：WebGL 灰度抗锯齿比旧 DOM 渲染细，600 半粗还原之前的观感
-      fontWeight: 600,
+      fontWeight: 500,
       lineHeight: 1.2,
       cursorBlink: true,
       convertEol: true,

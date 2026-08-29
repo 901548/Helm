@@ -773,7 +773,7 @@
 
   :global(body) {
     margin: 0;
-    font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+    font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
     background: var(--bg);
     color: var(--fg);
     overflow: hidden;

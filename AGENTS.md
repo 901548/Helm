@@ -459,6 +459,11 @@ F:\Helm\
   3. **premature_done 文案**:「共 N 个子目标仍有未完成」插值 goals.len() 改为**剩余未完成数**(zip filter 计数,P64 遗留②)——模型收到的重规划提示不再失真。
   4. **验证(CDP)**:Linux 会话 dock 无容器输入且有任务输入 ✓;toggle_fullscreen true→false 往返 ✓;docker 会话容器输入出现 ✓。
   5. **坑**:无——三处均为小改动;F11 走后端命令而非 @tauri-apps/api window,免改 capabilities 权限文件。
+- [x] **P74-b UI 优化审计:浅色主题 WebGL 切换崩溃+残影双修复(已完成,CDP 深浅往返截图验证 + Vitest 26 项)**:
+  1. **审计**:全界面截图走查(主界面/文件面板/设置三 tab/Agent dock)——布局与控件均正常(此前截图判读的"AI dock 消失"是暗底暗字缩放截图的误读,DOM 几何量测全部在位)。
+  2. **真 bug:浅色主题运行时切换破损**——设置切 light 后应用框架变浅但**终端区仍是深色**(WebGL 画布清屏色不随 `term.options.theme` 运行时刷新,P68 引入 WebGL 后暴露;P12 时代纯 DOM 渲染无此问题)。
+  3. **修复及二次坑**:主题 `$effect` 里对有 WebGL 的终端 **dispose 旧渲染器重建**;第一版 dispose 后同步 loadAddon 撞上渲染器拆除中间态 → `TypeError: reading '_isDisposed'` → **Svelte 组件树整个崩掉白屏**;改为 **dispose 与重挂隔帧(requestAnimationFrame)** 后往返稳定。实测浅↔深两次切换:双主题渲染全部正确、终端内容保留、零新异常(截图 audit-13/14)。
+  4. **验证细节**:CDP 错误监听须在 location.reload **之前**挂才抓得到旧页崩溃残留——判失败前先分辨错误是否为切换过程新产生,否则旧页噪音导致假阴性。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

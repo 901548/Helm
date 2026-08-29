@@ -677,6 +677,26 @@
     const t = theme;
     for (const e of terminals.values()) {
       e.term.options.theme = XTERM_THEMES[t];
+      // P74：WebGL 画布清屏色不随运行时主题刷新（切主题后仍是旧深色）。
+      // dispose 与重挂必须隔帧——同步重挂会撞上渲染器拆除中间态直接崩溃
+      if (e.webgl) {
+        const old = e.webgl;
+        e.webgl = undefined;
+        try {
+          old.dispose();
+        } catch {
+          /* ignore */
+        }
+        requestAnimationFrame(() => {
+          try {
+            const w = new WebglAddon();
+            e.term.loadAddon(w);
+            e.webgl = w;
+          } catch {
+            /* DOM 渲染回退 */
+          }
+        });
+      }
     }
   });
 

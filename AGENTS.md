@@ -481,6 +481,7 @@ F:\Helm\
   1. **问题**:会话栏类型徽标(`Win`/`RDP`/`Docker`)文字色硬编码 `#4aa3ff`/`#c792ea`/`#3db2ff`——亮色系在深色主题清晰,但在浅色主题白底上对比度不足;且 `.badge` 引用了从未在 `:root` 定义的 `--panel-glow` 变量(永远走 fallback `rgba(128,128,160,0.18)`)。
   2. **修复**:App.svelte `:root`(深)新增 `--panel-glow` + `--badge-win/--badge-rdp/--badge-docker`(沿用原亮色值);`:root[data-theme="light"]` 覆盖为更暗色系(`#1f6fd6`/`#8250df`/`#0b7bd6`,`--panel-glow` 降透明度 `rgba(80,90,120,0.12)`);SessionPanel `.badge.windows/rdp/docker` 改 `var(--badge-*)`,`.badge` 背景改 `var(--panel-glow)`(去掉 fallback,变量已定义)。
   3. **验证**:`npm run build` + Vitest 26 项通过;CDP 双主题断言——深色 `--badge-*` = `#4aa3ff`/`#c792ea`/`#3db2ff`(与改动前一致)、浅色 = `#1f6fd6`/`#8250df`/`#0b7bd6`,变量解析正确。
+  4. **圆点回归修复(P76 遗留)**:P76 把 `.dot.off` 改 `var(--fg-muted)`+`opacity:0.55`——修好浅色却使深色主题下未连接圆点比原 `#c4c9d0` 更暗(未连接是默认态应清晰)。改为专用变量 `--dot-off`:深色 `#c4c9d0`(与原一致)、浅色 `#9aa3ad`(白底可见),SessionPanel `.dot.off` 用 `var(--dot-off)` 去掉 opacity hack。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

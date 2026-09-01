@@ -749,12 +749,18 @@
       </div>
     {/each}
   </div>
-  <button class="tab-btn" title="搜索 (Ctrl+F)" onclick={() => (showSearch = true)}>🔍</button>
-  <button class="tab-add" title="新建会话" onclick={onAdd}>＋</button>
+  <button class="tab-btn" title="搜索 (Ctrl+F)" onclick={() => (showSearch = true)}>
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
+  </button>
+  <button class="tab-add" title="新建会话" onclick={onAdd}>
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+  </button>
 </div>
 
 <SysMonitor {activeTab} />
 
+<!-- 右键菜单捕获层:容器级 contextmenu 拦截终端区右键,无独立语义,与 ctx-veil 同类 -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="term-area" bind:this={termArea} oncontextmenu={openTermCtx}>
   {#if showSearch}
     <div class="search-bar">
@@ -971,11 +977,13 @@
     border: none;
     background: transparent;
     color: var(--tabbar-fg);
-    font-size: 0.9rem;
     cursor: pointer;
-    padding: 0 0.5rem;
+    padding: 0 0.55rem;
     height: 100%;
     border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     transition: color 0.12s ease, background 0.12s ease;
   }
   .tab-btn:hover {
@@ -986,11 +994,13 @@
     border: none;
     background: transparent;
     color: var(--tabbar-fg);
-    font-size: 1.05rem;
     cursor: pointer;
     padding: 0 0.8rem;
     height: 100%;
     border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     transition: color 0.12s ease, background 0.12s ease;
   }
   .tab-add:hover {
@@ -1317,7 +1327,7 @@
     word-break: break-all;
     max-height: 220px;
     overflow: auto;
-    font-family: "Cascadia Mono", monospace;
+    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
     font-size: 0.72rem;
   }
   :global(.xterm) {

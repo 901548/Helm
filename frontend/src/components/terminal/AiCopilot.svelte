@@ -104,7 +104,8 @@
   }
 
   function statusIcon(s: string): string {
-    return s === "ok" ? "✓" : s === "fail" ? "✗" : s === "skipped" ? "⊘" : s === "confirm" ? "⚠" : "⏳";
+    // 用文本字形替代彩色 emoji(⚠/⏳ 在 Chromium 下会渲染成表情,与线性图标语言不一致)
+    return s === "ok" ? "✓" : s === "fail" ? "✗" : s === "skipped" ? "⊘" : s === "confirm" ? "!" : "●";
   }
 
   function startEditPlan(c: { id: number; commands: { command: string }[] }) {
@@ -141,12 +142,17 @@
     <section class="ai-stream" aria-label="AI 活动流">
       <header class="ai-stream-head">
         <span class="ai-task" class:agent={mode === "agent"} title={taskText}>
-          {mode === "agent" ? "▶" : "💬"} {taskText}
+          {#if mode === "agent"}
+            <svg class="mode-glyph" width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+          {:else}
+            <svg class="mode-glyph" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" /></svg>
+          {/if}
+          {taskText}
         </span>
         {#if summary}
           <span class="ai-summary" class:err={!summary.ok}>{summary.ok ? "✓" : "✗"} {summary.text}</span>
         {:else if busy}
-          <span class="ai-summary running">⏳ 执行中…</span>
+          <span class="ai-summary running">执行中…</span>
         {/if}
         <span class="spacer"></span>
         <button class="mini" onclick={onClear} title="清空活动流">清空</button>
@@ -155,7 +161,7 @@
       <div class="ai-stream-body" bind:this={bodyEl}>
         {#if thinking && busy}
           <div class="card thinking-live">
-            <div class="thinking-label">🤔 思考中…（推理型模型，实时过程）</div>
+            <div class="thinking-label">思考中…（推理型模型，实时过程）</div>
             <div class="thinking-text">{thinking}<span class="cursor">▋</span></div>
           </div>
         {/if}
@@ -229,8 +235,14 @@
 
   <div class="ai-bar">
     <div class="mode-switch" role="group" aria-label="AI 模式">
-      <button class="mode-btn" class:on={mode === "qa"} title="问答模式：聊天式提问" onclick={() => onModeChange("qa")}>⌘ 问答</button>
-      <button class="mode-btn" class:on={mode === "agent"} title="Agent 模式：描述任务，AI 自动执行" onclick={() => onModeChange("agent")}>▶ Agent</button>
+      <button class="mode-btn" class:on={mode === "qa"} title="问答模式：聊天式提问" onclick={() => onModeChange("qa")}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" /></svg>
+        <span>问答</span>
+      </button>
+      <button class="mode-btn" class:on={mode === "agent"} title="Agent 模式：描述任务，AI 自动执行" onclick={() => onModeChange("agent")}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l6-6-6-6" /><path d="M12 19h8" /></svg>
+        <span>Agent</span>
+      </button>
     </div>
     {#if busy && aiState !== "idle"}
       <span class="state-chip" class:wait={aiState === "awaitingConfirm"} title="AI 任务状态机当前阶段">
@@ -256,7 +268,10 @@
       disabled={busy}
     />
     {#if busy}
-      <button class="act stop" onclick={onStop} title="停止当前任务">⏹ 停止</button>
+      <button class="act stop" onclick={onStop} title="停止当前任务">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+        <span>停止</span>
+      </button>
     {:else}
       <button class="act go" onclick={submit} title="发送 (Enter)">发送</button>
     {/if}
@@ -303,6 +318,10 @@
   }
   .ai-task.agent {
     color: var(--accent-hover);
+  }
+  .ai-task .mode-glyph {
+    vertical-align: -1px;
+    flex-shrink: 0;
   }
   .ai-summary {
     color: var(--ok);
@@ -375,7 +394,7 @@
     }
   }
   .cmd {
-    font-family: "Cascadia Mono", Consolas, monospace;
+    font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
     font-size: 0.78rem;
     color: var(--fg);
     white-space: nowrap;
@@ -405,7 +424,7 @@
     background: var(--term-bg);
     color: var(--term-fg);
     border-radius: var(--radius-sm);
-    font-family: "Cascadia Mono", Consolas, monospace;
+    font-family: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
     font-size: 0.72rem;
     white-space: pre-wrap;
     word-break: break-all;
@@ -496,6 +515,9 @@
     font-weight: 600;
     color: var(--fg-muted);
     white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
   }
   .mode-btn.on {
     background: var(--bg-panel);
@@ -557,6 +579,9 @@
     cursor: pointer;
     flex-shrink: 0;
     white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
   }
   .act:hover:not(:disabled) {
     color: var(--fg);

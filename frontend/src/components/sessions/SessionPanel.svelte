@@ -98,7 +98,9 @@
             aria-hidden="true"
           ><path d="M15 6l-6 6 6 6" /></svg>
         </button>
-        <button class="icon-btn accent" title="新建会话" onclick={onNew}>＋</button>
+        <button class="icon-btn accent" title="新建会话" onclick={onNew}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+        </button>
       </div>
   </header>
   {/if}
@@ -241,13 +243,15 @@
     border: none;
     background: transparent;
     cursor: pointer;
-    font-size: 1rem;
     width: 26px;
     height: 26px;
     border-radius: var(--radius-sm);
     line-height: 1;
     color: var(--fg-muted);
     padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
   .icon-btn:hover {
     background: var(--hover);
@@ -306,7 +310,8 @@
     animation: pulse 1s infinite;
   }
   .dot.off {
-    background: #c4c9d0;
+    background: var(--fg-muted);
+    opacity: 0.55;
   }
   @keyframes pulse {
     50% {

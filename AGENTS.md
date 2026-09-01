@@ -470,6 +470,13 @@ F:\Helm\
   3. **验证**:截图对比 font-600.png vs audit-1——笔画饱满度明显回升。**用户反馈 600 合成加粗"很怪"→ 迭代为真字重方案(见下)**。
   5. **v2 迭代(600 合成加粗发糊 → 换真字重字体)**:合成加粗 = 浏览器描边叠画,canvas 下糊。**接入 JetBrains Mono Medium**(npm `@fontsource/jetbrains-mono` 离线 woff2 → `frontend/src/fonts/`,index.html 声明 400/500 两档 @font-face);终端 `fontFamily: "JetBrains Mono", "Cascadia Mono", monospace` + `fontWeight: 500`(真实 Medium 字面,无合成);CJK 回落系统雅黑。`document.fonts.check` 确认加载 + 截图 font-jbmono.png:字形圆润饱满无糊感。UI 字体栈回落原样(Segoe UI Variable 在无该字体的机器上观感不可控,用户未要求动 UI 字体)。
   4. **坑**:截图缩放让字重对比不精确,判断需放大原图;用户观感反馈(字体粗细/高级感)本质是渲染管线变化,先查渲染器差异再调字体参数。
+- [x] **P76 UI 一致性打磨(已完成,`npm run build` + Vitest 26 项 + `cargo test` 102 项全过;纯前端,零后端改动)**:
+  1. **等宽字体统一**:UI 中残留的 `"Cascadia Mono"` 全部升为首选 `"JetBrains Mono"`(保留 Cascadia 作回退),与 P75 终端字体观感一致——消除「终端用 JetBrains、面板代码块/路径/输出块却用 Cascadia」的割裂。涉及 `SysMonitor.svelte`(.mono)、`AiCopilot.svelte`(.cmd/.out)、`TerminalTabs.svelte`(.ai-log-out)、`FileBrowser.svelte`(.fs-cwd/.fs-size/.fs-perms/.fs-mtime/.pv-sub/.pv-body 共 6 处)。
+  2. **emoji → SVG 线性图标(补齐 P40 设计语言缺口)**:状态栏 `⚙` 齿轮、终端标签栏 `🔍` 搜索/`＋` 新建、会话栏 `＋` 新建,全部换 stroke=currentColor 内联 SVG;AI dock 内联彩色 emoji 一并清理——活动流头 `💬`/`▶` → SVG(消息气泡/播放三角)、模式切换 `⌘`/`▶` → SVG(消息气泡/终端符,`⌘` 为 Mac 符号在 Windows 应用语义不符)、`🤔 思考中`/`⏳ 执行中`/`⏹ 停止` 去 emoji;`statusIcon` 的 `⚠`/`⏳`(Chromium 下渲染成表情)改文本字形 `!`/`●`。配套给 `.menu`/`.tab-btn`/`.tab-add`/`.icon-btn`/`.act`/`.mode-btn` 补 `inline-flex` 居中。
+  3. **浅色主题适配**:未连接圆点硬编码 `#c4c9d0`(浅色主题下几乎不可见)→ `var(--fg-muted)` + `opacity: 0.55`。
+  4. **a11y 清理**:`TerminalTabs.svelte` 的 `.term-area` 右键菜单捕获层补 `svelte-ignore a11y_no_static_element_interactions`(P68 新增后遗漏,与既有 ctx-veil 同类)。
+  5. **验证**:`npm run build` 通过(148 模块)、Vitest 26 项全过、`cargo test` 102 项全过;新增 a11y 警告清零,剩余两条 `state_referenced_locally` 为 P27 记录的设计意图保留项。
+  6. **坑**:a) 当前模型无法读截图,本轮只做「代码级可客观验证」的一致性收尾(字体/图标语言/主题色/a11y),不做主观视觉审美;b) grep 残留的 `✓/✗` 为终端 ANSI 回显与应用内状态文字(单色字形),非彩色 emoji,不需替换;`App.svelte` 的 `⏸` 属终端回显字符(经 xterm 渲染),保留。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

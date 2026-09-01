@@ -578,7 +578,7 @@
   .fs-cwd {
     font-size: 0.72rem;
     color: var(--fg-muted);
-    font-family: "Cascadia Mono", monospace;
+    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
     flex: 1;
     min-width: 40px;
     white-space: nowrap;
@@ -712,19 +712,19 @@
     width: 60px;
     text-align: right;
     color: var(--fg-muted);
-    font-family: "Cascadia Mono", monospace;
+    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
     font-size: 0.74rem;
   }
   .fs-perms {
     width: 90px;
     color: var(--fg-muted);
-    font-family: "Cascadia Mono", monospace;
+    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
     font-size: 0.74rem;
   }
   .fs-mtime {
     width: 150px;
     color: var(--fg-muted);
-    font-family: "Cascadia Mono", monospace;
+    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
     font-size: 0.74rem;
   }
   .name-dialog {
@@ -827,7 +827,7 @@
   .pv-sub {
     font-size: 0.7rem;
     color: var(--fg-muted);
-    font-family: "Cascadia Mono", monospace;
+    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -894,7 +894,7 @@
     overflow: auto;
     padding: 0.8rem;
     margin: 0;
-    font-family: "Cascadia Mono", monospace;
+    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
     font-size: 0.8rem;
     color: var(--fg);
     white-space: pre-wrap;

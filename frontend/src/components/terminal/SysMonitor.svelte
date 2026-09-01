@@ -126,7 +126,7 @@
     color: var(--danger);
   }
   .mono {
-    font-family: "Cascadia Mono", monospace;
+    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
   }
   .sep {
     width: 1px;

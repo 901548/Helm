@@ -114,6 +114,7 @@ fn main() {
             core::zmodem_save,
             core::forget_host_key,
             core::host_key_fingerprint,
+            core::docker_ps,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

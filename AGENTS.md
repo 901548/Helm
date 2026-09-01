@@ -482,6 +482,12 @@ F:\Helm\
   2. **修复**:App.svelte `:root`(深)新增 `--panel-glow` + `--badge-win/--badge-rdp/--badge-docker`(沿用原亮色值);`:root[data-theme="light"]` 覆盖为更暗色系(`#1f6fd6`/`#8250df`/`#0b7bd6`,`--panel-glow` 降透明度 `rgba(80,90,120,0.12)`);SessionPanel `.badge.windows/rdp/docker` 改 `var(--badge-*)`,`.badge` 背景改 `var(--panel-glow)`(去掉 fallback,变量已定义)。
   3. **验证**:`npm run build` + Vitest 26 项通过;CDP 双主题断言——深色 `--badge-*` = `#4aa3ff`/`#c792ea`/`#3db2ff`(与改动前一致)、浅色 = `#1f6fd6`/`#8250df`/`#0b7bd6`,变量解析正确。
   4. **圆点回归修复(P76 遗留)**:P76 把 `.dot.off` 改 `var(--fg-muted)`+`opacity:0.55`——修好浅色却使深色主题下未连接圆点比原 `#c4c9d0` 更暗(未连接是默认态应清晰)。改为专用变量 `--dot-off`:深色 `#c4c9d0`(与原一致)、浅色 `#9aa3ad`(白底可见),SessionPanel `.dot.off` 用 `var(--dot-off)` 去掉 opacity hack。
+- [x] **P78 Docker 容器下拉(§8.7.4 补全,已完成,`cargo test` 102 项 + Vitest 26 项 + `npm run build` 通过;live 验证因服务器离线阻断,单测覆盖已知限制)**:
+  1. **动机**:看板 id 30 + §8.7.4 写的是「容器**下拉**」,但 P56/P74 只做了 kind 门控 + 手输容器名的**文本输入框**。补齐为真正的下拉:后端拉 `docker ps` 列表,前端 select 选择。
+  2. **后端**:core.rs 新增 `docker_ps(name)` command——经 `state.ssh.execute(&name, "docker ps --format '{{.Names}}' 2>/dev/null")` 在**宿主机 exec 通道**执行(`2>/dev/null` 抑制 docker 未安装/守护进程异常时的 stderr → 空列表而非伪容器名),返回排序去重后的 `Vec<String>`;main.rs 注册。ssh.rs `execute` 去掉 `#[allow(dead_code)]`(现被 docker_ps 使用)。
+  3. **前端**:commands.ts 加 `dockerPs(name)`;AiCopilot 加 `name` prop + `containers/containersLoading/containersError` 状态 + `refreshContainers()`(kind=docker 且有会话名时拉取)+ `$effect`(kind/name 变化即刷新);容器输入从 `<input>` 改为 `<select>`(默认项「容器(默认)」空值回落持久化容器 + 每容器一个 option)+ 刷新按钮(SVG 循环箭头,失败时 title 展示错误可重试);`.ai-bar-container` 宽 104→132px + option 用 `--modal-bg/--fg` 配色;TerminalTabs 传 `name={activeTab ?? ""}`。
+  4. **验证**:`cargo test` 102 项全过(编译含 docker_ps)、Vitest 26 项、`npm run build` 通过;CDP 注入临时 docker 会话确认 `list_sessions` 正确返回 kind=docker/container=helm-container。**live 验证被阻断**:192.168.79.150 又离线(port 22 不通),docker 会话连接即 Disconnected、`docker_ps` 无法真机跑通——待服务器恢复后按「连接 dock 会话 → 下拉出现 helm-container → 选中提交走 docker_exec_cmd」补冒烟。config.yaml 已还原(临时 dock 会话已移除)。
+  5. **坑**:a) `docker_ps` 必须走**宿主 exec 通道**(`execute`/`exec_handle` 连的是宿主 SSH),不能经 `open_shell` 的容器内 shell;b) 用 `2>/dev/null` 而非依赖退出码——`execute` 空 stdout 时返回 stderr,docker 未安装会把错误文本当容器名;c) `execute` 曾是 `#[allow(dead_code)]`(P25 起无人调用),补 docker_ps 后必须去掉该属性否则 `unused` 警告与语义不符。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

@@ -81,6 +81,9 @@ export const aiSetMode = (name: string, mode: "qa" | "agent") =>
 
 export const aiMode = (name: string) => invoke<"qa" | "agent">("ai_mode", { name });
 
+// 列出 Docker 宿主机容器名(docker ps)，供 Agent 任务容器下拉选择（§8.7.4）
+export const dockerPs = (name: string) => invoke<string[]>("docker_ps", { name });
+
 // ---------- 配置 commands ----------
 
 export const getAiConfig = () => invoke<AiConfig | null>("get_ai_config");

@@ -514,7 +514,6 @@ impl SshManager {
     /// 收集 stdout；若 stdout 为空则返回 stderr。
     /// 仅在调用瞬间短暂借用句柄，真正的通道读写不占用管理器锁。
     /// 输出超过 `MAX_EXEC_OUTPUT` 时停止累积（防大输出拖垮内存）。
-    #[allow(dead_code)]
     pub async fn execute(&self, name: &str, cmd: &str) -> Result<String> {
         let handle = self
             .exec_handle(name)

@@ -471,6 +471,27 @@ pub async fn clear_active(state: State<'_, CoreState>) -> Result<(), String> {
     Ok(())
 }
 
+/// 列出 Docker 宿主机上的容器名（docker ps），供 Agent 任务容器下拉选择（§8.7.4）。
+///
+/// 经独立 exec 通道在宿主机执行（Docker 会话的 exec 通道连的是宿主 SSH）。
+/// `2>/dev/null` 抑制 docker 未安装/守护进程异常时的 stderr → 空列表而非伪容器名。
+#[tauri::command]
+pub async fn docker_ps(state: State<'_, CoreState>, name: String) -> Result<Vec<String>, String> {
+    let out = state
+        .ssh
+        .execute(&name, "docker ps --format '{{.Names}}' 2>/dev/null")
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut names: Vec<String> = out
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
 /// 用系统默认浏览器打开外部链接（P68 终端链接点击；只放行 http/https，防命令注入）
 #[tauri::command]
 pub fn open_external(url: String) -> Result<(), String> {

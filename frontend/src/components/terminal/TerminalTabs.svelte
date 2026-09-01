@@ -888,6 +888,7 @@
   busy={aiBusy}
   {aiState}
   kind={kinds[activeTab ?? ""] ?? "linux"}
+  name={activeTab ?? ""}
   cards={aiCards}
   taskText={aiTaskText}
   summary={aiSummary}

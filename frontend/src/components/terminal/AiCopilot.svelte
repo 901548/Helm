@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { dockerPs } from "../../lib/api";
   import type { AiCard, AiState, DangerLevel } from "../../lib/api";
 
   // AI 常驻命令条 + 活动流(P39):所有 AI 触点收敛于此——
@@ -8,6 +9,7 @@
     busy: boolean;
     aiState?: AiState;
     kind?: string;
+    name?: string;
     cards: AiCard[];
     taskText: string;
     summary: { text: string; ok: boolean } | null;
@@ -32,6 +34,7 @@
     busy,
     aiState = "idle",
     kind = "linux",
+    name = "",
     cards,
     taskText,
     summary,
@@ -54,6 +57,10 @@
   let text = $state("");
   // §8.7.4 Docker 会话运行时容器选择（每次提交携带）
   let containerInput = $state(container ?? "");
+  // §8.7.4 容器下拉：docker ps 拉取的容器列表（仅 kind=docker 会话 fetch）
+  let containers = $state<string[]>([]);
+  let containersLoading = $state(false);
+  let containersError = $state<string | null>(null);
   // §8.7.3 计划可改：本地编辑中状态
   let editingPlanId = $state<number | null>(null);
   let planEditText = $state("");
@@ -121,6 +128,28 @@
     editingPlanId = null;
     onEditPlan(cmds);
   }
+
+  // §8.7.4 容器下拉：拉取 docker ps 容器名列表（kind=docker 且已连会话时）
+  async function refreshContainers() {
+    if (kind !== "docker" || !name) return;
+    containersLoading = true;
+    containersError = null;
+    try {
+      containers = await dockerPs(name);
+    } catch (e) {
+      containersError = String(e);
+      containers = [];
+    } finally {
+      containersLoading = false;
+    }
+  }
+
+  // kind 或会话名变化时刷新容器列表（docker ps 只在宿主机 exec 通道上执行）
+  $effect(() => {
+    if (kind === "docker" && name) {
+      refreshContainers();
+    }
+  });
 
   // Alt+I → 聚焦输入框(focusSeq 递增触发)
   $effect(() => {
@@ -250,13 +279,26 @@
       </span>
     {/if}
     {#if kind === "docker"}
-      <input
+      <select
         class="ai-bar-container"
         bind:value={containerInput}
         aria-label="目标容器（Docker 会话）"
-        placeholder="容器(可选)"
         title="Docker 会话运行时目标容器；留空回落会话持久化容器"
-      />
+        disabled={containersLoading}
+      >
+        <option value="">容器(默认)</option>
+        {#each containers as c (c)}
+          <option value={c}>{c}</option>
+        {/each}
+      </select>
+      <button
+        class="act"
+        onclick={refreshContainers}
+        title={containersError ? `拉取容器失败: ${containersError}（点击重试）` : "刷新容器列表"}
+        disabled={containersLoading}
+      >
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8" /><path d="M21 3v5h-5" /></svg>
+      </button>
     {/if}
     <input
       bind:this={inputEl}
@@ -609,13 +651,17 @@
   }
   .ai-bar-container {
     flex-shrink: 0;
-    width: 104px;
+    width: 132px;
     background: var(--input-bg);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     color: var(--fg);
     padding: 0.3rem 0.5rem;
     font-size: 0.75rem;
+  }
+  .ai-bar-container option {
+    background: var(--modal-bg);
+    color: var(--fg);
   }
   .ai-bar-container::placeholder {
     color: var(--fg-muted);

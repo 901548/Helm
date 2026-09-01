@@ -310,8 +310,7 @@
     animation: pulse 1s infinite;
   }
   .dot.off {
-    background: var(--fg-muted);
-    opacity: 0.55;
+    background: var(--dot-off);
   }
   @keyframes pulse {
     50% {

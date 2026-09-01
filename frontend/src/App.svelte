@@ -719,6 +719,7 @@
     --badge-win: #4aa3ff;
     --badge-rdp: #c792ea;
     --badge-docker: #3db2ff;
+    --dot-off: #c4c9d0;
   }
 
   :global(:root[data-theme="light"]) {
@@ -754,6 +755,7 @@
     --badge-win: #1f6fd6;
     --badge-rdp: #8250df;
     --badge-docker: #0b7bd6;
+    --dot-off: #9aa3ad;
   }
 
   /* 主题化细滚动条(WebView2 = Chromium,webkit 前缀生效) */

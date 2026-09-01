@@ -477,6 +477,10 @@ F:\Helm\
   4. **a11y 清理**:`TerminalTabs.svelte` 的 `.term-area` 右键菜单捕获层补 `svelte-ignore a11y_no_static_element_interactions`(P68 新增后遗漏,与既有 ctx-veil 同类)。
   5. **验证**:`npm run build` 通过(148 模块)、Vitest 26 项全过、`cargo test` 102 项全过;新增 a11y 警告清零,剩余两条 `state_referenced_locally` 为 P27 记录的设计意图保留项。
   6. **坑**:a) 当前模型无法读截图,本轮只做「代码级可客观验证」的一致性收尾(字体/图标语言/主题色/a11y),不做主观视觉审美;b) grep 残留的 `✓/✗` 为终端 ANSI 回显与应用内状态文字(单色字形),非彩色 emoji,不需替换;`App.svelte` 的 `⏸` 属终端回显字符(经 xterm 渲染),保留。
+- [x] **P77 浅色主题徽标对比度收尾(已完成,`npm run build` + Vitest 26 项全过;纯前端,CSS 变量化)**:
+  1. **问题**:会话栏类型徽标(`Win`/`RDP`/`Docker`)文字色硬编码 `#4aa3ff`/`#c792ea`/`#3db2ff`——亮色系在深色主题清晰,但在浅色主题白底上对比度不足;且 `.badge` 引用了从未在 `:root` 定义的 `--panel-glow` 变量(永远走 fallback `rgba(128,128,160,0.18)`)。
+  2. **修复**:App.svelte `:root`(深)新增 `--panel-glow` + `--badge-win/--badge-rdp/--badge-docker`(沿用原亮色值);`:root[data-theme="light"]` 覆盖为更暗色系(`#1f6fd6`/`#8250df`/`#0b7bd6`,`--panel-glow` 降透明度 `rgba(80,90,120,0.12)`);SessionPanel `.badge.windows/rdp/docker` 改 `var(--badge-*)`,`.badge` 背景改 `var(--panel-glow)`(去掉 fallback,变量已定义)。
+  3. **验证**:`npm run build` + Vitest 26 项通过;CDP 双主题断言——深色 `--badge-*` = `#4aa3ff`/`#c792ea`/`#3db2ff`(与改动前一致)、浅色 = `#1f6fd6`/`#8250df`/`#0b7bd6`,变量解析正确。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

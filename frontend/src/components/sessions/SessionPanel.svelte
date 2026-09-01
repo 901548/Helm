@@ -338,18 +338,18 @@
     line-height: 1;
     padding: 0.18rem 0.3rem;
     border-radius: var(--radius-sm);
-    background: var(--panel-glow, rgba(128, 128, 160, 0.18));
+    background: var(--panel-glow);
     color: var(--fg-muted);
     flex-shrink: 0;
   }
   .badge.windows {
-    color: #4aa3ff;
+    color: var(--badge-win);
   }
   .badge.rdp {
-    color: #c792ea;
+    color: var(--badge-rdp);
   }
   .badge.docker {
-    color: #3db2ff;
+    color: var(--badge-docker);
   }
 
   .name {

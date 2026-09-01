@@ -715,6 +715,10 @@
     --statusbar-fg: #c8cdd4;
     --statusbar-border: #262b33;
     --accent-dim: rgba(76, 141, 255, 0.14);
+    --panel-glow: rgba(128, 128, 160, 0.18);
+    --badge-win: #4aa3ff;
+    --badge-rdp: #c792ea;
+    --badge-docker: #3db2ff;
   }
 
   :global(:root[data-theme="light"]) {
@@ -746,6 +750,10 @@
     --statusbar-fg: #6b7280;
     --statusbar-border: #e2e6ea;
     --accent-dim: rgba(47, 111, 237, 0.1);
+    --panel-glow: rgba(80, 90, 120, 0.12);
+    --badge-win: #1f6fd6;
+    --badge-rdp: #8250df;
+    --badge-docker: #0b7bd6;
   }
 
   /* 主题化细滚动条(WebView2 = Chromium,webkit 前缀生效) */

@@ -489,6 +489,10 @@ F:\Helm\
   4. **验证**:`cargo test` 102 项全过(编译含 docker_ps)、Vitest 26 项、`npm run build` 通过;CDP 注入临时 docker 会话确认 `list_sessions` 正确返回 kind=docker/container=helm-container。**live 验证被阻断**:192.168.79.150 又离线(port 22 不通),docker 会话连接即 Disconnected、`docker_ps` 无法真机跑通——待服务器恢复后按「连接 dock 会话 → 下拉出现 helm-container → 选中提交走 docker_exec_cmd」补冒烟。config.yaml 已还原(临时 dock 会话已移除)。
   5. **坑**:a) `docker_ps` 必须走**宿主 exec 通道**(`execute`/`exec_handle` 连的是宿主 SSH),不能经 `open_shell` 的容器内 shell;b) 用 `2>/dev/null` 而非依赖退出码——`execute` 空 stdout 时返回 stderr,docker 未安装会把错误文本当容器名;c) `execute` 曾是 `#[allow(dead_code)]`(P25 起无人调用),补 docker_ps 后必须去掉该属性否则 `unused` 警告与语义不符。
 
+   6. **静态审查修复(2 个真实缺陷,纯前端,`npm run build` + Vitest 26 项通过)**:
+      - a) **连接状态未纳入 effect 依赖(下拉恒空)**:原 `$effect` 只依赖 `kind/name`,docker 会话慢认证 ~20s——用户点选会话时 `name` 立即变、会话尚未连上,`docker_ps` 必失败("会话未连接"),随后连接建立但 `kind/name` 未变 → 下拉永不自动填充,须手动刷新。修复:AiCopilot 加 `status` prop(TerminalTabs 传 `status`),`$effect` 依赖 `kind/name/status`,仅 `status==="Connected"` 才 `refreshContainers()`,否则作废在途请求并清空陈旧列表;`refreshContainers` 加 **last-write-wins 序列号 `containersSeq`**(慢旧响应过期直接丢弃,P22 同类竞态)。
+      - b) **containerInput 跨会话串值**:AiCopilot 在 TerminalTabs 只渲染一次,`containerInput` 是组件级 `$state`——在 docker 会话 A 选中容器后切到会话 B,残留值会串进 B 的提交。修复:加 `$effect`(依赖 `name`)切换会话时 `containerInput = ""`。
+
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)
 - 全栈开发:`cargo tauri dev`

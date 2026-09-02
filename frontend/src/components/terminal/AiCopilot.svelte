@@ -1,6 +1,6 @@
 <script lang="ts">
   import { dockerPs } from "../../lib/api";
-  import type { AiCard, AiState, DangerLevel } from "../../lib/api";
+  import type { AiCard, AiState, DangerLevel, SessionStatus } from "../../lib/api";
 
   // AI 常驻命令条 + 活动流(P39):所有 AI 触点收敛于此——
   // 模式切换、任务输入、步骤卡片、危险确认、停止/日志,终端保持纯净。
@@ -10,6 +10,7 @@
     aiState?: AiState;
     kind?: string;
     name?: string;
+    status?: SessionStatus;
     cards: AiCard[];
     taskText: string;
     summary: { text: string; ok: boolean } | null;
@@ -35,6 +36,7 @@
     aiState = "idle",
     kind = "linux",
     name = "",
+    status = "Disconnected",
     cards,
     taskText,
     summary,
@@ -130,25 +132,47 @@
   }
 
   // §8.7.4 容器下拉：拉取 docker ps 容器名列表（kind=docker 且已连会话时）
+  // last-write-wins 序列号：防止慢的旧响应覆盖新会话的列表（P22 同类竞态）
+  let containersSeq = 0;
   async function refreshContainers() {
     if (kind !== "docker" || !name) return;
+    const seq = ++containersSeq;
     containersLoading = true;
     containersError = null;
     try {
-      containers = await dockerPs(name);
+      const list = await dockerPs(name);
+      if (seq !== containersSeq) return; // 过期响应直接丢弃
+      containers = list;
     } catch (e) {
+      if (seq !== containersSeq) return;
       containersError = String(e);
       containers = [];
     } finally {
-      containersLoading = false;
+      if (seq === containersSeq) containersLoading = false;
     }
   }
 
-  // kind 或会话名变化时刷新容器列表（docker ps 只在宿主机 exec 通道上执行）
+  // kind/会话名/连接状态变化时刷新容器列表（docker ps 只在宿主机 exec 通道上执行）。
+  // 连接状态纳入依赖：docker 会话慢认证 ~20s，连接建立后必须重新拉取（否则下拉恒空）。
   $effect(() => {
     if (kind === "docker" && name) {
-      refreshContainers();
+      if (status === "Connected") {
+        refreshContainers();
+      } else {
+        // 未连接/断开：作废在途请求并清空陈旧列表
+        containersSeq++;
+        containers = [];
+        containersError = null;
+        containersLoading = false;
+      }
     }
+  });
+
+  // 切换会话时重置容器选择：containerInput 是组件级状态（AiCopilot 只渲染一次），
+  // 不重置会把上一个 docker 会话选中的容器串到新会话提交。
+  $effect(() => {
+    name;
+    containerInput = "";
   });
 
   // Alt+I → 聚焦输入框(focusSeq 递增触发)

@@ -889,6 +889,7 @@
   {aiState}
   kind={kinds[activeTab ?? ""] ?? "linux"}
   name={activeTab ?? ""}
+  {status}
   cards={aiCards}
   taskText={aiTaskText}
   summary={aiSummary}

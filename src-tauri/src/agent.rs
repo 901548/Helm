@@ -293,9 +293,15 @@ impl Agent {
         }
     }
 
-    /// 检查模型与 API Key 是否已配置
+    /// 检查模型与 API Key 是否已配置（本地推理服务免 Key）
     fn ensure_ready(&self) -> Result<()> {
-        if self.config.model.is_empty() || self.api_key.is_empty() {
+        if self.config.model.is_empty() {
+            return Err(anyhow!(
+                "AI 未配置：请检查 config.yaml 的 ai 配置，并设置模型名称"
+            ));
+        }
+        // 本地推理服务（Ollama/LM Studio 等）无需 API Key；仅远端服务要求 Key
+        if self.api_key.is_empty() && !is_local_base(self.config.api_base_url.as_deref()) {
             return Err(anyhow!(
                 "AI 未配置：请检查 config.yaml 的 ai 配置，并确保环境变量中设置了 API Key"
             ));
@@ -1282,4 +1288,22 @@ mod tests {
         };
         assert!(Agent::new(&cfg).is_err());
     }
+
+    /// 本地推理服务免 Key：空 Key 也应 ready(仅模型名必填),远端服务空 Key 必须报错
+    #[test]
+    fn ensure_ready_allows_empty_key_for_local_base() {
+        let mut agent = Agent::default();
+        agent.config.model = "glm4:latest".into();
+        agent.config.api_base_url = Some("http://localhost:11434/v1".into());
+        agent.api_key = String::new();
+        assert!(agent.ensure_ready().is_ok());
+
+        agent.config.api_base_url = Some("https://api.openai.com/v1".into());
+        assert!(agent.ensure_ready().is_err());
+
+        agent.config.model = String::new();
+        agent.config.api_base_url = Some("http://localhost:11434/v1".into());
+        assert!(agent.ensure_ready().is_err());
+    }
+
 }

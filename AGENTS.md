@@ -493,6 +493,12 @@ F:\Helm\
       - a) **连接状态未纳入 effect 依赖(下拉恒空)**:原 `$effect` 只依赖 `kind/name`,docker 会话慢认证 ~20s——用户点选会话时 `name` 立即变、会话尚未连上,`docker_ps` 必失败("会话未连接"),随后连接建立但 `kind/name` 未变 → 下拉永不自动填充,须手动刷新。修复:AiCopilot 加 `status` prop(TerminalTabs 传 `status`),`$effect` 依赖 `kind/name/status`,仅 `status==="Connected"` 才 `refreshContainers()`,否则作废在途请求并清空陈旧列表;`refreshContainers` 加 **last-write-wins 序列号 `containersSeq`**(慢旧响应过期直接丢弃,P22 同类竞态)。
       - b) **containerInput 跨会话串值**:AiCopilot 在 TerminalTabs 只渲染一次,`containerInput` 是组件级 `$state`——在 docker 会话 A 选中容器后切到会话 B,残留值会串进 B 的提交。修复:加 `$effect`(依赖 `name`)切换会话时 `containerInput = ""`。
 - [x] **id 31 技术决策:AI 编排层保留 Rust,不抽 Node sidecar(已关闭,无代码改动)**。理由:① 分发模型冲突——Node sidecar 要么捆绑 Node 运行时(安装包膨胀几十 MB)要么要求用户装 Node,均违背「双击 exe 零前置依赖」定位;② 耦合深——`ai_job.rs`/`agent.rs` 与 SSH 会话锁/cwd 跟踪/危险判级/事件发射/DPAPI 密钥强耦合,抽出去是重写 ~2000 行 + 建跨进程协议,复杂度净增;③ 「开发回路提速」不成立——增量 `cargo build` 改 agent/ai_job 仅数秒,真正慢点是 live 测试的 ~20s SSH 慢认证(非编译),且提示词已数据化(config.yaml)+ 解析逻辑有 90+ 单测覆盖。**结论:保持 Rust,未来若需提升 AI 层迭代速度走「纯函数单测 + 提示词数据化」而非动架构。**
+- [x] **P79 Windows Agent 命令静默丢弃修复(已完成,`cargo test` 103 项全过;纯 Rust 单文件改动)**:
+  1. **根因**:`task_exec_cmd_windows` 旧实现把命令包进 `{ {cmd}; } 2>&1`——PowerShell 的 `{ cmd; }` 是**脚本块字面量**(只输出命令文本、**不执行**),与 bash 的命令组 `{ cmd; }` 语义完全不同。后果:Windows SSH 会话里 Agent 每一步命令都被静默丢弃,却因 `$LASTEXITCODE` 为 null 被 `if ($null -eq $rc) { $rc = 0 }` 兜底成 0,**假报成功**。
+  2. **修复**:`task_exec_cmd_windows` 去掉 `{ }` 包裹,命令直接拼接 `{cmd} 2>&1;`(见 task_exec.rs),`Set-Location` 与 `###HELM_*###` 标记逻辑不变。
+  3. **回归单测**:新增 `task_exec_cmd_windows_does_not_wrap_in_scriptblock`——解码 EncodedCommand 的 UTF-16LE base64,断言 `Get-ChildItem 2>&1` 直接相连、且不含 `{ Get-ChildItem` 脚本块包裹。
+  4. **验证**:`cargo test` **103 项全过**(原 102 + 1 新增,含 5 个 live SSH/SFTP 测试——服务器 192.168.79.150 在线)。
+  5. **坑**:PowerShell 无与 bash `{ cmd; }` 等价的"内联命令组"语法;需在单命令语句里加副作用(如 `$rc=$LASTEXITCODE`)时,直接 `cmd 2>&1; $rc=...` 顺序拼接即可,勿用脚本块/`& { }` 调用运算符包整段。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

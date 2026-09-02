@@ -499,6 +499,12 @@ F:\Helm\
   3. **回归单测**:新增 `task_exec_cmd_windows_does_not_wrap_in_scriptblock`——解码 EncodedCommand 的 UTF-16LE base64,断言 `Get-ChildItem 2>&1` 直接相连、且不含 `{ Get-ChildItem` 脚本块包裹。
   4. **验证**:`cargo test` **103 项全过**(原 102 + 1 新增,含 5 个 live SSH/SFTP 测试——服务器 192.168.79.150 在线)。
   5. **坑**:PowerShell 无与 bash `{ cmd; }` 等价的"内联命令组"语法;需在单命令语句里加副作用(如 `$rc=$LASTEXITCODE`)时,直接 `cmd 2>&1; $rc=...` 顺序拼接即可,勿用脚本块/`& { }` 调用运算符包整段。
+- [x] **P80 本地推理服务免 Key 失效修复(已完成,`cargo test` 104 项全过;QA 端到端冒烟通过)**:
+  1. **现象**:本地 Ollama 冒烟时,`Agent::new` 成功(本地 base 免 Key 返回空 key),但 `chat`/`agent_step` 一进去就报「AI 未配置」——因为 `ensure_ready()` 仍按旧语义 `model.is_empty() || api_key.is_empty()` 判未就绪。**后果:P48「本地推理服务(Ollama 等)免 Key」实际失效**,只要不留 API Key 就无法发起任何 AI 请求。
+  2. **修复(agent.rs `ensure_ready`)**:拆成两步——先只查 `model` 为空;再仅当 `api_key.is_empty() && !is_local_base(api_base_url)` 才报缺 Key。本地 base 空 Key 放行,远端服务空 Key 仍报错(文案不变)。
+  3. **回归单测**:新增 `ensure_ready_allows_empty_key_for_local_base`(本地 base 空 Key → Ok;远端 base 空 Key → Err;model 空 → Err)。
+  4. **QA 端到端冒烟**(临时测试 `tmp_live_qa_smoke_glm4`,跑完即删):本地 Ollama `glm4:latest` → `Agent::new` + `chat("1+1 等于几?")` 流式返回「1+1 等于 2。」,`QA_STREAM_CHUNKS = 9`。
+  5. **配套**:config.yaml `model` 由 `shell-agent:latest`(本地 Ollama 无此模型,必 404)→ `glm4:latest`(P69 已验证的真机模型)。config.yaml 为运行时文件(不提交)。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

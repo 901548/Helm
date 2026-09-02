@@ -58,8 +58,11 @@ pub fn docker_exec_cmd(container: &str, cwd: &str, cmd: &str) -> String {
 /// 使 `parse_task_output` 复用（退出码/结束目录回传语义不变）。
 pub fn task_exec_cmd_windows(cwd: &str, cmd: &str) -> String {
     let cwd = cwd.replace('\'', "''");
+    // 注意：命令直接拼接，不加 `{ }` 包裹——PowerShell 的 `{ cmd; }` 是"脚本块字面量"
+    // （只输出命令文本，不执行），与 bash 的"命令组" `{ cmd; }` 语义完全不同。
+    // 若包成脚本块，Agent 命令会被静默丢弃却假报退出码 0（P79 实证修复）。
     let script = format!(
-        "Set-Location -LiteralPath '{cwd}'; {{ {cmd}; }} 2>&1; $rc=$LASTEXITCODE; \
+        "Set-Location -LiteralPath '{cwd}'; {cmd} 2>&1; $rc=$LASTEXITCODE; \
          if ($null -eq $rc) {{ $rc = 0 }}; Write-Output ''; Write-Output '###HELM_END###'; \
          Write-Output \"###HELM_EXIT###$rc\"; Write-Output \"###HELM_PWD###$((Get-Location).Path)\""
     );
@@ -227,6 +230,22 @@ mod tests {
         assert!(script.contains("Set-Location -LiteralPath 'C:\\Data'"), "got: {}", script);
         assert!(script.contains("###HELM_EXIT###"));
         assert!(script.contains("###HELM_PWD###"));
+    }
+
+    #[test]
+    fn task_exec_cmd_windows_does_not_wrap_in_scriptblock() {
+        // P79 回归：PowerShell `{ cmd; }` 是脚本块字面量(不执行)，命令必须直接拼接。
+        let s = task_exec_cmd_windows("C:\\Data", "Get-ChildItem");
+        let b64 = s.rsplit(' ').next().unwrap();
+        let bytes = data_encoding::BASE64.decode(b64.as_bytes()).unwrap();
+        let script = String::from_utf16_lossy(
+            &bytes
+                .chunks(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect::<Vec<_>>(),
+        );
+        assert!(script.contains("Get-ChildItem 2>&1"), "命令应直接跟 2>&1,got: {}", script);
+        assert!(!script.contains("{ Get-ChildItem"), "命令不应被脚本块包裹,got: {}", script);
     }
 
     #[test]

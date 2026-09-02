@@ -509,6 +509,10 @@ F:\Helm\
   1. **版本 bump**:`package.json`/`src-tauri/tauri.conf.json`/`src-tauri/Cargo.toml` 三处 `0.1.1 → 0.2.0`,同步 `Cargo.lock` 的 helm 包版本。**按 §7 分发策略不出预编译安装包,tag 仅作源码里程碑**(用户要求「测试无环境先完成其他部分」,故跳过 `cargo tauri build` 打包)。
   2. **遗留项勘误**:P35「遗留待办(暂不处理)」5 项、P46「遗留未修(有意)」4 项,**实已于 P46/P47 全部清零**——SFTP 下载 64MB 上限(P46)、reqwest Client 复用(P46)、危险检测 `$()`/xargs 二次执行(P47)、ai_busy CAS 抢占(P47)、known_hosts 错误经返回值传递(P47)。已在 P35/P46 原条目内加「勿再按未决/未修处理」勘误注,防止后续会话误判。
   3. **收工状态**:代码级收尾项已全部完成并验证;唯一未闭合项 = 服务器在线时的 live 冒烟(P78 Docker 下拉 / 真实 Agent 多步任务 / SFTP 读写真机),受 `192.168.79.150:22` 离线阻断,待环境恢复补跑;Windows 真机冒烟(P34)用户已确认无测试机关闭。
+- [x] **P82 会话栏折叠展开柄可见性修复(纯前端,`npm run build` 通过)**:
+  1. **问题(用户反馈)**:会话栏折叠后只留左上角 28×28 纯图标小按钮(灰色 chevron + `--fg-muted` 弱对比 + 细 `--border`),嵌在终端标签栏里极易看不到,想再展开时找不到入口。
+  2. **修复(SessionPanel.svelte 折叠态 `.reopen`)**:由"纯图标小方块"升级为**带「会话」文字标签的胶囊按钮**——图标旁加文字标签;颜色 `--fg-muted` → `--accent`(边框同步 accent);高度 28→32px + `gap` 内边距;`z-index: 60` 保证浮于终端标签栏之上;hover 反色(accent 底 + 白字)点击反馈清晰。
+  3. **验证**:`npm run build` 通过(纯前端,CSS 零后端改动)。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

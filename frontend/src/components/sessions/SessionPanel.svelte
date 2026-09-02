@@ -66,16 +66,17 @@
       onclick={() => (collapsed = false)}
     >
       <svg
-        width="18"
-        height="18"
+        width="20"
+        height="20"
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
-        stroke-width="2"
+        stroke-width="2.5"
         stroke-linecap="round"
         stroke-linejoin="round"
         aria-hidden="true"
       ><path d="M9 6l6 6-6 6" /></svg>
+      <span class="reopen-label">会话</span>
     </button>
   {:else}
   <header class="panel-header">
@@ -190,32 +191,40 @@
     border-right: none;
     overflow: visible;
   }
-  /* 折叠后:左上角悬浮的紧凑展开柄 */
+  /* 折叠后:左上角悬浮的紧凑展开柄(带"会话"文字标签,避免仅凭小图标看不清) */
   .reopen {
     position: fixed;
     top: 10px;
     left: 10px;
+    z-index: 60;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    border: 1px solid var(--border);
+    gap: 0.35rem;
+    height: 32px;
+    padding: 0 0.7rem 0 0.45rem;
+    border: 1px solid var(--accent);
     border-radius: var(--radius);
     background: var(--bg-panel);
-    color: var(--fg-muted);
+    color: var(--accent);
     cursor: pointer;
     box-shadow: var(--shadow);
     transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
   }
   .reopen:hover {
-    background: var(--active-bg);
-    border-color: var(--accent-dim);
-    color: var(--accent);
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
   }
   .reopen svg {
     display: block;
+    flex-shrink: 0;
+  }
+  .reopen-label {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: inherit;
+    white-space: nowrap;
   }
 
   .panel-header {

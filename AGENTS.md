@@ -284,7 +284,7 @@ F:\Helm\
   6. **AI 回显丢字**:App `aiEcho` 单槽状态在密集 streaming 事件同批次只留最后一个对象 → 改队列数组(seq 递增,超 200 裁剪),TerminalTabs `$effect` 按 `lastEchoSeq` 顺序消费逐条写入。
   7. **连接失败可见化**:`Failed{error}` 事件建标签 + 红色 `[连接失败] <error>` 回显进终端(此前只有灰点,失败原因不可见)。
   8. **小修**:delete_session/update_session 改名清理/迁移 `fs_cwd` 键;rdp_connect 拉起 mstsc 后 30s 延迟删除临时 .rdp(避免残留主机信息)。
-  9. **审查确认不改(误报)**:SettingsModal 空 API Key——后端 `""|"·"|null → 保留原密文`,非 bug;`next.expect` panic——`if finished { break }` 在 expect 之前,无 panic 路径。**遗留待办(评估过、暂不处理)**:SFTP 下载整文件入内存无上限、known_hosts pending_error 单槽位并发串台、agent.rs 每请求新建 reqwest::Client、ai_busy TOCTOU、Agent 危险检测不覆盖 `$(...)`/xargs 二次执行。
+  9. **审查确认不改(误报)**:SettingsModal 空 API Key——后端 `""|"·"|null → 保留原密文`,非 bug;`next.expect` panic——`if finished { break }` 在 expect 之前,无 panic 路径。**遗留待办(评估过、暂不处理)**:SFTP 下载整文件入内存无上限、known_hosts pending_error 单槽位并发串台、agent.rs 每请求新建 reqwest::Client、ai_busy TOCTOU、Agent 危险检测不覆盖 `$(...)`/xargs 二次执行。**注(2026-08-30 勘误):此 5 项已全部清零——SFTP 下载 64MB 上限 + reqwest Client 复用见 P46,危险检测 $()/xargs + ai_busy CAS 抢占 + known_hosts 错误经返回值传递见 P47,勿再按"未决"处理。**
 - [x] **P36 README 生成**:项目根新增 `README.md`(中文,面向用户/贡献者):定位与功能特性(终端/多平台/SFTP/监控/AI 副驾驶/安全)、快捷键表、源码构建与测试命令、config.yaml 配置样例与字段说明(建议密钥经界面填写自动 DPAPI 加密)、目录结构、技术栈、MIT 许可。内容以本档案 §1/§2/§4 为准提炼,无代码改动。
 - [x] **P37 应用图标重制(已完成,`cargo build` 通过 + exe 图标验证)**:替换 Tauri 默认占位图标为项目专属「船舵」图标(Helm = 舵,"你掌舵,AI 执行")。
   1. **源图生成**:`scripts/gen-icon.mjs`(新,零依赖,Node 内置 zlib 手写 PNG 编码)程序化绘制 1024×1024 RGBA:深色渐变圆角方底(对角 #1E2637→#0B0E14)+ 浅色舵轮(#E9EEF9,外环 R272-330 + 8 辐条半宽 19 至 R395 + 8 把手圆钮 R428±34 + 中心盘 R92)+ accent 蓝细节(#4C8DFF 中心盘 R48 与外环右上 28°-92° 高亮弧);4×4 超采样抗锯齿;输出 `assets/icon-1024.png`(49KB,留档可重生成)。
@@ -349,7 +349,7 @@ F:\Helm\
   2. **审查纠错**:「窗口宽高设置不生效」为误报——`update_ui_config` 本就 `set_size`,划掉不修。
   3. **v0.1.1**:三处 version bump(package.json/tauri.conf.json/Cargo.toml)→ `cargo tauri build` 出 `Helm_0.1.1_x64_en-US.msi`(5.8MB)/`Helm_0.1.1_x64-setup.exe`(4.2MB),**含 P45 删除修复,取代带 bug 的 v0.1.0**;tag v0.1.1 已推送。
   4. **CI 验证**:`git credential fill` 取本机 token 调 GitHub API——**私有仓库也能查 Actions**:三次运行(run 1/2/3)全部 success(含 P45 提交),msvc 构建 + Vitest + cargo test 在 windows runner 上无需任何适配。
-  5. **坑**:a) JS `String.replace(字符串,...)` 只替换**第一处**,批量改代码用 split/join(P46 就漏了第二个 `self.build_client()` 调用点);b) russh-sftp File 无 `read_all`,读整文件用 `sftp.read(path)`;c) GitHub 443 间歇阻断时 tag 与 main 分开重试(本次 tag 先通、main 后通),本地提交安全勿重写历史。**遗留未修(有意)**:Agent 危险检测不覆盖 `$()`/xargs(需语义级方案)、ai_busy TOCTOU(UI 已挡)、QA 持 agent 锁、known_hosts pending_error 单槽。
+  5. **坑**:a) JS `String.replace(字符串,...)` 只替换**第一处**,批量改代码用 split/join(P46 就漏了第二个 `self.build_client()` 调用点);b) russh-sftp File 无 `read_all`,读整文件用 `sftp.read(path)`;c) GitHub 443 间歇阻断时 tag 与 main 分开重试(本次 tag 先通、main 后通),本地提交安全勿重写历史。**遗留未修(有意)**:Agent 危险检测不覆盖 `$()`/xargs(需语义级方案)、ai_busy TOCTOU(UI 已挡)、QA 持 agent 锁、known_hosts pending_error 单槽。**注:此 4 项已由 P47 全部修复,见下一条,勿再按"未修"处理。**
 - [x] **P47 清零批(P46 遗留 4 项全部修复,`cargo test` 63 项全过;live 因服务器再度离线自动跳过——改动均为纯函数/锁语义级,单测覆盖)**:
   1. **safety.rs 二次执行防护**:a) **xargs 管道合并分析**——段含 `xargs` + 危险命令(rm/chmod/dd/mkfs/shutdown/reboot)时,把整条命令的 `|`/`;`/换行替换为空格后合并分词判定(`echo / | xargs rm -rf`→Critical;`find /var/log -name '*.gz' | xargs rm -rf`→Warning 不误伤日常清理;`echo x | xargs cat`→Safe);b) **命令替换根目标检测**——危险命令的 `$(...)`/反引号体内出现根 token(`/`、`/*`)即升级 Critical(`rm -rf $(echo /)`);`rm -rf $(pwd)/build`/`$(echo /tmp/a)` 维持 Warning;`echo $(ls /)` 不升级。**check_segment 拆出 check_tokens(tokens) 供合并分析复用**。+2 单测(xargs_secondary_execution / command_substitution_root)。
   2. **ai_busy TOCTOU**:`ai_submit` 改 `compare_exchange(false,true)` 原子抢占,并发提交只一个进入;早退路径(空输入/无会话)统一 `rollback` 复位 busy + 发 Busy{false}(否则任务永久"忙")。
@@ -505,6 +505,10 @@ F:\Helm\
   3. **回归单测**:新增 `ensure_ready_allows_empty_key_for_local_base`(本地 base 空 Key → Ok;远端 base 空 Key → Err;model 空 → Err)。
   4. **QA 端到端冒烟**(临时测试 `tmp_live_qa_smoke_glm4`,跑完即删):本地 Ollama `glm4:latest` → `Agent::new` + `chat("1+1 等于几?")` 流式返回「1+1 等于 2。」,`QA_STREAM_CHUNKS = 9`。
   5. **配套**:config.yaml `model` 由 `shell-agent:latest`(本地 Ollama 无此模型,必 404)→ `glm4:latest`(P69 已验证的真机模型)。config.yaml 为运行时文件(不提交)。
+- [x] **P81 版本 v0.2.0 里程碑 + 遗留项勘误(已完成,`cargo build`+`cargo test` 104 项+`npm run build` 通过)**:
+  1. **版本 bump**:`package.json`/`src-tauri/tauri.conf.json`/`src-tauri/Cargo.toml` 三处 `0.1.1 → 0.2.0`,同步 `Cargo.lock` 的 helm 包版本。**按 §7 分发策略不出预编译安装包,tag 仅作源码里程碑**(用户要求「测试无环境先完成其他部分」,故跳过 `cargo tauri build` 打包)。
+  2. **遗留项勘误**:P35「遗留待办(暂不处理)」5 项、P46「遗留未修(有意)」4 项,**实已于 P46/P47 全部清零**——SFTP 下载 64MB 上限(P46)、reqwest Client 复用(P46)、危险检测 `$()`/xargs 二次执行(P47)、ai_busy CAS 抢占(P47)、known_hosts 错误经返回值传递(P47)。已在 P35/P46 原条目内加「勿再按未决/未修处理」勘误注,防止后续会话误判。
+  3. **收工状态**:代码级收尾项已全部完成并验证;唯一未闭合项 = 服务器在线时的 live 冒烟(P78 Docker 下拉 / 真实 Agent 多步任务 / SFTP 读写真机),受 `192.168.79.150:22` 离线阻断,待环境恢复补跑;Windows 真机冒烟(P34)用户已确认无测试机关闭。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

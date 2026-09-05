@@ -513,6 +513,12 @@ F:\Helm\
   1. **问题(用户反馈)**:会话栏折叠后只留左上角 28×28 纯图标小按钮(灰色 chevron + `--fg-muted` 弱对比 + 细 `--border`),嵌在终端标签栏里极易看不到,想再展开时找不到入口。
   2. **修复(SessionPanel.svelte 折叠态 `.reopen`)**:由"纯图标小方块"升级为**带「会话」文字标签的胶囊按钮**——图标旁加文字标签;颜色 `--fg-muted` → `--accent`(边框同步 accent);高度 28→32px + `gap` 内边距;`z-index: 60` 保证浮于终端标签栏之上;hover 反色(accent 底 + 白字)点击反馈清晰。
   3. **验证**:`npm run build` 通过(纯前端,CSS 零后端改动)。
+- [x] **P83 Agent 结构化工具调用 Function Calling(用户定向 agent 开发,已完成,真机 glm4 验证降级链 + `cargo test` 107 项(+3 FC 单测)/`npm run build` 通过)**:
+  1. **架构**:OpenAI 兼容 function calling——Agent 循环用结构化 `tool_calls` 替代文本命令解析(根除散文混命令/GOAL 解析不稳)。**5 工具一一映射既有机制**:`run_command`(全安全链:check_danger/确认/账本/cwd/recorder)、`set_goal`/`goal_ok`(goals 状态机+事件)、`reflect`(last_reflexion)、`finish`(DONE 判定,**防过早收敛护栏保留**——未收口时回填工具结果让模型重试)。文本协议完整保留(`agent_fc` 默认关,零回归)。
+  2. **实现**:`ChatMessage` 扩展 `tool_calls`/`tool_call_id`(None 序列化省略,非 FC 零影响);`call_api_plain` 拆 `call_api_plain_full`(返回完整 JSON 供读 tool_calls)+`call_api_plain`(壳);`request_body(with_tools)` 注入 tools 表+`tool_choice:auto`;`agent_step_fc` 非流式解析→`FcTurn{Calls(Vec<FcCall{id,action}>)/Done{finish_id,summary}/DowngradedToText/Invalid}`——**每个 id 必有动作(含 Noop),保证结果回填完整**;`push_tool_result` 回填 role:"tool" 消息。ai_job Agent 循环 **FC/文本双路径**:`fc_active()` 分流——FC 的非命令动作(set_goal/goal_ok/reflect)先落账、命令收集进共享执行链(计划卡/确认/账本/cwd/recorder 全复用),执行后回填结果进下一轮;finish 未收口→回填提示重试。
+  3. **双重降级保证任何模型可用**:a) HTTP 4xx 拒绝 tools→去 tools 重试+粘性降级;b) **服务端收下 tools 却不产生 tool_calls(Ollama+glm4 实测如此)→首回合 Invalid 即粘性降级,该纯文本回复原样交给文本协议路径(零损失)**。降级后文本协议接管,P69 时代的全部解析能力继续生效。
+  4. **真机验证(192.168.79.150+Ollama glm4:latest)**:FC 尝试→`has_tool_calls=false`(glm4 模板不支持 tools,curl 直证其返回纯文本教程)→Invalid→**粘性降级生效(后续步骤 fc_active=false)**→文本协议接管执行 5 步(glm4 把工具名当前缀写进命令属模型局限,护栏兜住)。glm4+Ollama 组合实际永远走降级路径;FC 真增益需 FC-capable 模型(gpt/deepseek/glm 云 API)。
+  5. **坑**:a) **call_api_plain 返回的是已提取的 content 字符串,FC 需要完整 JSON 读 tool_calls**——第一版把 content 当 JSON 解析必炸(双重提取 bug),拆 `plain_full` 变体解决;b) **多会话并行开发同一仓库时,未提交改动会被覆盖**——本轮 FC 代码曾被并行会话的 P76-P82 提交清掉一次重做,改动要尽早 commit;c) Ollama 的 tools 支持取决于模型模板,glm4:latest 接受参数但不产生 tool_calls(HTTP 200 非拒绝)——仅靠 4xx 检测不够,Invalid 降级才是完备兜底。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

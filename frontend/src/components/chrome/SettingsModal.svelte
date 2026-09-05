@@ -46,6 +46,8 @@
     aiConfig?.command_timeout_secs ? String(aiConfig.command_timeout_secs) : "",
   );
   let agentConfirm = $state(aiConfig?.agent_confirm ?? false);
+  // P83：结构化工具调用（function calling）开关
+  let agentFc = $state(aiConfig?.agent_fc ?? false);
   let initMode = $state(aiConfig?.mode ?? "qa");
 
   // UI 表单（窗口几何由拖拽 + 退出自动落盘管理，弹窗不再提供宽高输入）
@@ -161,6 +163,7 @@
         ? (num(commandTimeout, 60, "命令超时") as number)
         : null,
       system_prompt_agent: systemPromptAgent.trim() || null,
+      agent_fc: agentFc,
       agent_confirm: agentConfirm,
       mode: initMode,
       extra_headers: aiConfig?.extra_headers ?? {},
@@ -293,6 +296,7 @@
         <div class="checks">
           <label class="check"><input type="checkbox" bind:checked={stream} /> 流式输出</label>
           <label class="check" title="开启后所有命令都要确认；关闭时仅危险命令需要确认"><input type="checkbox" bind:checked={agentConfirm} /> 全部命令确认</label>
+          <label class="check" title="Agent 用结构化工具调用（function calling）替代文本命令解析；需模型支持 FC，不支持时自动降级为文本协议"><input type="checkbox" bind:checked={agentFc} /> 工具调用（FC）</label>
         </div>
 
         <label>自定义提示词

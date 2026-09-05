@@ -22,10 +22,14 @@ const RESERVED_BODY_KEYS: [&str; 5] = ["model", "messages", "stream", "temperatu
 /// 单条聊天消息
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
-    /// 消息角色：system / user / assistant
+    /// 消息角色：system / user / assistant / tool
     pub role: String,
     /// 消息内容
     pub content: String,
+    /// assistant 消息携带的工具调用（P83 FC，预序列化数组；None 时序列化省略）
+    pub tool_calls: Option<serde_json::Value>,
+    /// tool 角色消息对应的调用 id
+    pub tool_call_id: Option<String>,
 }
 
 impl ChatMessage {
@@ -34,6 +38,8 @@ impl ChatMessage {
         Self {
             role: "user".into(),
             content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
 
@@ -42,8 +48,104 @@ impl ChatMessage {
         Self {
             role: "assistant".into(),
             content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
         }
     }
+
+    /// 构造一条携带工具调用的助手消息（P83 FC）
+    pub fn assistant_tool_calls(content: impl Into<String>, tool_calls: serde_json::Value) -> Self {
+        Self {
+            role: "assistant".into(),
+            content: content.into(),
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
+        }
+    }
+
+    /// 构造一条工具结果消息（P83 FC：每个 tool_call 必须有对应结果）
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: "tool".into(),
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: Some(tool_call_id.into()),
+        }
+    }
+}
+
+/// P83 FC：单个结构化工具调用（id 用于结果回填）
+#[derive(Debug, Clone)]
+pub struct FcCall {
+    pub id: String,
+    pub action: FcAction,
+}
+
+/// P83 FC：结构化动作（一一映射 Agent 循环的既有机制）
+#[derive(Debug, Clone)]
+pub enum FcAction {
+    /// 执行 shell 命令（走危险检查/确认/账本/cwd 全链）
+    Command(String),
+    /// 设定子目标
+    Goal(String),
+    /// 当前子目标完成
+    GoalOk,
+    /// 失败反思（重规划输入）
+    Reflect(String),
+    /// 无法解析的调用（参数缺失/未知工具名）——回填占位结果后跳过
+    Noop,
+}
+
+/// P83 FC：单步解析结果
+#[derive(Debug, Clone)]
+pub enum FcTurn {
+    /// 一组按序工具调用
+    Calls(Vec<FcCall>),
+    /// 模型调用 finish 终结任务（id 供防过早收敛时回填工具结果）
+    Done { finish_id: String, summary: String },
+    /// 服务端不支持 tools，已降级为文本协议（走既有文本解析路径）
+    DowngradedToText(String),
+    /// 无有效工具调用（纯文本回复）——沿用 invalid_steps 护栏
+    Invalid(String),
+}
+
+/// P83 FC：工具表定义（OpenAI tools 参数格式）
+pub fn agent_tools_spec() -> serde_json::Value {
+    fn tool(
+        name: &str,
+        desc: &str,
+        props: serde_json::Value,
+        required: &[&str],
+    ) -> serde_json::Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": desc,
+                "parameters": {
+                    "type": "object",
+                    "properties": props,
+                    "required": required,
+                },
+            },
+        })
+    }
+    json!([
+        tool("run_command", "在远程服务器上执行一条 shell 命令，返回命令输出与退出码",
+             json!({ "command": { "type": "string", "description": "要执行的 shell 命令" } }),
+             &["command"]),
+        tool("set_goal", "设定/更新当前子目标（长任务先拆解子目标再逐步执行）",
+             json!({ "title": { "type": "string", "description": "子目标短标题" } }),
+             &["title"]),
+        tool("goal_ok", "标记当前子目标已完成，进入下一个子目标",
+             json!({}), &[]),
+        tool("reflect", "命令失败时反思原因并给出对策，随后重新规划",
+             json!({ "reason": { "type": "string", "description": "失败原因与对策" } }),
+             &["reason"]),
+        tool("finish", "全部子目标完成后调用，终结任务",
+             json!({ "summary": { "type": "string", "description": "任务完成摘要" } }),
+             &[]),
+    ])
 }
 
 /// Agent 工作模式
@@ -82,6 +184,10 @@ pub struct Agent {
     system_prompt_default: String,
     /// Agent 模式 system prompt（回退 system_prompt_default）
     system_prompt_agent: String,
+    /// 结构化工具调用开关（P83：配置 agent_fc；仅 Agent 循环使用）
+    fc_enabled: bool,
+    /// FC 不可用粘性标记（服务端拒绝 tools 参数时置位，本任务后续步骤回落文本协议）
+    fc_disabled: bool,
 }
 
 /// 判断 base_url 是否指向本机（Ollama/LM Studio 等本地推理服务无需 API Key）
@@ -139,6 +245,8 @@ impl Agent {
         history.push(ChatMessage {
             role: "system".into(),
             content: system_prompt_for(mode, &system_prompt_default, &system_prompt_agent),
+            tool_calls: None,
+            tool_call_id: None,
         });
         let client = Self::build_client(config)?;
         Ok(Self {
@@ -150,6 +258,8 @@ impl Agent {
             current_task: None,
             system_prompt_default,
             system_prompt_agent,
+            fc_enabled: config.agent_fc,
+            fc_disabled: false,
         })
     }
 
@@ -161,7 +271,7 @@ impl Agent {
     ) -> Result<String> {
         self.ensure_ready()?;
         self.push_message(ChatMessage::user(user_input));
-        let reply = self.call_api(sink).await?;
+        let reply = self.call_api(sink, false).await?;
         self.push_message(ChatMessage::assistant(&reply));
         Ok(reply)
     }
@@ -216,7 +326,7 @@ impl Agent {
             }
         };
         self.push_message(ChatMessage::user(user_msg));
-        let reply = self.call_api(sink).await?;
+        let reply = self.call_api(sink, false).await?;
         self.push_message(ChatMessage::assistant(&reply));
 
         let cleaned = clean_response(&reply);
@@ -226,6 +336,166 @@ impl Agent {
         } else {
             Ok(cleaned)
         }
+    }
+
+    /// FC 是否启用且未被降级（P83：ai_job 据此分流）
+    pub fn fc_active(&self) -> bool {
+        self.fc_enabled && !self.fc_disabled
+    }
+
+    /// 强制停用 FC（P83：模型收下 tools 却不产生 tool_calls 时，由 ai_job 调用降级）
+    pub fn fc_force_disable(&mut self) {
+        self.fc_disabled = true;
+    }
+
+    /// 回填工具执行结果（P83 FC：每个 tool_call 必须有对应 tool 消息才能进入下一轮）
+    pub fn push_tool_result(&mut self, tool_call_id: &str, output: &str) {
+        self.push_message(ChatMessage::tool_result(
+            tool_call_id,
+            truncate_text(output, self.config.max_output_chars),
+        ));
+    }
+
+    /// FC 单步：带上工具表发起非流式请求，解析模型的结构化工具调用。
+    ///
+    /// 返回按序动作列表（可混合 run_command/set_goal/goal_ok/reflect）或 finish/Invalid。
+    /// HTTP 4xx（服务端不支持 tools 参数）→ 自动去 tools 重试一次并粘性降级为文本协议。
+    pub async fn agent_step_fc(
+        &mut self,
+        task: &str,
+        prev_output: &str,
+        ctx: &str,
+        progress: &str,
+    ) -> Result<FcTurn> {
+        self.ensure_ready()?;
+        let progress_block = if progress.trim().is_empty() {
+            "（尚未执行任何步骤）".to_string()
+        } else {
+            format!("已完成/失败步骤账本：\n{}", progress.trim())
+        };
+        let user_msg = match &self.current_task {
+            None => {
+                self.current_task = Some(task.to_string());
+                format!(
+                    "当前环境：{}\n新任务：{}\n{}\n\
+                     通过调用工具推进任务：set_goal 设定子目标、run_command 执行命令、\
+                     goal_ok 标记子目标完成、reflect 反思失败原因、全部完成后调用 finish。",
+                    ctx.trim(),
+                    task,
+                    progress_block
+                )
+            }
+            Some(_) => {
+                format!(
+                    "当前目录：{}\n{}\n这是上一步工具的执行结果：\n{}\n\
+                     继续调用工具推进任务；任务全部完成后调用 finish。",
+                    ctx.trim(),
+                    progress_block,
+                    prev_output
+                )
+            }
+        };
+        self.push_message(ChatMessage::user(user_msg));
+
+        // 首选 FC（非流式：工具调用参数需要完整 JSON）；4xx 视为服务端不支持 tools，降级重试
+        let (content0, value) = match self.call_api_plain_full(true).await {
+            Ok(pair) => pair,
+            Err(first) if self.is_tools_rejection(&first.to_string()) => {
+                self.fc_disabled = true;
+                let retry = self.call_api_plain(false).await?;
+                self.push_message(ChatMessage::assistant(&retry));
+                return Ok(FcTurn::DowngradedToText(retry));
+            }
+            Err(e) => return Err(e),
+        };
+        let message = &value["choices"][0]["message"];
+        let Some(calls) = message.get("tool_calls").and_then(|t| t.as_array()) else {
+            // 无 tool_calls：纯文本回复走降级（Invalid），content0 已在历史中
+            self.push_message(ChatMessage::assistant(content0.clone()));
+            return Ok(FcTurn::Invalid(content0));
+        };
+
+        // 组装 assistant(tool_calls) 历史消息（原样保留 id/name/arguments）
+        let tool_calls_json = json!(calls);
+        self.push_message(ChatMessage::assistant_tool_calls(content0, tool_calls_json.clone()));
+
+        // 逐个解析调用：每个 id 都要有对应动作（无法解析的记 Noop，保证结果回填完整）
+        let mut calls_out: Vec<FcCall> = Vec::new();
+        for call in calls {
+            let id = call
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("call_0")
+                .to_string();
+            let name = call
+                .pointer("/function/name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let args_raw = call
+                .pointer("/function/arguments")
+                .and_then(|v| v.as_str())
+                .unwrap_or("{}");
+            let args: serde_json::Value =
+                serde_json::from_str(args_raw).unwrap_or(serde_json::json!({}));
+            let arg_str = |k: &str| {
+                args.get(k)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
+            };
+            let action = match name {
+                "run_command" => {
+                    let cmd = arg_str("command");
+                    if cmd.is_empty() {
+                        FcAction::Noop
+                    } else {
+                        FcAction::Command(cmd)
+                    }
+                }
+                "set_goal" => {
+                    let title = arg_str("title");
+                    if title.is_empty() {
+                        FcAction::Noop
+                    } else {
+                        FcAction::Goal(title)
+                    }
+                }
+                "goal_ok" => FcAction::GoalOk,
+                "reflect" => {
+                    let reason = arg_str("reason");
+                    if reason.is_empty() {
+                        FcAction::Noop
+                    } else {
+                        FcAction::Reflect(reason)
+                    }
+                }
+                "finish" => {
+                    let summary = args
+                        .get("summary")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("任务完成")
+                        .to_string();
+                    self.current_task = None;
+                    return Ok(FcTurn::Done { finish_id: id, summary });
+                }
+                _ => FcAction::Noop,
+            };
+            calls_out.push(FcCall { id, action });
+        }
+        if calls_out.iter().all(|c| matches!(c.action, FcAction::Noop)) {
+            Ok(FcTurn::Invalid(String::new()))
+        } else {
+            Ok(FcTurn::Calls(calls_out))
+        }
+    }
+
+    /// 判断错误是否为服务端拒绝 tools 参数（HTTP 4xx 族）
+    fn is_tools_rejection(&self, err: &str) -> bool {
+        let lower = err.to_lowercase();
+        (lower.contains("http 4") && (lower.contains("tool") || lower.contains("function")))
+            || (lower.contains("tool") && lower.contains("not support"))
+            || lower.contains("unknown parameter")
     }
 
     /// Agent 模式最大执行步数
@@ -255,6 +525,8 @@ impl Agent {
         self.history.push(ChatMessage {
             role: "system".into(),
             content: system_prompt_for(self.mode, &self.system_prompt_default, &self.system_prompt_agent),
+            tool_calls: None,
+            tool_call_id: None,
         });
     }
 
@@ -313,8 +585,13 @@ impl Agent {
     ///
     /// 传入 sink 且配置开启流式时使用 SSE 增量输出；流式请求在未收到任何内容
     /// 前失败时自动回退到非流式（非流式自带 1 次重试）。
-    async fn call_api(&self, sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)>) -> Result<String> {
-        if self.config.stream {
+    async fn call_api(
+        &self,
+        sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)>,
+        with_tools: bool,
+    ) -> Result<String> {
+        // FC 走非流式（工具调用参数需要完整 JSON），流式路径不含工具表
+        if self.config.stream && !with_tools {
             if let Some(sink) = sink {
                 let mut started = false;
                 match self.call_api_stream(sink, &mut started).await {
@@ -323,19 +600,25 @@ impl Agent {
                         if started {
                             return Err(first);
                         }
-                        return self.call_api_plain().await;
+                        return self.call_api_plain(false).await;
                     }
                 }
             }
         }
-        self.call_api_plain().await
+        self.call_api_plain(with_tools).await
     }
 
     /// 非流式请求：一次取回完整回复，失败重试 1 次（间隔 1 秒）
-    async fn call_api_plain(&self) -> Result<String> {
+    async fn call_api_plain(&self, with_tools: bool) -> Result<String> {
+        Ok(self.call_api_plain_full(with_tools).await?.0)
+    }
+
+    /// 非流式请求（完整响应）：返回 (content 文本, 完整响应 JSON)。
+    /// P83 FC 需要完整 JSON 以读取 tool_calls。
+    async fn call_api_plain_full(&self, with_tools: bool) -> Result<(String, serde_json::Value)> {
         let client = self.client.clone();
         let url = self.request_url();
-        let body = self.request_body(false);
+        let body = self.request_body(false, with_tools);
 
         let request_once = || async {
             let mut req = client.post(&url).json(&body);
@@ -350,10 +633,11 @@ impl Agent {
             }
             let value: serde_json::Value = serde_json::from_str(&text)
                 .map_err(|e| anyhow!("API 响应解析失败: {}", e))?;
-            value["choices"][0]["message"]["content"]
+            let content = value["choices"][0]["message"]["content"]
                 .as_str()
                 .map(|s| s.to_string())
-                .ok_or_else(|| anyhow!("API 响应缺少 choices[0].message.content: {}", text))
+                .ok_or_else(|| anyhow!("API 响应缺少 choices[0].message.content: {}", text))?;
+            Ok((content, value))
         };
 
         match request_once().await {
@@ -379,7 +663,7 @@ impl Agent {
     ) -> Result<String> {
         let client = self.client.clone();
         let url = self.request_url();
-        let body = self.request_body(true);
+        let body = self.request_body(true, false);
 
         let mut req = client.post(&url).json(&body);
         if !self.api_key.is_empty() {
@@ -439,16 +723,34 @@ impl Agent {
     }
 
     /// 组装请求体（合并配置中的 extra_body 字段）
-    fn request_body(&self, stream: bool) -> serde_json::Value {
+    fn request_body(&self, stream: bool, with_tools: bool) -> serde_json::Value {
+        let messages = self
+            .history
+            .iter()
+            .map(|m| {
+                let mut msg = json!({
+                    "role": m.role,
+                    "content": m.content,
+                });
+                if let Some(tc) = &m.tool_calls {
+                    msg["tool_calls"] = tc.clone();
+                }
+                if let Some(id) = &m.tool_call_id {
+                    msg["tool_call_id"] = json!(id);
+                }
+                msg
+            })
+            .collect::<Vec<_>>();
         let mut body = json!({
             "model": self.config.model,
-            "messages": self.history.iter().map(|m| json!({
-                "role": m.role,
-                "content": m.content,
-            })).collect::<Vec<_>>(),
+            "messages": messages,
             "temperature": self.config.temperature,
             "stream": stream,
         });
+        if with_tools {
+            body["tools"] = agent_tools_spec();
+            body["tool_choice"] = json!("auto");
+        }
         if let Some(mt) = self.config.max_tokens {
             body["max_tokens"] = json!(mt);
         }
@@ -598,11 +900,15 @@ impl Default for Agent {
             history: vec![ChatMessage {
                 role: "system".into(),
                 content: String::new(),
+                tool_calls: None,
+                tool_call_id: None,
             }],
             mode: AgentMode::QA,
             current_task: None,
             system_prompt_default: String::new(),
             system_prompt_agent: String::new(),
+            fc_enabled: false,
+            fc_disabled: false,
         }
     }
 }
@@ -950,6 +1256,72 @@ pub fn goal_marker(text: &str) -> Option<bool> {
 mod tests {
     use super::*;
 
+    /// P83 FC：工具表结构完整（5 工具、名字齐全）
+    #[test]
+    fn agent_tools_spec_shape() {
+        let spec = agent_tools_spec();
+        let arr = spec.as_array().unwrap();
+        assert_eq!(arr.len(), 5);
+        let names: Vec<&str> = arr
+            .iter()
+            .map(|t| t["function"]["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["run_command", "set_goal", "goal_ok", "reflect", "finish"]
+        );
+        // run_command 的 command 参数必填
+        assert_eq!(
+            arr[0]["function"]["parameters"]["required"],
+            json!(["command"])
+        );
+    }
+
+    /// P83 FC：请求体携带工具表 + 历史 tool 消息正确序列化
+    #[test]
+    fn fc_request_body_serializes_tool_messages() {
+        let mut cfg = AiConfig::default();
+        cfg.model = "test-model".into();
+        cfg.api_base_url = Some("http://localhost:11434/v1".into());
+        cfg.mode = "agent".into();
+        cfg.agent_fc = true;
+        let mut agent = Agent::new(&cfg).unwrap();
+        agent.history.push(ChatMessage::user("任务"));
+        let calls = serde_json::json!([
+            { "id": "call_1", "type": "function",
+              "function": { "name": "run_command", "arguments": "{\"command\":\"ls\"}" } }
+        ]);
+        agent
+            .history
+            .push(ChatMessage::assistant_tool_calls("", calls.clone()));
+        agent.history.push(ChatMessage::tool_result("call_1", "输出"));
+
+        let body = agent.request_body(false, true);
+        // 工具表注入
+        assert!(body.get("tools").and_then(|t| t.as_array()).unwrap().len() == 5);
+        assert_eq!(body["tool_choice"], json!("auto"));
+        // 消息序列化：assistant.tool_calls 与 tool.tool_call_id 均在
+        let msgs = body["messages"].as_array().unwrap();
+        assert!(msgs[2]["tool_calls"].is_array());
+        assert_eq!(msgs[3]["role"], json!("tool"));
+        assert_eq!(msgs[3]["tool_call_id"], json!("call_1"));
+        assert_eq!(msgs[3]["content"], json!("输出"));
+        // 关闭 with_tools：无工具表（降级路径）
+        let body_plain = agent.request_body(false, false);
+        assert!(body_plain.get("tools").is_none());
+    }
+
+    /// P83 FC：tools 拒绝错误识别（自动降级触发条件）
+    #[test]
+    fn is_tools_rejection_matches() {
+        let a = Agent::default();
+        assert!(a.is_tools_rejection("HTTP 400: tools is not supported"));
+        assert!(a.is_tools_rejection("HTTP 422: function calling not support"));
+        assert!(a.is_tools_rejection("unknown parameter: tools"));
+        assert!(!a.is_tools_rejection("HTTP 500: internal error"));
+        assert!(!a.is_tools_rejection("连接超时"));
+    }
+
     #[test]
     fn local_base_detection() {
         assert!(is_local_base(Some("http://localhost:11434/v1")));
@@ -1052,7 +1424,7 @@ mod tests {
             "messages": [],
             "response_format": {"type": "json_object"},
         });
-        let body = agent.request_body(true);
+        let body = agent.request_body(true, false);
         // 核心字段保持本模块组装值，不被 extra_body 覆盖
         assert_eq!(body["stream"], true);
         assert_eq!(body["model"], agent.config.model);

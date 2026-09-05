@@ -111,6 +111,9 @@ pub struct AiConfig {
     /// Agent 模式专用系统提示词（None 时回退 system_prompt）
     #[serde(default)]
     pub system_prompt_agent: Option<String>,
+    /// 结构化工具调用（P83：Agent 循环用 function calling 替代文本协议；默认关）
+    #[serde(default)]
+    pub agent_fc: bool,
     /// 附加请求头
     #[serde(default)]
     pub extra_headers: HashMap<String, String>,
@@ -139,6 +142,7 @@ impl Default for AiConfig {
             mode: default_mode(),
             command_timeout_secs: None,
             system_prompt_agent: None,
+            agent_fc: false,
             extra_headers: HashMap::new(),
             extra_body: serde_json::Value::Null,
         }

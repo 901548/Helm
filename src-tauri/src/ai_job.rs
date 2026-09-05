@@ -14,7 +14,10 @@ use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::Mutex;
 
-use crate::agent::{goal_marker, extract_goals, extract_reflexion, parse_commands, truncate_text, Agent, AgentMode, AiStreamEvent};
+use crate::agent::{
+    extract_goals, extract_reflexion, goal_marker, parse_commands, truncate_text, Agent,
+    AgentMode, AiStreamEvent, FcAction, FcCall, FcTurn,
+};
 use crate::core::{AiControl, AiPayload, AiRunState, PlanCommand};
 use crate::safety::{check_danger, DangerLevel};
 use crate::ssh::SshManager;
@@ -273,25 +276,45 @@ pub(crate) async fn run_ai_job(
                 // drop 掉未完成的 agent_step(即中断进行中的 HTTP 请求)并释放 agent 锁,
                 // 使 ai_stop 的 reset_task/clear_history 立即拿到锁,停止不再等整个 step 超时。
                 let mut next = None;
+                // P83：FC 回合结果（fc_active 时走 agent_step_fc，否则走文本协议）
+                let mut fc_turn: Option<Result<FcTurn, String>> = None;
                 {
                     let mut ag = agent.lock().await;
-                    let mut sink = Some(|evt: AiStreamEvent| {
-                        let _ = app.emit("ai", stream_to_payload(session, evt));
-                    });
-                    let sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)> =
-                        sink.as_mut().map(|f| f as _);
-                    let fut = ag.agent_step(input, &last_output, &ctx_desc, &work_mem, sink);
-                    tokio::pin!(fut);
-                    // 仅 Cancel 结束任务;陈旧的 Approve/Reject 忽略并继续等模型返回,
-                    // 否则一个错发的确认信号会静默终止整个任务。
-                    loop {
-                        tokio::select! {
-                            r = &mut fut => { next = Some(r); break; }
-                            ctl = ctl_rx.recv() => {
-                                if ctl == Some(AiControl::Cancel) {
-                                    let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
-                                    finished = true;
-                                    break;
+                    if ag.fc_active() {
+                        // FC 路径：非流式（工具调用参数需要完整 JSON），无 sink
+                        let fut = ag.agent_step_fc(input, &last_output, &ctx_desc, &work_mem);
+                        tokio::pin!(fut);
+                        loop {
+                            tokio::select! {
+                                r = &mut fut => { fc_turn = Some(r.map_err(|e| e.to_string())); break; }
+                                ctl = ctl_rx.recv() => {
+                                    if ctl == Some(AiControl::Cancel) {
+                                        let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
+                                        finished = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        let mut sink = Some(|evt: AiStreamEvent| {
+                            let _ = app.emit("ai", stream_to_payload(session, evt));
+                        });
+                        let sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)> =
+                            sink.as_mut().map(|f| f as _);
+                        let fut = ag.agent_step(input, &last_output, &ctx_desc, &work_mem, sink);
+                        tokio::pin!(fut);
+                        // 仅 Cancel 结束任务;陈旧的 Approve/Reject 忽略并继续等模型返回,
+                        // 否则一个错发的确认信号会静默终止整个任务。
+                        loop {
+                            tokio::select! {
+                                r = &mut fut => { next = Some(r); break; }
+                                ctl = ctl_rx.recv() => {
+                                    if ctl == Some(AiControl::Cancel) {
+                                        let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
+                                        finished = true;
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -301,82 +324,277 @@ pub(crate) async fn run_ai_job(
                 if finished {
                     break;
                 }
-                let next = next.expect("select 分支保证:未取消时必有结果");
 
-                let next = match next {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let _ = app.emit("ai", AiPayload::Error { name: session.to_string(), message: e.to_string() });
-                        finished = true;
-                        break;
-                    }
-                };
-                // P57 L2：解析子目标/反思标记（不入命令队列）
-                for g in extract_goals(&next) {
-                    if !goals.iter().any(|x| x == &g) {
-                        goals.push(g);
-                        go_states.push(GoalStatus::Pending);
-                        go_fail_retries.push(0u32);
-                    }
+                // ── P83 FC 分流：FC 回合转换为本步动作，文本回合走既有解析 ──
+                enum TurnOutcome {
+                    Text(String),
+                    Calls(Vec<FcCall>),
                 }
-                if let Some(r) = extract_reflexion(&next) {
-                    last_reflexion = Some(r);
-                }
-                let active_idx = next_active_goal(&go_states);
-                if let Some(idx) = active_idx {
-                    if go_states[idx] == GoalStatus::Pending {
-                        go_states[idx] = GoalStatus::Active;
-                        let _ = app.emit(
-                            "ai",
-                            AiPayload::GoalStarted {
-                                name: session.to_string(),
-                                goal_index: idx as u32,
-                                title: goals[idx].clone(),
-                            },
-                        );
-                    }
-                }
-                // P57 L2 防"过早收敛"：仍有未完成/失败子目标时,不接受裸 DONE,
-                // 提醒模型继续推进或重规划当前子目标（含有界计数器防止弱模型反复假完成死循环）。
-                if next.trim().eq_ignore_ascii_case("DONE") {
-                    let remaining = !goals.is_empty()
-                        && go_states.iter().any(|s| !matches!(s, GoalStatus::Ok));
-                    if remaining {
-                        premature_done += 1;
-                        let remaining_count = goals.iter().zip(&go_states)
-                            .filter(|(_, s)| !matches!(s, GoalStatus::Ok))
-                            .count();
-                        last_output = format!(
-                            "[提示] 子目标任务尚未收口（{} 个子目标中仍有 {} 个未完成），不能提前结束：请针对当前失败/未完成的子目标继续输出命令;失败子目标要先输出 REFLEXION 再重规划。",
-                            goals.len(),
-                            remaining_count
-                        );
-                        if premature_done >= 2 {
+                let outcome: TurnOutcome = if let Some(r) = fc_turn {
+                    match r {
+                        Ok(FcTurn::DowngradedToText(text)) => {
+                            // 服务端不支持 tools：粘性降级，本回合按文本协议处理
+                            TurnOutcome::Text(text)
+                        }
+                        Ok(FcTurn::Invalid(content)) => {
+                            // 模型收下 tools 却返回纯文本（不产生 tool_calls）：
+                            // 粘性降级为文本协议，把这段文本原样交给既有解析路径（零损失回退）
+                            {
+                                let mut ag = agent.lock().await;
+                                ag.fc_force_disable();
+                            }
                             let _ = app.emit(
                                 "ai",
-                                AiPayload::Done {
+                                AiPayload::CommandStep {
                                     name: session.to_string(),
-                                    message: "任务已结束（模型多次提前声明完成，部分子目标未完成）".to_string(),
+                                    command: "FC 降级".to_string(),
+                                    success: true,
+                                    message: "模型不支持工具调用，已自动切换文本协议".to_string(),
+                                    output: String::new(),
                                 },
                             );
+                            TurnOutcome::Text(content)
+                        }
+                        Ok(FcTurn::Done { finish_id, summary }) => {
+                            // finish 也受子目标护栏约束（防弱模型过早收敛）；
+                            // 未收口时回填工具结果让模型重试，而不是直接终结
+                            let remaining = !goals.is_empty()
+                                && go_states.iter().any(|s| !matches!(s, GoalStatus::Ok));
+                            if remaining {
+                                premature_done += 1;
+                                {
+                                    let mut ag = agent.lock().await;
+                                    ag.push_tool_result(&finish_id, "任务尚未收口：仍有未完成的子目标，请继续调用工具推进");
+                                }
+                                if premature_done >= 2 {
+                                    let _ = app.emit(
+                                        "ai",
+                                        AiPayload::Done {
+                                            name: session.to_string(),
+                                            message: "任务已结束（模型多次提前声明完成，部分子目标未完成）".to_string(),
+                                        },
+                                    );
+                                    finished = true;
+                                    break;
+                                }
+                                emit_state(AiRunState::ReadingBack);
+                                continue;
+                            }
+                            let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: summary });
                             finished = true;
                             break;
                         }
-                        continue;
+                        Ok(FcTurn::Calls(calls)) => TurnOutcome::Calls(calls),
+                        Err(e) => {
+                            let _ = app.emit("ai", AiPayload::Error { name: session.to_string(), message: e });
+                            finished = true;
+                            break;
+                        }
                     }
-                    let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "任务完成".to_string() });
-                    finished = true;
-                    break;
-                }
-                let step_active = active_idx;
+                } else {
+                    let next = next.expect("select 分支保证:未取消时必有结果");
+                    let next = match next {
+                        Ok(s) => s,
+                        Err(e) => {
+                            let _ = app.emit("ai", AiPayload::Error { name: session.to_string(), message: e.to_string() });
+                            finished = true;
+                            break;
+                        }
+                    };
+                    TurnOutcome::Text(next)
+                };
 
-                let commands = parse_commands(&next);
-                if commands.is_empty() {
-                    // P57 L2：空命令但带显式终结标记 GOAL_OK/GOAL_FAIL(用于"校验/查证"类空命令子目标)
-                    if let (Some(idx), Some(ok)) = (step_active, goal_marker(&next)) {
-                        let (final_ok, skipped) = apply_goal_outcome(
+                let step_active: Option<usize>;
+                let mut commands: Vec<String> = Vec::new();
+                // P83 FC：工具结果回填表 (id, 结果文本)；命令类结果在执行后填充
+                let mut fc_results: Vec<(String, String)> = Vec::new();
+                // P83：显式 goal_ok 标记（FC）——在命令执行前结算当前子目标
+                let mut fc_goal_ok = false;
+                let mut cmd_ids: Vec<String> = Vec::new();
+                let mut fc_outputs: Vec<String> = Vec::new();
+                let is_fc = matches!(outcome, TurnOutcome::Calls(_));
+
+                match outcome {
+                    TurnOutcome::Text(next) => {
+                        // P57 L2：解析子目标/反思标记（不入命令队列）
+                        for g in extract_goals(&next) {
+                            if !goals.iter().any(|x| x == &g) {
+                                goals.push(g);
+                                go_states.push(GoalStatus::Pending);
+                                go_fail_retries.push(0u32);
+                            }
+                        }
+                        if let Some(r) = extract_reflexion(&next) {
+                            last_reflexion = Some(r);
+                        }
+                        let active_idx = next_active_goal(&go_states);
+                        if let Some(idx) = active_idx {
+                            if go_states[idx] == GoalStatus::Pending {
+                                go_states[idx] = GoalStatus::Active;
+                                let _ = app.emit(
+                                    "ai",
+                                    AiPayload::GoalStarted {
+                                        name: session.to_string(),
+                                        goal_index: idx as u32,
+                                        title: goals[idx].clone(),
+                                    },
+                                );
+                            }
+                        }
+                        step_active = active_idx;
+                        // P57 L2 防"过早收敛"：仍有未完成/失败子目标时,不接受裸 DONE,
+                        // 提醒模型继续推进或重规划当前子目标（含有界计数器防止弱模型反复假完成死循环）。
+                        if next.trim().eq_ignore_ascii_case("DONE") {
+                            let remaining = !goals.is_empty()
+                                && go_states.iter().any(|s| !matches!(s, GoalStatus::Ok));
+                            if remaining {
+                                premature_done += 1;
+                                let remaining_count = goals.iter().zip(&go_states)
+                                    .filter(|(_, s)| !matches!(s, GoalStatus::Ok))
+                                    .count();
+                                last_output = format!(
+                                    "[提示] 子目标任务尚未收口（{} 个子目标中仍有 {} 个未完成），不能提前结束：请针对当前失败/未完成的子目标继续输出命令;失败子目标要先输出 REFLEXION 再重规划。",
+                                    goals.len(),
+                                    remaining_count
+                                );
+                                if premature_done >= 2 {
+                                    let _ = app.emit(
+                                        "ai",
+                                        AiPayload::Done {
+                                            name: session.to_string(),
+                                            message: "任务已结束（模型多次提前声明完成，部分子目标未完成）".to_string(),
+                                        },
+                                    );
+                                    finished = true;
+                                    break;
+                                }
+                                continue;
+                            }
+                            let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "任务完成".to_string() });
+                            finished = true;
+                            break;
+                        }
+                        commands = parse_commands(&next);
+                        if commands.is_empty() {
+                            // P57 L2：空命令但带显式终结标记 GOAL_OK/GOAL_FAIL(用于"校验/查证"类空命令子目标)
+                            if let (Some(idx), Some(ok)) = (step_active, goal_marker(&next)) {
+                                let (final_ok, skipped) = apply_goal_outcome(
+                                    idx,
+                                    ok,
+                                    &mut go_states,
+                                    &mut go_fail_retries,
+                                    MAX_GOAL_FAIL_RETRIES,
+                                );
+                                let _ = app.emit(
+                                    "ai",
+                                    AiPayload::GoalDone {
+                                        name: session.to_string(),
+                                        goal_index: idx as u32,
+                                        status: if final_ok { "ok".to_string() } else { "failed".to_string() },
+                                    },
+                                );
+                                if final_ok {
+                                    last_output = if skipped {
+                                        format!("子目标「{}」多次失败已放弃跳过。请继续下一个子目标,或全部完成则只输出 DONE。", goals[idx])
+                                    } else {
+                                        format!("子目标「{}」已完成。请继续下一个子目标,或全部完成则只输出 DONE。", goals[idx])
+                                    };
+                                } else {
+                                    last_output = format!("子目标「{}」自检失败。请先输出 REFLEXION 再重规划该子目标。", goals[idx]);
+                                }
+                                continue;
+                            }
+                            invalid_steps += 1;
+                            let _ = app.emit(
+                                "ai",
+                                AiPayload::CommandStep {
+                                    name: session.to_string(),
+                                    command: next,
+                                    success: false,
+                                    message: "模型未给出可执行命令".to_string(),
+                                    output: String::new(),
+                                },
+                            );
+                            if invalid_steps >= MAX_INVALID_STEPS {
+                                let _ = app.emit(
+                                    "ai",
+                                    AiPayload::Done {
+                                        name: session.to_string(),
+                                        message: "模型连续未给出可执行命令，任务已中止".to_string(),
+                                    },
+                                );
+                                finished = true;
+                                break;
+                            }
+                            last_output = "错误: 模型未给出可执行命令，请直接输出 shell 命令".to_string();
+                            continue;
+                        }
+                    }
+                    TurnOutcome::Calls(calls) => {
+                        // P83：非命令动作先落账，命令收集进共享执行链
+                        for FcCall { id, action } in calls {
+                            match action {
+                                FcAction::Command(cmd) => {
+                                    commands.push(cmd);
+                                    cmd_ids.push(id);
+                                }
+                                FcAction::Goal(title) => {
+                                    if !goals.iter().any(|x| x == &title) {
+                                        goals.push(title.clone());
+                                        go_states.push(GoalStatus::Pending);
+                                        go_fail_retries.push(0u32);
+                                    }
+                                    fc_results.push((id, format!("子目标「{title}」已登记")));
+                                }
+                                FcAction::GoalOk => {
+                                    fc_results.push((id, "已标记当前子目标完成".to_string()));
+                                    fc_goal_ok = true;
+                                }
+                                FcAction::Reflect(r) => {
+                                    last_reflexion = Some(r.clone());
+                                    fc_results.push((id, "已记录反思".to_string()));
+                                }
+                                FcAction::Noop => {
+                                    fc_results.push((id, "无效调用".to_string()));
+                                }
+                            }
+                        }
+                        // 激活首个 Pending 子目标（镜像文本路径的 GoalStarted 事件）
+                        if let Some(idx) = next_active_goal(&go_states) {
+                            if go_states[idx] == GoalStatus::Pending {
+                                go_states[idx] = GoalStatus::Active;
+                                let _ = app.emit(
+                                    "ai",
+                                    AiPayload::GoalStarted {
+                                        name: session.to_string(),
+                                        goal_index: idx as u32,
+                                        title: goals[idx].clone(),
+                                    },
+                                );
+                            }
+                        }
+                        step_active = next_active_goal(&go_states);
+                        if commands.is_empty() {
+                            // 本回合无命令：回填全部工具结果，直接进入下一轮
+                            {
+                                let mut ag = agent.lock().await;
+                                for (id, out) in &fc_results {
+                                    ag.push_tool_result(id, out);
+                                }
+                            }
+                            emit_state(AiRunState::ReadingBack);
+                            continue;
+                        }
+                    }
+                }
+                invalid_steps = 0;
+
+                // P83：FC 显式 goal_ok——在命令执行前结算当前子目标（Ok 推进）
+                if fc_goal_ok {
+                    if let Some(idx) = step_active {
+                        let (final_ok, _) = apply_goal_outcome(
                             idx,
-                            ok,
+                            true,
                             &mut go_states,
                             &mut go_fail_retries,
                             MAX_GOAL_FAIL_RETRIES,
@@ -389,43 +607,8 @@ pub(crate) async fn run_ai_job(
                                 status: if final_ok { "ok".to_string() } else { "failed".to_string() },
                             },
                         );
-                        if final_ok {
-                            last_output = if skipped {
-                                format!("子目标「{}」多次失败已放弃跳过。请继续下一个子目标,或全部完成则只输出 DONE。", goals[idx])
-                            } else {
-                                format!("子目标「{}」已完成。请继续下一个子目标,或全部完成则只输出 DONE。", goals[idx])
-                            };
-                        } else {
-                            last_output = format!("子目标「{}」自检失败。请先输出 REFLEXION 再重规划该子目标。", goals[idx]);
-                        }
-                        continue;
                     }
-                    invalid_steps += 1;
-                    let _ = app.emit(
-                        "ai",
-                        AiPayload::CommandStep {
-                            name: session.to_string(),
-                            command: next,
-                            success: false,
-                            message: "模型未给出可执行命令".to_string(),
-                            output: String::new(),
-                        },
-                    );
-                    if invalid_steps >= MAX_INVALID_STEPS {
-                        let _ = app.emit(
-                            "ai",
-                            AiPayload::Done {
-                                name: session.to_string(),
-                                message: "模型连续未给出可执行命令，任务已中止".to_string(),
-                            },
-                        );
-                        finished = true;
-                        break;
-                    }
-                    last_output = "错误: 模型未给出可执行命令，请直接输出 shell 命令".to_string();
-                    continue;
                 }
-                invalid_steps = 0;
 
                 // §8.7.2 整份计划卡：parse_commands 之后、逐命令之前广播计划
                 let plan_cmds: Vec<PlanCommand> = commands
@@ -548,6 +731,9 @@ pub(crate) async fn run_ai_job(
                                         output: String::new(),
                                     },
                                 );
+                                if is_fc {
+                                    fc_outputs.push("用户跳过".to_string());
+                                }
                                 last_output = "命令已由用户跳过".to_string();
                                 continue;
                             }
@@ -570,6 +756,10 @@ pub(crate) async fn run_ai_job(
                     // 权威 cwd 跟随：命令内部 cd 后由 ###HELM_PWD### 回传
                     if !new_pwd.is_empty() {
                         cwd = new_pwd;
+                    }
+                    if is_fc {
+                        // P83：FC 回合捕获每条命令输出，供工具结果回填
+                        fc_outputs.push(truncate_text(&output, max_output_chars));
                     }
                     // P70 训练核心三元组：(任务上下文, 动作命令, 结果输出+退出码+目录)
                     recorder.log(serde_json::json!({
@@ -617,6 +807,21 @@ pub(crate) async fn run_ai_job(
                             );
                         }
                     }
+                }
+                // P83：FC 回合——回填全部工具结果后进入下一轮（不走文本协议尾部）
+                if is_fc {
+                    {
+                        let mut ag = agent.lock().await;
+                        for (id, out) in &fc_results {
+                            ag.push_tool_result(id, out);
+                        }
+                        for (i, id) in cmd_ids.iter().enumerate() {
+                            let out = fc_outputs.get(i).map(String::as_str).unwrap_or("（未执行）");
+                            ag.push_tool_result(id, out);
+                        }
+                    }
+                    emit_state(AiRunState::ReadingBack);
+                    continue;
                 }
                 emit_state(AiRunState::ReadingBack);
                 if finished {

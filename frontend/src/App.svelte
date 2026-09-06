@@ -53,6 +53,9 @@
     theme === "system" ? (systemDark ? "dark" : "light") : theme,
   );
 
+  // P88：终端回显开关（关 = 终端只留 shell 输出，AI 过程看卡片）
+  const aiEchoOn = $derived(aiConfig?.ai_echo_terminal ?? false);
+
   // P32:会话 → 平台类型映射（供联动/监控/文件面板按平台门控）
   const kinds = $derived<Record<string, SessionKind>>(
     Object.fromEntries(sessions.map((s) => [s.name, s.kind ?? "linux"])),
@@ -129,7 +132,7 @@
             activeTab = p.name;
             api.setActive(p.name);
           }
-          pushEcho(p.name, `\r\n\x1b[1;31m[连接失败]\x1b[0m ${p.error || "未知错误"}\r\n`);
+          pushEcho(p.name, `\r\n\x1b[1;31m[连接失败]\x1b[0m ${p.error || "未知错误"}\r\n`, true);
         }
         if (p.status === "disconnected") {
           // 连接意外断开：保留标签以便重新连接；有其他已连接会话时才让出活动位，
@@ -261,7 +264,9 @@
           break;
         case "done":
           if (isActive) {
-            aiSummary = { text: p.message, ok: true };
+            // P88-A：QA 模式下完整回答已在卡片内流式展示，摘要只放短句（消除问/答挤一行）
+            const isQa = aiMode === "qa";
+            aiSummary = { text: isQa ? "已回答" : p.message, ok: true };
             finishQaCard();
             addLog({
               id: ++logId,
@@ -445,7 +450,9 @@
     pwds[name] = pwd;
   }
 
-  function pushEcho(name: string, text: string) {
+  function pushEcho(name: string, text: string, force = false) {
+    // P88：aiEchoOn 关闭时静默（连接失败等 force 调用除外）
+    if (!force && !aiEchoOn) return;
     // 队列而非单槽:同一批次内多个事件都保留,靠递增 seq 由消费端按序写入,
     // 防止密集 streaming 事件只留最后一个导致丢字。超限裁剪旧条目(视为已消费)。
     aiEcho = [...aiEcho.slice(-199), { seq: ++echoSeq, name, text }];

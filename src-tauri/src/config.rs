@@ -114,6 +114,9 @@ pub struct AiConfig {
     /// 结构化工具调用（P83：Agent 循环用 function calling 替代文本协议；默认关）
     #[serde(default)]
     pub agent_fc: bool,
+    /// 终端回显 AI 执行过程（P88：关 = 终端只留 shell 输出，AI 过程看卡片；默认关）
+    #[serde(default)]
+    pub ai_echo_terminal: bool,
     /// 附加请求头
     #[serde(default)]
     pub extra_headers: HashMap<String, String>,
@@ -143,6 +146,7 @@ impl Default for AiConfig {
             command_timeout_secs: None,
             system_prompt_agent: None,
             agent_fc: false,
+            ai_echo_terminal: false,
             extra_headers: HashMap::new(),
             extra_body: serde_json::Value::Null,
         }

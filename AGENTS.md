@@ -560,6 +560,14 @@ F:\Helm\
      - TerminalTabs 的 Props 从 `aiCards/aiTaskText/aiSummary/aiThinking` 改名为 `cards/taskText/summary/thinking`(与 App 传参对齐),再透传 AiCopilot。
   4. **验证**:`cargo test` 110 项全过 + `cargo build` 零警告 + `npm run build` 通过;前端零新增 a11y 警告(仅已知 state_referenced_locally)。
   5. **坑**:a) **Svelte 5 prop 名必须逐一核对**(P25 教训重演):App 传 `cards`/`taskText` 但 TerminalTabs Props 仍声明 `aiCards`/`aiTaskText` → 运行时 undefined,`npm run build` 不报错——必须同步改 Props 与 `$props` 解构;b) 临时脚本(node 内联改文件)易留下 `convToCard(e, \))` 这类残缺转义,生成后必须用 build 兜底检查;c) ConvEntry 的 `need_confirm` 是 snake_case,前端映射读 `e.need_confirm`(与 `Planning` 事件的 camelCase `needConfirm` 不同,勿混)。
+- [x] **P90 安全审查双修复(危险判级绕过 + URL 命令注入,已完成,`cargo test` 114 项+`cargo build` 零警告通过)**:
+  1. **动机**:全项目安全审查(4 子代理分域 + 人工复核)揪出两个确凿严重 bug:① 危险命令判级可被「执行器包装」「绝对路径」绕过,危险命令静默自动执行;② `open_external` 的 URL 未加引号,`&` 注入可 RCE。
+  2. **safety.rs 判级加固**:
+     - **绝对路径归一化**:新增 `basename(t)`(取 `/` 后分量),`rm/chmod/mkfs/dd` 判级与 `first_command` 全改用 basename——`/bin/rm -rf /`、`/sbin/shutdown -h now`、`/usr/sbin/mkfs.ext4` 不再漏判。
+     - **执行器包装递归**:新增 `is_executor`/`executor_pos`/`executor_code`,区分 shell 执行器(`sh/bash/dash/zsh/ksh/fish/csh/tcsh/eval`,其 `-c`/eval 参数是 shell 代码→递归 `check_danger_inner`)与脚本语言执行器(`python*/perl/ruby/node/php`,非 shell→`contains_destructive_marker` 关键字保守扫描)。`sh -c 'rm -rf /'`/`eval 'rm -rf /'`/`python3 -c 'os.system("rm -rf /")'` 均 Critical;`sh -c 'rm -rf /tmp'` Warning;`echo 'rm -rf /'`/`sh -c 'echo hi'` 仍 Safe。递归深度上限 8 防 `eval eval...` 自嵌套。
+  3. **core.rs `open_external` 注入修复**:抽 `validate_external_url`——trim + 仅 http/https + 拒绝内嵌 `"`/`\n`/`\r`,返回**加引号** URL 再拼 `cmd /c start "" "<url>"`;`&` 不再被 cmd 当命令分隔符。+单测(正常/含 & 查询串/非 http(s)/内嵌引号换行)。
+  4. **单测**:safety 新增 `absolute_path_dangerous_commands`/`executor_wrapper_dangerous_commands`/`executor_wrapper_non_dangerous_ok`;core 新增 `validate_external_url_quotes_and_blocks_injection`。共 114 项全过。
+  5. **坑**:a) `check_tokens` 的「任一 token basename==rm」沿用自旧「任一 token==rm」——`echo rm -rf /`(未加引号)仍是 Critical 误报(旧版即如此,非本次引入,属已知过度保守,未在本次范围);b) 脚本语言执行器无法静态解析 python/perl 代码,只能关键字扫描,`os.remove("/etc/passwd")` 之类不含破坏性关键字的仍漏——属已知残余,已注释说明。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

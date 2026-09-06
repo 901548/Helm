@@ -509,16 +509,27 @@ pub async fn docker_ps(state: State<'_, CoreState>, name: String) -> Result<Vec<
     Ok(names)
 }
 
+/// 校验并加引号包裹外部链接（P90：防 `&` 等 cmd 元字符注入）。
+/// 只放行 http/https；拒绝内嵌双引号/换行（防借引号逃逸）。
+fn validate_external_url(url: &str) -> Result<String, String> {
+    let url = url.trim();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(format!("不允许的链接协议: {url}"));
+    }
+    if url.contains('"') || url.contains('\n') || url.contains('\r') {
+        return Err("链接格式不合法".into());
+    }
+    Ok(format!("\"{url}\""))
+}
+
 /// 用系统默认浏览器打开外部链接（P68 终端链接点击；只放行 http/https，防命令注入）
 #[tauri::command]
 pub fn open_external(url: String) -> Result<(), String> {
-    let ok = url.starts_with("http://") || url.starts_with("https://");
-    if !ok {
-        return Err(format!("不允许的链接协议: {url}"));
-    }
-    // `start` 首个带引号参数是窗口标题占位，防 URL 被解析为命令
+    // URL 加引号传给 `start`：否则合法查询串里的 `&` 会被 cmd 当命令分隔符，
+    // 拼成 `start "" https://x/?a=1&calc` 会执行两条命令（RCE，P90 修复）。
+    let quoted = validate_external_url(&url)?;
     let status = std::process::Command::new("cmd")
-        .args(["/c", "start", "", &url])
+        .args(["/c", "start", "", &quoted])
         .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
         .status()
         .map_err(|e| format!("打开浏览器失败: {e}"))?;
@@ -1331,6 +1342,26 @@ mod tests {
         let body = serde_json::to_value(&plan).unwrap();
         assert_eq!(body["needConfirm"], false, "need_confirm 必须序列化为 needConfirm");
         assert!(body.get("need_confirm").is_none(), "不应再出现 snake_case 的 need_confirm 字段");
+    }
+
+    #[test]
+    fn validate_external_url_quotes_and_blocks_injection() {
+        // 正常 http/https：加引号包裹
+        assert_eq!(
+            validate_external_url("https://example.com/a?x=1").unwrap(),
+            "\"https://example.com/a?x=1\""
+        );
+        // 含 `&` 的合法查询串：引号包裹后 `&` 不再被 cmd 当命令分隔符
+        assert_eq!(
+            validate_external_url("https://x.com/?a=1&b=2").unwrap(),
+            "\"https://x.com/?a=1&b=2\""
+        );
+        // 非 http/https 拒绝（javascript:/file:/etc 均拦截）
+        assert!(validate_external_url("javascript:alert(1)").is_err());
+        assert!(validate_external_url("file:///C:/Windows/system32/calc.exe").is_err());
+        // 内嵌引号/换行拒绝（防借引号逃逸）
+        assert!(validate_external_url("https://x.com/\"&calc").is_err());
+        assert!(validate_external_url("https://x.com/\n&calc").is_err());
     }
 
     #[test]

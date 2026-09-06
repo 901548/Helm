@@ -463,7 +463,7 @@
 
   /// AI 命令条提交:重置活动流 + 调后端;Agent 任务在终端留一行锚点
   /// `container`：Docker 会话运行时目标容器（§8.7.4）
-  async function submitFromDock(text: string, container?: string | null) {
+  async function submitFromDock(text: string, container?: string | null, termContext?: string | null) {
     if (!text.trim() || aiBusy[activeTab ?? ""]) return;
     aiCards = aiMode === "qa" ? [{ id: ++cardId, kind: "qa", text: "", done: false }] : [];
     aiTaskText = text;
@@ -476,7 +476,7 @@
     }
     const pwd = pwds[name] ?? "";
     try {
-      await api.aiSubmit(name, text, pwd || undefined, container || null);
+      await api.aiSubmit(name, text, pwd || undefined, container || null, termContext || null);
     } catch (e) {
       aiSummary = { text: String(e), ok: false };
       finishQaCard();

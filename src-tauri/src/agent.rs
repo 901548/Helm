@@ -264,13 +264,24 @@ impl Agent {
     }
 
     /// 问答模式：发送用户输入，流式增量推送增量文本，返回完整回复
+    ///
+    /// `term_ctx`：终端屏幕最近输出（P86 上下文感知——用户无需复述屏幕内容）
     pub async fn chat(
         &mut self,
         user_input: &str,
+        term_ctx: Option<&str>,
         sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)>,
     ) -> Result<String> {
         self.ensure_ready()?;
-        self.push_message(ChatMessage::user(user_input));
+        let msg = match term_ctx.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(ctx) => format!(
+                "[终端最近输出（回答时请参考）]\n{}\n\n[用户问题]\n{}",
+                truncate_text(ctx, 4000),
+                user_input
+            ),
+            None => user_input.to_string(),
+        };
+        self.push_message(ChatMessage::user(msg));
         let reply = self.call_api(sink, false).await?;
         self.push_message(ChatMessage::assistant(&reply));
         Ok(reply)
@@ -288,6 +299,7 @@ impl Agent {
         prev_output: &str,
         ctx: &str,
         progress: &str,
+        term_ctx: Option<&str>,
         sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)>,
     ) -> Result<String> {
         self.ensure_ready()?;
@@ -298,17 +310,29 @@ impl Agent {
         } else {
             format!("已完成/失败步骤账本：\n{}", progress.trim())
         };
+        // P86：终端屏幕快照仅注入首轮（后续步骤的工具结果比陈旧屏幕更新鲜）
+        let term_block = term_ctx
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                format!(
+                    "\n[终端最近输出（任务开始时的屏幕状态，供参考）]\n{}",
+                    truncate_text(s, 4000)
+                )
+            })
+            .unwrap_or_default();
         let user_msg = match &self.current_task {
             None => {
                 self.current_task = Some(task.to_string());
                 format!(
-                    "当前环境：{}\n新任务：{}\n{}\n\
+                    "当前环境：{}\n新任务：{}{}\n{}\n\
                      对复杂长任务，请先把它拆成若干子目标，每个子目标一行 `GOAL <序号> <短标题>`（如 `GOAL 1. 预检环境`），\
                      然后接着输出当前第一个子目标要执行的 shell 命令，只输出命令本身，不要解释。简单任务可跳过 GOAL 行直接给命令。\n\
                      输出纪律：GOAL 行单独一行，每行至多一条命令；除 GOAL/REFLEXION/DONE/命令行外不要输出任何解释文字。\n\
                      禁止使用实时跟随类参数（tail -f、journalctl -f、docker logs -f 等），命令必须能自然退出；查看最近日志用 -n/--since 限量读取。",
                     ctx.trim(),
                     task,
+                    term_block,
                     progress_block
                 )
             }
@@ -366,6 +390,7 @@ impl Agent {
         prev_output: &str,
         ctx: &str,
         progress: &str,
+        term_ctx: Option<&str>,
     ) -> Result<FcTurn> {
         self.ensure_ready()?;
         let progress_block = if progress.trim().is_empty() {
@@ -373,15 +398,27 @@ impl Agent {
         } else {
             format!("已完成/失败步骤账本：\n{}", progress.trim())
         };
+        // P86：终端屏幕快照仅注入首轮
+        let term_block = term_ctx
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                format!(
+                    "\n[终端最近输出（任务开始时的屏幕状态，供参考）]\n{}",
+                    truncate_text(s, 4000)
+                )
+            })
+            .unwrap_or_default();
         let user_msg = match &self.current_task {
             None => {
                 self.current_task = Some(task.to_string());
                 format!(
-                    "当前环境：{}\n新任务：{}\n{}\n\
+                    "当前环境：{}\n新任务：{}{}\n{}\n\
                      通过调用工具推进任务：set_goal 设定子目标、run_command 执行命令、\
                      goal_ok 标记子目标完成、reflect 反思失败原因、全部完成后调用 finish。",
                     ctx.trim(),
                     task,
+                    term_block,
                     progress_block
                 )
             }

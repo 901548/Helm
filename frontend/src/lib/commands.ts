@@ -63,8 +63,14 @@ export const resizeSessions = (cols: number, rows: number) =>
 // ---------- AI commands ----------
 // AI 操作按会话隔离：所有调用携带目标会话名（多会话并行）
 
-export const aiSubmit = (name: string, input: string, pwd?: string, container?: string | null) =>
-  invoke<void>("ai_submit", { name, input, pwd, container: container ?? null });
+export const aiSubmit = (
+  name: string,
+  input: string,
+  pwd?: string,
+  container?: string | null,
+  termContext?: string | null,
+) =>
+  invoke<void>("ai_submit", { name, input, pwd, container: container ?? null, termContext: termContext ?? null });
 
 export const aiControl = (
   name: string,

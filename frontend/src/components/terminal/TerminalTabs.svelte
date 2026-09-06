@@ -50,7 +50,7 @@
     onOpenTask: () => void;
     onToggleLog: () => void;
     onToggleStream: () => void;
-    onDockSubmit: (text: string, container?: string | null) => void;
+    onDockSubmit: (text: string, container?: string | null, termContext?: string | null) => void;
   }
 
   let {
@@ -486,6 +486,25 @@
       });
   }
 
+  // P86 终端上下文感知：提取活动会话屏幕最后 40 行（纯文本，截 4000 字）
+  function extractTermContext(): string | null {
+    const e = activeTab ? terminals.get(activeTab) : undefined;
+    if (!e) return null;
+    const buf = e.term.buffer.active;
+    const total = buf.length;
+    const lines: string[] = [];
+    for (let i = Math.max(0, total - 42); i < total; i++) {
+      const line = buf.getLine(i);
+      if (line) lines.push(line.translateToString(true));
+    }
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    if (!lines.length) return null;
+    return lines.join("\n").slice(-4000);
+  }
+  function dockSubmit(text: string, container?: string | null) {
+    onDockSubmit(text, container, extractTermContext());
+  }
+
   function zmodemAbort(name: string) {
     const e = terminals.get(name);
     e?.zsession?.abort?.();
@@ -897,7 +916,7 @@
   focusSeq={aiFocusSeq}
   {logOpen}
   thinking={aiThinking}
-  onSubmit={onDockSubmit}
+  onSubmit={dockSubmit}
   onStop={onStop}
   onApprove={onApprove}
   onReject={onReject}

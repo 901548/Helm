@@ -145,6 +145,7 @@ pub(crate) async fn run_ai_job(
     mode: AgentMode,
     ctx: Option<TaskCtx>,
     recorder: &crate::recorder::Recorder,
+    term_ctx: Option<String>,
 ) {
     match mode {
         AgentMode::QA => {
@@ -153,7 +154,7 @@ pub(crate) async fn run_ai_job(
                 let _ = app.emit("ai", stream_to_payload(session, evt));
             });
             let sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)> = sink.as_mut().map(|f| f as _);
-            let chat_fut = ag.chat(input, sink);
+            let chat_fut = ag.chat(input, term_ctx.as_deref(), sink);
             tokio::pin!(chat_fut);
             tokio::select! {
                 result = &mut chat_fut => match result {
@@ -392,7 +393,7 @@ pub(crate) async fn run_ai_job(
                     let mut ag = agent.lock().await;
                     if ag.fc_active() {
                         // FC 路径：非流式（工具调用参数需要完整 JSON），无 sink
-                        let fut = ag.agent_step_fc(input, &last_output, &ctx_desc, &work_mem);
+                        let fut = ag.agent_step_fc(input, &last_output, &ctx_desc, &work_mem, term_ctx.as_deref());
                         tokio::pin!(fut);
                         loop {
                             tokio::select! {
@@ -412,7 +413,7 @@ pub(crate) async fn run_ai_job(
                         });
                         let sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)> =
                             sink.as_mut().map(|f| f as _);
-                        let fut = ag.agent_step(input, &last_output, &ctx_desc, &work_mem, sink);
+                        let fut = ag.agent_step(input, &last_output, &ctx_desc, &work_mem, term_ctx.as_deref(), sink);
                         tokio::pin!(fut);
                         // 仅 Cancel 结束任务;陈旧的 Approve/Reject 忽略并继续等模型返回,
                         // 否则一个错发的确认信号会静默终止整个任务。

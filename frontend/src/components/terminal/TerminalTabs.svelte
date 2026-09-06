@@ -31,15 +31,15 @@
     aiMode: "qa" | "agent";
     aiBusy: boolean;
     aiState?: AiState;
-    aiCards: AiCard[];
-    aiTaskText: string;
-    aiSummary: { text: string; ok: boolean } | null;
+    cards: AiCard[];
+    taskText: string;
+    summary: { text: string; ok: boolean } | null;
     aiStreamOpen: boolean;
     aiFocusSeq: number;
     aiLog: AiLogEntry[];
     logOpen: boolean;
     aiEcho: { seq: number; name: string; text: string }[];
-    aiThinking?: string;
+    thinking?: string;
     termFontSize?: number;
     termScrollback?: number;
     onModeChange: (m: "qa" | "agent") => void;    onApprove: () => void;
@@ -68,15 +68,15 @@
     aiMode,
     aiBusy,
     aiState = "idle",
-    aiCards,
-    aiTaskText,
-    aiSummary,
+    cards,
+    taskText,
+    summary,
     aiStreamOpen,
     aiFocusSeq,
     aiLog,
     logOpen,
     aiEcho,
-    aiThinking = "",
+    thinking = "",
     termFontSize = 14,
     termScrollback = 5000,
     onModeChange,
@@ -909,13 +909,13 @@
   kind={kinds[activeTab ?? ""] ?? "linux"}
   name={activeTab ?? ""}
   {status}
-  cards={aiCards}
-  taskText={aiTaskText}
-  summary={aiSummary}
+  {cards}
+  {taskText}
+  {summary}
   streamOpen={aiStreamOpen}
   focusSeq={aiFocusSeq}
   {logOpen}
-  thinking={aiThinking}
+  {thinking}
   onSubmit={dockSubmit}
   onStop={onStop}
   onApprove={onApprove}

@@ -548,6 +548,18 @@ F:\Helm\
   2. **B 计划卡折叠**:渲染时检测计划卡后是否存在步骤卡(`cards.slice(ci+1).some(kind===step)`)→是则折叠为单行「✓ 计划（N 条）· 已执行」(点击展开命令列表)——消除计划卡与步骤卡的命令重复展示。
   3. **A QA 摘要短句**:QA 完成摘要从全文改「已回答」(完整回答已在 qa 卡流式展示,消除摘要/卡片双份);qa 卡加左侧 accent 竖条 + 行距字号微调。
   4. **坑**:测试脚本直连 invoke ai_submit 绕过 submitFromDock → App 的 aiMode 状态不刷新 → done handler 的 isQa 判定错位(显示「已回答」而非技能完成语)——属测试绕过 UI 的固有偏差,真用户走 dock 提交无此问题;双 ✓ 瑕疵 = 自文本 ✓ + 渲染层 ✓,去自文本即可。
+- [x] **P89 会话对话记录后端化(卡片流按会话隔离,后端持有权威副本,已完成,`cargo build`+`cargo test` 110 项+`npm run build` 通过)**:
+  1. **动机**:P55 多会话并行以来,前端 AI 卡片流是单一 `aiCards` 数组——后台会话任务的事件虽经 `p.name` 路由到各自终端镜像,但**卡片只进活动会话视图**,切走再切回后台会话的卡片流会丢(修复 P55 遗留缺口)。
+  2. **后端(core.rs + ai_job.rs + main.rs)**:
+     - `AiSlot` 加 `conv: Arc<Mutex<Vec<ConvEntry>>>`(每会话独立,随槽生命周期);`ConvEntry`(serde `tag="kind", rename_all="lowercase"`,与前端 `AiCard.kind` 对齐,`#[derive(Debug, Clone, Serialize)]`):`Task{task}` / `Qa{q,a}` / `Plan{commands, need_confirm}` / `Step{command, success, message, output}`。
+     - `ai_submit` 清空 conv 并重记 `Task{input}`(新任务清旧任务);`run_ai_job` 加 `conv` 参数 + `conv_push` 助手,在各事件发射点一一对应记录:QA done → `Qa`;两处 Planning → `Plan`;命令执行/技能步骤/跳过/FC 降级/无效步骤 → `Step`。
+     - 新命令 `ai_conv_read(name)`(切标签拉取)+ `ai_conv_clear(name)`(清空按钮联动);`PlanCommand` 补 `Debug` derive(ConvEntry Debug 依赖)。
+  3. **前端(App.svelte + TerminalTabs.svelte + commands.ts)**:
+     - `aiCards`/`aiTaskText`/`aiSummary`/`aiThinking` 由单一值改为 **`Record<会话名, 值>` 分桶**;`updateCards(name, fn)` 统一入桶;事件 handler 全部改为 `updateCards(p.name, ...)`(后台会话也积累),`aiStreamOpen` 仅活动会话置真。
+     - `$effect(activeTab)` 切标签时 `aiConvRead(n)` 拉取权威记录,`convToCard` 映射(Task→taskText 回填,非卡片;Qa/Plan/Step→卡片)替换本地视图;改名/删除/清空同步迁移或清理分桶 + 调 `aiConvClear`。
+     - TerminalTabs 的 Props 从 `aiCards/aiTaskText/aiSummary/aiThinking` 改名为 `cards/taskText/summary/thinking`(与 App 传参对齐),再透传 AiCopilot。
+  4. **验证**:`cargo test` 110 项全过 + `cargo build` 零警告 + `npm run build` 通过;前端零新增 a11y 警告(仅已知 state_referenced_locally)。
+  5. **坑**:a) **Svelte 5 prop 名必须逐一核对**(P25 教训重演):App 传 `cards`/`taskText` 但 TerminalTabs Props 仍声明 `aiCards`/`aiTaskText` → 运行时 undefined,`npm run build` 不报错——必须同步改 Props 与 `$props` 解构;b) 临时脚本(node 内联改文件)易留下 `convToCard(e, \))` 这类残缺转义,生成后必须用 build 兜底检查;c) ConvEntry 的 `need_confirm` 是 snake_case,前端映射读 `e.need_confirm`(与 `Planning` 事件的 camelCase `needConfirm` 不同,勿混)。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

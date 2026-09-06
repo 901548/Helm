@@ -147,5 +147,12 @@ export const fsReadFile = (name: string, path: string, limit: number) =>
 export const historyRead = (limit?: number, session?: string, type?: string) =>
   invoke<Record<string, unknown>[]>('history_read', { limit: limit ?? null, session: session ?? null, type: type ?? null });
 
+// 读取会话对话记录（P89：后端 AiSlot.conv，切标签时拉取）
+export const aiConvRead = (name: string) =>
+  invoke<Record<string, unknown>[]>('ai_conv_read', { name });
+
+// 清空会话对话记录
+export const aiConvClear = (name: string) => invoke<void>('ai_conv_clear', { name });
+
 // 导出全部操作历史为单个 JSONL（返回落盘路径）
 export const historyExport = () => invoke<string>('history_export');

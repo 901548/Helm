@@ -1,0 +1,71 @@
+{
+  "session": "centos-132",
+  "model": "ollama/glm4:latest",
+  "fc": true,
+  "results": [
+    {
+      "id": "T1-disk-usage",
+      "category": "info",
+      "status": "done?",
+      "durationSec": 3,
+      "summary": "✓ 内置技能「磁盘使用情况检查」执行完成：3 步成功",
+      "steps": 3
+    },
+    {
+      "id": "T2-mem-top",
+      "category": "info",
+      "status": "done?",
+      "durationSec": 3,
+      "summary": "✓ 内置技能「磁盘使用情况检查」执行完成：3 步成功",
+      "steps": 2
+    },
+    {
+      "id": "T3-log-errors",
+      "category": "logs",
+      "status": "done?",
+      "durationSec": 3,
+      "summary": "✓ 内置技能「磁盘使用情况检查」执行完成：3 步成功",
+      "steps": 3
+    },
+    {
+      "id": "T4-service-check",
+      "category": "service",
+      "status": "done?",
+      "durationSec": 3,
+      "summary": "✓ 内置技能「磁盘使用情况检查」执行完成：3 步成功",
+      "steps": 1
+    },
+    {
+      "id": "T5-file-create",
+      "category": "file-ops",
+      "status": "done?",
+      "durationSec": 3,
+      "summary": "✓ 内置技能「磁盘使用情况检查」执行完成：3 步成功",
+      "steps": 2
+    },
+    {
+      "id": "T6-login-users",
+      "category": "info",
+      "status": "done?",
+      "durationSec": 3,
+      "summary": "✓ 内置技能「磁盘使用情况检查」执行完成：3 步成功",
+      "steps": 1
+    },
+    {
+      "id": "T7-listen-ports",
+      "category": "net",
+      "status": "done?",
+      "durationSec": 3,
+      "summary": "✓ 内置技能「磁盘使用情况检查」执行完成：3 步成功",
+      "steps": 1
+    },
+    {
+      "id": "T8-cleanup",
+      "category": "cleanup",
+      "status": "done?",
+      "durationSec": 3,
+      "summary": "✓ 内置技能「磁盘使用情况检查」执行完成：3 步成功",
+      "steps": 0
+    }
+  ]
+}

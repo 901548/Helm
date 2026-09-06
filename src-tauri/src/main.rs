@@ -10,6 +10,7 @@ mod known_hosts;
 mod monitor;
 mod recorder;
 mod safety;
+mod skills;
 
 mod ssh;
 mod task_exec;

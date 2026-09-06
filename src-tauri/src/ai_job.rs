@@ -244,6 +244,116 @@ pub(crate) async fn run_ai_job(
                 cancelled
             };
 
+            // P85 内置技能：任务命中技能库 → 确定性执行剧本，完全绕过 LLM
+            // （常见运维任务零幻觉秒级完成；技能轨迹带 source:"skill" 金标，可直接作训练数据）
+            if let Some(sk) = crate::skills::match_skill(input) {
+                let steps: Vec<&str> = sk.steps.to_vec();
+                let plan_cmds: Vec<PlanCommand> = steps
+                    .iter()
+                    .map(|c| {
+                        let (level, reason) = check_danger(c);
+                        PlanCommand { command: c.to_string(), level, reason }
+                    })
+                    .collect();
+                let any_danger = plan_cmds.iter().any(|c| c.level != DangerLevel::Safe);
+                emit_state(AiRunState::Planning);
+                let _ = app.emit(
+                    "ai",
+                    AiPayload::Planning {
+                        name: session.to_string(),
+                        commands: plan_cmds,
+                        need_confirm: confirm_all || any_danger,
+                    },
+                );
+
+                // 危险步骤照常走计划级确认（安全链与 LLM 路径一致）
+                if confirm_all || any_danger {
+                    emit_state(AiRunState::AwaitingConfirm);
+                    if flush_stale(ctl_rx) {
+                        emit_state(AiRunState::Idle);
+                        return;
+                    }
+                    match recv_confirm(ctl_rx).await {
+                        Ok(Some(AiControl::Approve)) => {}
+                        Ok(Some(AiControl::Reject)) => {
+                            let _ = app.emit(
+                                "ai",
+                                AiPayload::Done { name: session.to_string(), message: "已放弃技能执行".to_string() },
+                            );
+                            emit_state(AiRunState::Idle);
+                            return;
+                        }
+                        Ok(_) => {
+                            emit_state(AiRunState::Idle);
+                            return;
+                        }
+                        Err(()) => {
+                            let _ = app.emit(
+                                "ai",
+                                AiPayload::Done { name: session.to_string(), message: "等待确认超时,技能执行已中止".to_string() },
+                            );
+                            emit_state(AiRunState::Idle);
+                            return;
+                        }
+                    }
+                }
+
+                emit_state(AiRunState::Executing);
+                let mut ok_count = 0usize;
+                let mut fail_count = 0usize;
+                for (i, command) in steps.iter().enumerate() {
+                    if ctl_rx.try_recv().ok() == Some(AiControl::Cancel) {
+                        let _ = app.emit(
+                            "ai",
+                            AiPayload::Done { name: session.to_string(), message: "已停止".to_string() },
+                        );
+                        emit_state(AiRunState::Idle);
+                        return;
+                    }
+                    let (output, code, new_pwd) =
+                        task_exec(ssh, app, &ctx.name, command, &cwd, timeout_secs, ctx.container.as_deref()).await;
+                    if !new_pwd.is_empty() {
+                        cwd = new_pwd;
+                    }
+                    if code == 0 {
+                        ok_count += 1;
+                    } else {
+                        fail_count += 1;
+                    }
+                    // 金标训练数据：source:"skill"（确定性执行轨迹）
+                    recorder.log(serde_json::json!({
+                        "type": "ai_step", "session": session, "host": ctx.host,
+                        "source": "skill", "skill": sk.id,
+                        "step": i + 1, "command": command,
+                        "exit_code": code, "pwd": cwd,
+                        "output": truncate_text(output.trim(), 2000),
+                    }));
+                    let _ = app.emit(
+                        "ai",
+                        AiPayload::CommandStep {
+                            name: session.to_string(),
+                            command: command.to_string(),
+                            success: code == 0,
+                            message: if code == 0 { String::new() } else { format!("退出码 {}", code) },
+                            output: truncate_text(&output, 2000),
+                        },
+                    );
+                }
+                let fail_note = if fail_count > 0 {
+                    format!("、{} 步失败", fail_count)
+                } else {
+                    String::new()
+                };
+                let _ = app.emit(
+                    "ai",
+                    AiPayload::Done {
+                        name: session.to_string(),
+                        message: format!("内置技能「{}」执行完成：{} 步成功{}", sk.title, ok_count, fail_note),
+                    },
+                );
+                emit_state(AiRunState::Idle);
+                return;
+            }
             for _step in 0..max_steps {
                 if ctl_rx.try_recv().ok() == Some(AiControl::Cancel) {
                     finished = true;

@@ -5,6 +5,7 @@
   import TerminalTabs from "./components/terminal/TerminalTabs.svelte";
   import FileBrowser from "./components/files/FileBrowser.svelte";
   import SettingsModal from "./components/chrome/SettingsModal.svelte";
+  import HistoryModal from "./components/chrome/HistoryModal.svelte";
   import StatusBar from "./components/chrome/StatusBar.svelte";
   import * as api from "./lib/api";
   import type { AiCard, AiLogEntry, AiConfig, AiState, SessionInfo, SessionKind, SessionStatus, Theme, UiConfig } from "./lib/api";
@@ -39,6 +40,7 @@
   let showSessionForm = $state(false);
   let editingSession = $state<SessionInfo | null>(null);
   let showSettings = $state(false);
+  let showHistory = $state(false);
 
   let sessionsPanelPct = $state(22);
   let dockSessions = $state(true);
@@ -662,6 +664,7 @@
     {sessions}
     {statuses}
     onOpenSettings={() => (showSettings = true)}
+          onOpenHistory={() => (showHistory = true)}
   />
 </main>
 
@@ -681,6 +684,9 @@
     onSave={saveSettings}
   />
 {/if}
+    {#if showHistory}
+      <HistoryModal onClose={() => (showHistory = false)} />
+    {/if}
 
 <style>
   :global(:root) {

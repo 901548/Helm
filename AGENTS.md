@@ -538,6 +538,11 @@ F:\Helm\
   3. **真机验证**:终端敲 `echo HELMCTX-MAGIC-73912` → dock 问"那个编号是什么"(零额外提示)→ glm4 回答含该编号——**串只可能来自新上下文通道**(命令仅经 send_active_input 键入,AI 无其他来源)。转写小瑕疵属 8B 模型复读局限。
   4. **坑**:a) 测试脚本直连 invoke ai_submit 传 null 会绕过前端提取链——验证必须走 UI dock 提交路径;b) node 内联改含反引号模板串的脚本再次炸裂(P43 教训第 N 次应验),一律用文件脚本或 Edit 工具;c) xterm buffer `translateToString(true)` 已是纯文本无 ANSI,天然免脱序处理。
 
+- [x] **P87 操作历史面板(方案二,已完成,CDP 全链路 ALL PASS:311 条加载/筛选/展开/导出)**:
+  1. **组成**:后端 `history_read`(日期文件倒序+文件内倒序收集,limit 钳 1..5000,可按会话/类型过滤)+ `history_export`(合并全部 JSONL 落 Downloads/helm-exports/);前端 **HistoryModal**(720px modal,类型/会话双筛选+逐条展开详情+导出按钮+统计,设计语言对齐 P40);状态栏入口「📜 历史」。
+  2. **真机**:311 条记录加载、input 筛选 77 条全对、详情展开、导出成功;会话列可见多机记录(1/2/centos-132)——P70 数据从黑盒积累变可视化审核。
+  3. **坑**:a) **并行会话重构过 StatusBar**(SVG 图标版设置按钮),基于旧文本锚点的 node 注入静默失配——对被并行会话改过的文件,插入前必须重读现状;b) node 内联脚本双引号里 $state 被 bash 展开成空导致替换静默失败——Edit 工具优先;c) 记录器 JSONL 行倒序遍历即新→旧,无需排序。
+
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)
 - 全栈开发:`cargo tauri dev`

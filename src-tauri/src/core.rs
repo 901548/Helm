@@ -600,6 +600,95 @@ pub async fn toggle_fullscreen(app: AppHandle) -> Result<bool, String> {
     }
 }
 
+/// 读取操作历史（P87：记录器 JSONL 的可视化/审核/训练数据导出源）
+///
+/// 按日期文件倒序 + 文件内倒序（新→旧）收集，最多 `limit` 条（默认 500，钳 1..=5000）；
+/// 可按会话名与记录类型过滤。记录原样返回（Value），前端自行渲染。
+#[tauri::command]
+pub async fn history_read(
+    state: State<'_, CoreState>,
+    limit: Option<u32>,
+    session: Option<String>,
+    r#type: Option<String>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let cap = limit.unwrap_or(500).clamp(1, 5000) as usize;
+    let dir = state.recorder.dir().clone();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
+                .collect()
+        })
+        .unwrap_or_default();
+    // 文件名 terminal-YYYYMMDD.jsonl：名字倒序即日期倒序
+    files.sort();
+    files.reverse();
+
+    let mut out: Vec<serde_json::Value> = Vec::with_capacity(cap.min(64));
+    'files: for file in files {
+        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        // 单文件内按行倒序（新→旧）
+        for line in text.lines().rev() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+            if let Some(s) = &session {
+                if v.get("session").and_then(|x| x.as_str()) != Some(s.as_str()) {
+                    continue;
+                }
+            }
+            if let Some(t) = &r#type {
+                if v.get("type").and_then(|x| x.as_str()) != Some(t.as_str()) {
+                    continue;
+                }
+            }
+            out.push(v);
+            if out.len() >= cap {
+                break 'files;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 导出全部操作历史为单个 JSONL（P87：训练数据交接；写入 Downloads/helm-exports/）
+#[tauri::command]
+pub async fn history_export(state: State<'_, CoreState>) -> Result<String, String> {
+    let src_dir = state.recorder.dir().clone();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&src_dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().map(|x| x == "jsonl").unwrap_or(false))
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+
+    let mut dest = dirs::home_dir().ok_or("无法定位主目录")?;
+    dest.push("Downloads");
+    dest.push("helm-exports");
+    std::fs::create_dir_all(&dest).map_err(|e| format!("创建目录失败: {e}"))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    dest.push(format!("helm-history-export-{stamp}.jsonl"));
+
+    let mut out = std::fs::File::create(&dest).map_err(|e| format!("创建导出文件失败: {e}"))?;
+    for file in &files {
+        let Ok(text) = std::fs::read_to_string(file) else { continue };
+        use std::io::Write;
+        let _ = out.write_all(text.as_bytes());
+        if !text.ends_with('\n') {
+            let _ = writeln!(out);
+        }
+    }
+    Ok(dest.display().to_string())
+}
+
 /// 操作记录状态与落盘目录（P70 设置卡展示用）
 #[tauri::command]
 pub async fn recording_info(state: State<'_, CoreState>) -> Result<serde_json::Value, String> {

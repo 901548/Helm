@@ -22,16 +22,17 @@
   let aiConfig = $state<AiConfig | null>(null);
   let uiConfig = $state<UiConfig | null>(null);
   // P39 AI 常驻命令条 + 活动流状态
-  let aiCards = $state<AiCard[]>([]);
-  let aiTaskText = $state("");
-  let aiSummary = $state<{ text: string; ok: boolean } | null>(null);
+  // P89：对话卡片按会话分桶（后端 AiSlot.conv 为权威副本，切换标签时拉取）
+  let aiCards = $state<Record<string, AiCard[]>>({});
+  let aiTaskText = $state<Record<string, string>>({});
+  let aiSummary = $state<Record<string, { text: string; ok: boolean } | null>>({});
   let aiStreamOpen = $state(false);
   let aiFocusSeq = $state(0);
   let logOpen = $state(false);
   let aiLog = $state<AiLogEntry[]>([]);
   let aiEcho = $state<{ seq: number; name: string; text: string }[]>([]);
   // 推理型模型思考过程：实时累积展示，不混入最终答案卡片
-  let aiThinking = $state("");
+  let aiThinking = $state<Record<string, string>>({});
   let pwds = $state<Record<string, string>>({});
   let echoSeq = 0;
   let logId = 0;
@@ -162,41 +163,42 @@
         case "streaming": {
           // QA 流式追加进活动流卡片;Agent 模式的模型原始输出不展示(等解析后的命令卡片)
           if (!p.text || aiMode !== "qa" || !isActive) break;
-          const last = aiCards[aiCards.length - 1];
-          if (last && last.kind === "qa" && !last.done) {
-            aiCards = [...aiCards.slice(0, -1), { ...last, text: last.text + p.text }];
-          } else {
-            aiCards = [...aiCards, { id: ++cardId, kind: "qa", text: p.text, done: false }];
-          }
+          updateCards(p.name, (cards) => {
+            const last = cards[cards.length - 1];
+            if (last && last.kind === "qa" && !last.done) {
+              return [...cards.slice(0, -1), { ...last, text: last.text + p.text }];
+            }
+            return [...cards, { id: ++cardId, kind: "qa", text: p.text, done: false }];
+          });
           break;
         }
         case "reasoning": {
           // 推理型模型思考过程：仅活动会话时实时展示（QA 卡未完成时可见）
           if (!isActive) break;
-          aiThinking = (aiThinking + (p.text || "")).slice(-4000);
+          aiThinking = { ...aiThinking, [p.name]: ((aiThinking[p.name] ?? "") + (p.text || "")).slice(-4000) };
           break;
         }
         case "commandStep": {
           // 仅活动会话更新 AI 活动面板；命令仍镜像到其所属会话的终端（含后台并行）
-          if (isActive) {
-            const idx = [...aiCards]
-              .reverse()
-              .findIndex((c) => c.kind === "step" && c.command === p.command && ["running", "confirm", "skipped"].includes(c.status));
-            if (idx >= 0) {
-              const i = aiCards.length - 1 - idx;
-              const c = aiCards[i] as (typeof aiCards)[number] & { kind: "step" };
-              aiCards = [
-                ...aiCards.slice(0, i),
-                { ...c, status: p.success ? "ok" : "fail", message: p.message, output: p.output || undefined },
-                ...aiCards.slice(i + 1),
-              ];
-            } else {
-              aiCards = [
-                ...aiCards,
-                { id: ++cardId, kind: "step", command: p.command, status: p.success ? "ok" : "fail", message: p.message, output: p.output || undefined },
-              ];
+          {
+            updateCards(p.name, (cards) => {
+              const idx = [...cards]
+                .reverse()
+                .findIndex((c) => c.kind === "step" && c.command === p.command && ["running", "confirm", "skipped"].includes(c.status));
+              if (idx >= 0) {
+                const i = cards.length - 1 - idx;
+                const c = cards[i] as (typeof cards)[number] & { kind: "step" };
+                return [
+                  ...cards.slice(0, i),
+                  { ...c, status: p.success ? "ok" : "fail", message: p.message, output: p.output || undefined },
+                  ...cards.slice(i + 1),
+                ];
+              }
+              return [...cards, { id: ++cardId, kind: "step", command: p.command, status: p.success ? "ok" : "fail", message: p.message, output: p.output || undefined }];
+            });
+            if (isActive) {
+              aiStreamOpen = true;
             }
-            aiStreamOpen = true;
             addLog({
               id: ++logId,
               name: p.name,
@@ -228,22 +230,24 @@
           if (p.name && p.command) {
             pushEcho(p.name, `\r\n\x1b[33m[AI] ⏸ 待确认: \x1b[0m${p.command}\r\n`);
           }
+          updateCards(p.name, (cards) => [
+            ...cards,
+            { id: ++cardId, kind: "step", command: p.command, status: "confirm", level: p.level, reason: p.reason },
+          ]);
           if (isActive) {
-            aiCards = [
-              ...aiCards,
-              { id: ++cardId, kind: "step", command: p.command, status: "confirm", level: p.level, reason: p.reason },
-            ];
             aiStreamOpen = true;
           }
           break;
         case "planning":
           // §8.7.2 整份计划卡：一次展示该步全部命令，整份确认/编辑/放弃
-          if (isActive && p.commands?.length) {
-            aiCards = [
-              ...aiCards,
+          if (p.commands?.length) {
+            updateCards(p.name, (cards) => [
+              ...cards,
               { id: ++cardId, kind: "plan", commands: p.commands, status: "plan", needConfirm: p.needConfirm ?? true },
-            ];
-            aiStreamOpen = true;
+            ]);
+            if (isActive) {
+              aiStreamOpen = true;
+            }
           }
           break;
         case "goalStarted":
@@ -266,8 +270,8 @@
           if (isActive) {
             // P88-A：QA 模式下完整回答已在卡片内流式展示，摘要只放短句（消除问/答挤一行）
             const isQa = aiMode === "qa";
-            aiSummary = { text: isQa ? "已回答" : p.message, ok: true };
-            finishQaCard();
+            aiSummary = { ...aiSummary, [p.name]: { text: isQa ? "已回答" : p.message, ok: true } };
+            finishQaCard(p.name);
             addLog({
               id: ++logId,
               name: p.name,
@@ -284,8 +288,8 @@
           break;
         case "error":
           if (isActive) {
-            aiSummary = { text: p.message, ok: false };
-            finishQaCard();
+            aiSummary = { ...aiSummary, [p.name]: { text: p.message, ok: false } };
+            finishQaCard(p.name);
             addLog({
               id: ++logId,
               name: p.name,
@@ -392,6 +396,17 @@
           pwds[info.name] = pwds[oldName];
           delete pwds[oldName];
         }
+        // P89：AI 对话桶跟随改名
+        if (aiCards[oldName] !== undefined) {
+          aiCards[info.name] = aiCards[oldName];
+          delete aiCards[oldName];
+          aiTaskText[info.name] = aiTaskText[oldName];
+          delete aiTaskText[oldName];
+          aiSummary[info.name] = aiSummary[oldName];
+          delete aiSummary[oldName];
+          aiThinking[info.name] = aiThinking[oldName];
+          delete aiThinking[oldName];
+        }
         if (activeTab === oldName) {
           activeTab = info.name;
           api.setActive(info.name);
@@ -430,6 +445,11 @@
     sessions = sessions.filter((s) => s.name !== name);
     delete statuses[name];
     delete pwds[name];
+    // P89：AI 对话桶随会话删除清理
+    delete aiCards[name];
+    delete aiTaskText[name];
+    delete aiSummary[name];
+    delete aiThinking[name];
     tabs = tabs.filter((t) => t !== name);
     if (activeTab === name) {
       activeTab = pickNextActive(name);
@@ -450,6 +470,54 @@
     pwds[name] = pwd;
   }
 
+  // P89：按会话更新卡片桶（事件路由以 p.name 为键，后台会话也积累）
+  function updateCards(name: string, fn: (cards: AiCard[]) => AiCard[]) {
+    aiCards = { ...aiCards, [name]: fn(aiCards[name] ?? []) };
+  }
+
+  // P89：切换标签时从后端拉取该会话的权威对话记录（后台会话的积累也在）
+  function convToCard(e: Record<string, unknown>, id: number): AiCard {
+    const kind = String(e.kind ?? "");
+    if (kind === "qa") {
+      return { id, kind: "qa", text: String(e.a ?? ""), done: true };
+    }
+    if (kind === "plan") {
+      return {
+        id,
+        kind: "plan",
+        commands: (e.commands as any) ?? [],
+        status: "plan",
+        needConfirm: Boolean(e.need_confirm),
+      };
+    }
+    return {
+      id,
+      kind: "step",
+      command: String(e.command ?? ""),
+      status: e.success ? "ok" : "fail",
+      message: String(e.message ?? ""),
+      output: String(e.output ?? "") || undefined,
+    };
+  }
+  $effect(() => {
+    const n = activeTab;
+    if (!n) return;
+    api
+      .aiConvRead(n)
+      .then((conv) => {
+        if (activeTab !== n) return; // 会话已切走，丢弃
+        // Task 条目回填任务文本（非卡片）；Qa/Plan/Step 映射为卡片
+        const taskEntry = conv.find((e) => String(e.kind ?? "") === "task");
+        const taskText = taskEntry ? String((taskEntry as Record<string, unknown>).task ?? "") : "";
+        const cards = conv
+          .filter((e) => String(e.kind ?? "") !== "task")
+          .map((e) => convToCard(e, ++cardId));
+        aiTaskText = { ...aiTaskText, [n]: taskText };
+        aiCards = { ...aiCards, [n]: cards };
+      })
+      .catch(() => {});
+  });
+
   function pushEcho(name: string, text: string, force = false) {
     // P88：aiEchoOn 关闭时静默（连接失败等 force 调用除外）
     if (!force && !aiEchoOn) return;
@@ -463,23 +531,26 @@
   }
 
   /// QA 流式卡片收尾(done/error 时)
-  function finishQaCard() {
-    const last = aiCards[aiCards.length - 1];
-    if (last && last.kind === "qa" && !last.done) {
-      aiCards = [...aiCards.slice(0, -1), { ...last, done: true }];
-    }
+  function finishQaCard(name: string) {
+    updateCards(name, (cards) => {
+      const last = cards[cards.length - 1];
+      if (last && last.kind === "qa" && !last.done) {
+        return [...cards.slice(0, -1), { ...last, done: true }];
+      }
+      return cards;
+    });
   }
 
   /// AI 命令条提交:重置活动流 + 调后端;Agent 任务在终端留一行锚点
   /// `container`：Docker 会话运行时目标容器（§8.7.4）
   async function submitFromDock(text: string, container?: string | null, termContext?: string | null) {
     if (!text.trim() || aiBusy[activeTab ?? ""]) return;
-    aiCards = aiMode === "qa" ? [{ id: ++cardId, kind: "qa", text: "", done: false }] : [];
-    aiTaskText = text;
-    aiSummary = null;
-    aiStreamOpen = true;
-    aiThinking = "";
     const name = activeTab ?? "";
+    updateCards(name, () => (aiMode === "qa" ? [{ id: ++cardId, kind: "qa", text: "", done: false }] : []));
+    aiTaskText = { ...aiTaskText, [name]: text };
+    aiSummary = { ...aiSummary, [name]: null };
+    aiStreamOpen = true;
+    aiThinking = { ...aiThinking, [name]: "" };
     if (aiMode === "agent" && name) {
       pushEcho(name, `\r\n\x1b[90m[AI] 任务: ${text}\x1b[0m\r\n`);
     }
@@ -487,8 +558,8 @@
     try {
       await api.aiSubmit(name, text, pwd || undefined, container || null, termContext || null);
     } catch (e) {
-      aiSummary = { text: String(e), ok: false };
-      finishQaCard();
+      aiSummary = { ...aiSummary, [name]: { text: String(e), ok: false } };
+      finishQaCard(name);
       addLog({
         id: ++logId,
         name,
@@ -516,24 +587,26 @@
   }
 
   function toggleStream() {
-    if (aiCards.length || aiSummary || aiTaskText) aiStreamOpen = !aiStreamOpen;
+    const n = activeTab ?? "";
+    if ((aiCards[n]?.length ?? 0) || aiSummary[n] || aiTaskText[n]) aiStreamOpen = !aiStreamOpen;
   }
 
   async function decide(approve: boolean) {
     // 乐观更新确认卡片;拒绝时后端会回发 CommandStep(已跳过)统一收口
     // 优先找逐条确认卡(step/confirm),否则找整份计划卡(plan/plan)
     let i = -1;
-    const ci = [...aiCards].reverse().findIndex((c) => c.kind === "step" && c.status === "confirm");
+    const cards = aiCards[activeTab ?? ""] ?? [];
+    const ci = [...cards].reverse().findIndex((c) => c.kind === "step" && c.status === "confirm");
     if (ci >= 0) {
-      i = aiCards.length - 1 - ci;
-      const c = aiCards[i] as (typeof aiCards)[number] & { kind: "step" };
-      aiCards = [...aiCards.slice(0, i), { ...c, status: approve ? "running" : "skipped" }, ...aiCards.slice(i + 1)];
+      i = cards.length - 1 - ci;
+      const c = cards[i] as (typeof cards)[number] & { kind: "step" };
+      updateCards(activeTab ?? "", (cs) => [...cs.slice(0, i), { ...c, status: approve ? "running" : "skipped" }, ...cs.slice(i + 1)]);
     } else {
-      const pi = [...aiCards].reverse().findIndex((c) => c.kind === "plan" && c.status === "plan");
+      const pi = [...cards].reverse().findIndex((c) => c.kind === "plan" && c.status === "plan");
       if (pi >= 0) {
-        i = aiCards.length - 1 - pi;
-        const c = aiCards[i] as (typeof aiCards)[number] & { kind: "plan" };
-        aiCards = [...aiCards.slice(0, i), { ...c, status: approve ? "running" : "skipped" }, ...aiCards.slice(i + 1)];
+        i = cards.length - 1 - pi;
+        const c = cards[i] as (typeof cards)[number] & { kind: "plan" };
+        updateCards(activeTab ?? "", (cs) => [...cs.slice(0, i), { ...c, status: approve ? "running" : "skipped" }, ...cs.slice(i + 1)]);
       }
     }
     try {
@@ -545,11 +618,12 @@
 
   /// §8.7.3 整份计划修改：用编辑后的命令列表覆盖并执行
   async function editPlan(commands: string[]) {
-    const pi = [...aiCards].reverse().findIndex((c) => c.kind === "plan" && c.status === "plan");
+    const cards = aiCards[activeTab ?? ""] ?? [];
+    const pi = [...cards].reverse().findIndex((c) => c.kind === "plan" && c.status === "plan");
     if (pi >= 0) {
-      const i = aiCards.length - 1 - pi;
-      const c = aiCards[i] as (typeof aiCards)[number] & { kind: "plan" };
-      aiCards = [...aiCards.slice(0, i), { ...c, commands: c.commands, status: "running" }, ...aiCards.slice(i + 1)];
+      const i = cards.length - 1 - pi;
+      const c = cards[i] as (typeof cards)[number] & { kind: "plan" };
+      updateCards(activeTab ?? "", (cs) => [...cs.slice(0, i), { ...c, status: "running" }, ...cs.slice(i + 1)]);
     }
     try {
       await api.aiControl(activeTab ?? "", "edit", commands);
@@ -573,11 +647,16 @@
       /* ignore */
     }
     aiLog = [];
-    aiCards = [];
-    aiSummary = null;
-    aiTaskText = "";
+    updateCards(activeTab ?? "", () => []);
+    try {
+      await api.aiConvClear(activeTab ?? "");
+    } catch {
+      /* ignore */
+    }
+    aiSummary = { ...aiSummary, [activeTab ?? ""]: null };
+    aiTaskText = { ...aiTaskText, [activeTab ?? ""]: "" };
     aiStreamOpen = false;
-    aiThinking = "";
+    aiThinking = { ...aiThinking, [activeTab ?? ""]: "" };
   }
 
   async function saveSettings(ai: AiConfig, ui: UiConfig) {
@@ -639,15 +718,15 @@
           {aiMode}
           aiBusy={aiBusy[activeTab ?? ""] ?? false}
           aiState={aiState[activeTab ?? ""] ?? "idle"}
-          {aiCards}
-          {aiTaskText}
-          {aiSummary}
-          {aiStreamOpen}
-          {aiFocusSeq}
-          {aiLog}
-          {logOpen}
-          {aiEcho}
-          {aiThinking}
+          cards={aiCards[activeTab ?? ""] ?? []}
+          taskText={aiTaskText[activeTab ?? ""] ?? ""}
+          summary={aiSummary[activeTab ?? ""] ?? null}
+          aiStreamOpen={aiStreamOpen}
+          aiFocusSeq={aiFocusSeq}
+          aiLog={aiLog}
+          logOpen={logOpen}
+          aiEcho={aiEcho}
+          thinking={aiThinking[activeTab ?? ""] ?? ""}
           termFontSize={uiConfig?.term_font_size ?? 14}
           termScrollback={uiConfig?.term_scrollback ?? 5000}
           onModeChange={handleModeChange}

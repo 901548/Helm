@@ -111,6 +111,8 @@ fn main() {
             core::fs_download,
             core::fs_read_file,
             core::toggle_fullscreen,
+            core::ai_conv_read,
+            core::ai_conv_clear,
             core::history_read,
             core::history_export,
             core::recording_info,

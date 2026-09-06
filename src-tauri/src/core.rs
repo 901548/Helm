@@ -69,6 +69,22 @@ struct AiSlot {
     ctl: Arc<Mutex<Option<UnboundedSender<AiControl>>>>,
     /// 本会话当前 AI 任务的 JoinHandle（供会话删除时 abort，避免僵尸任务持续占用槽/busy）
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// 本会话对话记录（P89：卡片流按会话隔离，后端持有权威副本）
+    conv: Arc<Mutex<Vec<ConvEntry>>>,
+}
+
+/// P89：会话对话记录条目（与前端卡片同构；serde tag 与 AiCard.kind 对齐）
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ConvEntry {
+    /// 任务文本（新任务开始时登记，前端映射到流头部）
+    Task { task: String },
+    /// QA 问答（done 后记录完整问答对）
+    Qa { q: String, a: String },
+    /// 计划卡（命令列表 + 是否需要确认）
+    Plan { commands: Vec<PlanCommand>, need_confirm: bool },
+    /// 单条命令执行步骤
+    Step { command: String, success: bool, message: String, output: String },
 }
 
 impl AiSlot {
@@ -84,6 +100,7 @@ impl AiSlot {
             mode_agent: AtomicBool::new(mode_agent),
             ctl: Arc::new(Mutex::new(None)),
             task: Mutex::new(None),
+            conv: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -146,7 +163,7 @@ pub enum ConnectionPayload {
 }
 
 /// AI 事件
-#[derive(Clone, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanCommand {
     pub command: String,
@@ -698,6 +715,28 @@ pub async fn recording_info(state: State<'_, CoreState>) -> Result<serde_json::V
     Ok(serde_json::json!({ "dir": dir }))
 }
 
+/// 读取会话对话记录（P89：切标签时前端拉取，后台会话的记录也在持续积累）
+#[tauri::command]
+pub async fn ai_conv_read(
+    state: State<'_, CoreState>,
+    name: String,
+) -> Result<Vec<ConvEntry>, String> {
+    let slot = state.ai_slot(&name).await;
+    let conv_clone = {
+        let guard = slot.conv.lock().await;
+        guard.clone()
+    };
+    Ok(conv_clone)
+}
+
+/// 清空会话对话记录（P89：dock 清空按钮联动）
+#[tauri::command]
+pub async fn ai_conv_clear(state: State<'_, CoreState>, name: String) -> Result<(), String> {
+    let slot = state.ai_slot(&name).await;
+    slot.conv.lock().await.clear();
+    Ok(())
+}
+
 /// ZMODEM 下载落盘（P73）：base64 载荷写 ~/Downloads/helm-zmodem/<名>，重名自动 -1 序号。
 /// 文件名剥路径分隔符防目录穿越；上限 256MiB 防内存膨胀。
 #[tauri::command]
@@ -810,12 +849,19 @@ pub async fn ai_submit(
     let ssh = state.ssh.clone();
     let recorder = state.recorder.clone();
     let term_ctx = term_context.filter(|s| !s.trim().is_empty());
+    let conv = slot.conv.clone();
+    // P89：新任务开始——清空上一任务的对话记录，登记本轮任务文本
+    {
+        let conv = slot.conv.clone();
+        conv.lock().await.clear();
+        conv.lock().await.push(ConvEntry::Task { task: input.clone() });
+    }
     let slot2 = slot.clone();
     let app2 = app.clone();
     let session = name.clone();
     let task = tokio::spawn(async move {
         let mut ctl_rx = ctl_rx;
-        run_ai_job(&session, &slot2.agent, &ssh, &app2, &mut ctl_rx, &input, mode, ctx, &recorder, term_ctx).await;
+        run_ai_job(&session, &slot2.agent, &ssh, &app2, &mut ctl_rx, &input, mode, ctx, &recorder, term_ctx, conv).await;
         slot2.busy.store(false, Ordering::SeqCst);
         let _ = app2.emit("ai", AiPayload::Busy { name: session, busy: false });
         // 此处刻意不清理 slot.ctl / slot.task：busy 复位后有 await 点位，新任务可能已写入

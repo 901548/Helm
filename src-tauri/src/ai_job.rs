@@ -146,7 +146,16 @@ pub(crate) async fn run_ai_job(
     ctx: Option<TaskCtx>,
     recorder: &crate::recorder::Recorder,
     term_ctx: Option<String>,
+    conv: std::sync::Arc<tokio::sync::Mutex<Vec<crate::core::ConvEntry>>>,
 ) {
+    // P89：对话记录回填助手
+    async fn conv_push(
+        conv: &tokio::sync::Mutex<Vec<crate::core::ConvEntry>>,
+        e: crate::core::ConvEntry,
+    ) {
+        conv.lock().await.push(e);
+    }
+
     match mode {
         AgentMode::QA => {
             let mut ag = agent.lock().await;
@@ -165,6 +174,11 @@ pub(crate) async fn run_ai_job(
                             "q": crate::agent::truncate_text(input, 2000),
                             "a": crate::agent::truncate_text(&reply, 4000),
                         }));
+                        conv_push(&conv, crate::core::ConvEntry::Qa {
+                            q: crate::agent::truncate_text(input, 2000),
+                            a: crate::agent::truncate_text(&reply, 4000),
+                        })
+                        .await;
                         let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: reply });
                     }
                     Err(e) => {
@@ -258,6 +272,11 @@ pub(crate) async fn run_ai_job(
                     .collect();
                 let any_danger = plan_cmds.iter().any(|c| c.level != DangerLevel::Safe);
                 emit_state(AiRunState::Planning);
+                conv_push(&conv, crate::core::ConvEntry::Plan {
+                    commands: plan_cmds.clone(),
+                    need_confirm: confirm_all || any_danger,
+                })
+                .await;
                 let _ = app.emit(
                     "ai",
                     AiPayload::Planning {
@@ -329,6 +348,13 @@ pub(crate) async fn run_ai_job(
                         "exit_code": code, "pwd": cwd,
                         "output": truncate_text(output.trim(), 2000),
                     }));
+                    conv_push(&conv, crate::core::ConvEntry::Step {
+                        command: command.to_string(),
+                        success: code == 0,
+                        message: if code == 0 { String::new() } else { format!("退出码 {}", code) },
+                        output: truncate_text(&output, 2000),
+                    })
+                    .await;
                     let _ = app.emit(
                         "ai",
                         AiPayload::CommandStep {
@@ -454,6 +480,14 @@ pub(crate) async fn run_ai_job(
                                 let mut ag = agent.lock().await;
                                 ag.fc_force_disable();
                             }
+                            // P89：FC 降级也登记对话记录
+                            conv_push(&conv, crate::core::ConvEntry::Step {
+                                command: "FC 降级".to_string(),
+                                success: true,
+                                message: "模型不支持工具调用，已自动切换文本协议".to_string(),
+                                output: String::new(),
+                            })
+                            .await;
                             let _ = app.emit(
                                 "ai",
                                 AiPayload::CommandStep {
@@ -616,6 +650,14 @@ pub(crate) async fn run_ai_job(
                                 continue;
                             }
                             invalid_steps += 1;
+                            // P89：无效步骤也登记对话记录（切标签回看时保留）
+                            conv_push(&conv, crate::core::ConvEntry::Step {
+                                command: next.clone(),
+                                success: false,
+                                message: "模型未给出可执行命令".to_string(),
+                                output: String::new(),
+                            })
+                            .await;
                             let _ = app.emit(
                                 "ai",
                                 AiPayload::CommandStep {
@@ -732,6 +774,11 @@ pub(crate) async fn run_ai_job(
                 let any_danger = plan_cmds.iter().any(|c| c.level != DangerLevel::Safe);
                 emit_state(AiRunState::Planning);
                 let need_confirm = confirm_all || any_danger;
+                conv_push(&conv, crate::core::ConvEntry::Plan {
+                    commands: plan_cmds.clone(),
+                    need_confirm,
+                })
+                .await;
                 let _ = app.emit("ai", AiPayload::Planning { name: session.to_string(), commands: plan_cmds, need_confirm });
 
                 // §8.7.3 计划级一次性确认：整份批准/编辑/放弃。
@@ -832,6 +879,14 @@ pub(crate) async fn run_ai_job(
                                     "type": "ai_step", "session": session,
                                     "command": command, "level": format!("{level:?}"), "skipped": true,
                                 }));
+                                // P89：跳过也登记对话记录（切标签回看时保留"已跳过"步骤）
+                                conv_push(&conv, crate::core::ConvEntry::Step {
+                                    command: command.clone(),
+                                    success: false,
+                                    message: "已跳过".to_string(),
+                                    output: String::new(),
+                                })
+                                .await;
                                 let _ = app.emit(
                                     "ai",
                                     AiPayload::CommandStep {
@@ -879,6 +934,13 @@ pub(crate) async fn run_ai_job(
                         "level": format!("{level:?}"), "exit_code": code, "pwd": cwd,
                         "output": truncate_text(output.trim(), 2000),
                     }));
+                    conv_push(&conv, crate::core::ConvEntry::Step {
+                        command: command.clone(),
+                        success: code == 0,
+                        message: if code == 0 { String::new() } else { format!("退出码 {}", code) },
+                        output: truncate_text(&output, 2000),
+                    })
+                    .await;
                     // 工作记忆账本：记录本条命令及结果要点；失败保留退出码，供模型只重规划失败子集
                     let note = truncate_text(&output.trim().replace('\n', " "), 80);
                     ledger.push((command.clone(), code == 0, note));

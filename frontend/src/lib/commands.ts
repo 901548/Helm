@@ -142,3 +142,10 @@ export const fsDownload = (name: string, path: string) =>
 export const fsReadFile = (name: string, path: string, limit: number) =>
   invoke<FsResult>("fs_read_file", { name, path, limit });
 
+
+// 读取操作历史（记录器 JSONL，新→旧；可按会话/类型过滤）
+export const historyRead = (limit?: number, session?: string, type?: string) =>
+  invoke<Record<string, unknown>[]>('history_read', { limit: limit ?? null, session: session ?? null, type: type ?? null });
+
+// 导出全部操作历史为单个 JSONL（返回落盘路径）
+export const historyExport = () => invoke<string>('history_export');

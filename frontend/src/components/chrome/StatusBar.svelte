@@ -5,9 +5,10 @@
     sessions: SessionInfo[];
     statuses: Record<string, SessionStatus>;
     onOpenSettings: () => void;
+    onOpenHistory: () => void;
   }
 
-  let { sessions, statuses, onOpenSettings } = $props<Props>();
+  let { sessions, statuses, onOpenSettings, onOpenHistory } = $props<Props>();
 
   const connected = $derived(
     sessions.filter((s) => statuses[s.name] === "Connected").length,
@@ -17,7 +18,11 @@
 <footer class="statusbar">
   <span class="item">会话 {connected}/{sessions.length}</span>
   <span class="spacer"></span>
-  <button class="menu" onclick={onOpenSettings}>
+  <button class="menu" onclick={onOpenHistory} title="操作历史（训练数据）">
+    <span style="font-size:13px">📜</span>
+    <span>历史</span>
+  </button>
+    <button class="menu" onclick={onOpenSettings}>
     <svg
       width="13"
       height="13"

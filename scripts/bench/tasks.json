@@ -1,0 +1,46 @@
+{
+  "description": "Helm Agent 评测任务集 v1——真实运维任务，完成态计分（P84）",
+  "scoring": "success = Done 消息不含中止关键词；metrics = 步数/时长/命令数",
+  "tasks": [
+    {
+      "id": "T1-disk-usage",
+      "category": "info",
+      "task": "查看这台服务器整体磁盘使用情况，告诉我哪个挂载点占用最高"
+    },
+    {
+      "id": "T2-mem-top",
+      "category": "info",
+      "task": "查看当前内存使用情况和占用内存最高的前 3 个进程"
+    },
+    {
+      "id": "T3-log-errors",
+      "category": "logs",
+      "task": "检查 /var/log/messages 里最近有没有内核报错或异常日志，总结一下"
+    },
+    {
+      "id": "T4-service-check",
+      "category": "service",
+      "task": "检查 sshd 服务是否在运行，并列出它正在监听的端口"
+    },
+    {
+      "id": "T5-file-create",
+      "category": "file-ops",
+      "task": "在 /tmp 下创建目录 helm-bench，并在里面写入一个包含当前系统时间的文件 now.txt"
+    },
+    {
+      "id": "T6-login-users",
+      "category": "info",
+      "task": "列出这台服务器上可以登录 shell 的用户账户"
+    },
+    {
+      "id": "T7-listen-ports",
+      "category": "net",
+      "task": "列出当前服务器处于监听状态的 TCP 端口及对应进程"
+    },
+    {
+      "id": "T8-cleanup",
+      "category": "cleanup",
+      "task": "删除 /tmp/helm-bench 目录并确认已经删除干净"
+    }
+  ]
+}

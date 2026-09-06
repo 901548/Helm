@@ -1,0 +1,71 @@
+{
+  "session": "centos-132",
+  "model": "ollama/glm4:latest",
+  "fc": true,
+  "results": [
+    {
+      "id": "T1-disk-usage",
+      "category": "info",
+      "status": "success",
+      "durationSec": 12,
+      "summary": "✓ 任务完成",
+      "steps": 5
+    },
+    {
+      "id": "T2-mem-top",
+      "category": "info",
+      "status": "success",
+      "durationSec": 66,
+      "summary": "✓ 任务完成",
+      "steps": 4
+    },
+    {
+      "id": "T3-log-errors",
+      "category": "logs",
+      "status": "fail",
+      "durationSec": 123,
+      "summary": "✓ 已达到最大执行步数（50），任务中止",
+      "steps": 56
+    },
+    {
+      "id": "T4-service-check",
+      "category": "service",
+      "status": "success",
+      "durationSec": 153,
+      "summary": "✓ 任务完成",
+      "steps": 26
+    },
+    {
+      "id": "T5-file-create",
+      "category": "file-ops",
+      "status": "success",
+      "durationSec": 3,
+      "summary": "✓ 任务完成",
+      "steps": 2
+    },
+    {
+      "id": "T6-login-users",
+      "category": "info",
+      "status": "success",
+      "durationSec": 3,
+      "summary": "✓ 任务完成",
+      "steps": 2
+    },
+    {
+      "id": "T7-listen-ports",
+      "category": "net",
+      "status": "fail",
+      "durationSec": 463,
+      "summary": "✓ 已达到最大执行步数（50），任务中止",
+      "steps": 71
+    },
+    {
+      "id": "T8-cleanup",
+      "category": "cleanup",
+      "status": "fail",
+      "durationSec": 123,
+      "summary": "✓ 等待确认超时,本次计划已中止",
+      "steps": 0
+    }
+  ]
+}

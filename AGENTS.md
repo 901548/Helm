@@ -520,6 +520,12 @@ F:\Helm\
   4. **真机验证(192.168.79.150+Ollama glm4:latest)**:FC 尝试→`has_tool_calls=false`(glm4 模板不支持 tools,curl 直证其返回纯文本教程)→Invalid→**粘性降级生效(后续步骤 fc_active=false)**→文本协议接管执行 5 步(glm4 把工具名当前缀写进命令属模型局限,护栏兜住)。glm4+Ollama 组合实际永远走降级路径;FC 真增益需 FC-capable 模型(gpt/deepseek/glm 云 API)。
   5. **坑**:a) **call_api_plain 返回的是已提取的 content 字符串,FC 需要完整 JSON 读 tool_calls**——第一版把 content 当 JSON 解析必炸(双重提取 bug),拆 `plain_full` 变体解决;b) **多会话并行开发同一仓库时,未提交改动会被覆盖**——本轮 FC 代码曾被并行会话的 P76-P82 提交清掉一次重做,改动要尽早 commit;c) Ollama 的 tools 支持取决于模型模板,glm4:latest 接受参数但不产生 tool_calls(HTTP 200 非拒绝)——仅靠 4xx 检测不够,Invalid 降级才是完备兜底。
 
+- [x] **P84 Agent 评测基准 + 数据生成闭环(用户定向,已完成,真机 centos-132 全程跑通:5/8 成功)**:
+  1. **组成**:`scripts/bench/tasks.json`(8 个真实运维任务:磁盘/内存/日志/服务/文件创建/用户/端口/清理)+ `scripts/bench/run.mjs`(CDP 驱动跑分器:逐任务提交→轮询完成→采集状态/时长/步数→JSON 报告)。步数从 P70 记录器 JSONL 按 ai_task 分窗统计。
+  2. **真机首跑 baseline(Ollama glm4:latest,FC 开启含降级,新 VM centos-132)**:**成功 5/8(62.5%)**——T1 磁盘 5步12s✓/T2 内存 4步66s✓/T4 服务 26步153s✓/T5 建文件 2步3s✓/T6 用户 2步3s✓;失败:T3 日志分析 56步烧满/T7 端口监听 71步烧满(诊断类任务反复重试是 glm4 弱点)/T8 删除 0步**确认等待超时(安全链正确行为**——rm 类任务弹计划卡等确认,无人值守跑分器未批准,120s 超时中止)。
+  3. **意义**:训练小模型的 **baseline 已建立**——此后每次 agent 改进/模型训练都用同一任务集重跑对比成功率与步数。跑分器 v2 待做:危险任务自动批准(PendingCommand/Planning 事件监听+ai_control approve)、语义级结果校验。
+  4. **坑**:无人值守评测中,涉及删除/危险操作的任务会卡确认——任务集设计要么自清理免危险标记,要么跑分器带自动批准;新增 VM(VMware CentOS 7,192.168.132.129 root/1)已入库为会话 centos-132,SSH 通达性由 Windows 宿主直达(vmnet)。
+
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)
 - 全栈开发:`cargo tauri dev`

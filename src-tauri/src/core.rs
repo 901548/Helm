@@ -670,6 +670,8 @@ pub async fn ai_submit(
     pwd: Option<String>,
     // §8.7.4：可选容器名（Docker 会话运行时动态选择；None 回落到会话持久化的容器）
     container: Option<String>,
+    // P86：终端屏幕最近输出（上下文感知；None 表示未提供）
+    term_context: Option<String>,
 ) -> Result<(), String> {
     // 取/建该会话的运行槽(懒建),不同会话各自独立 → 支持多会话并行
     let slot = state.ai_slot(&name).await;
@@ -718,12 +720,13 @@ pub async fn ai_submit(
 
     let ssh = state.ssh.clone();
     let recorder = state.recorder.clone();
+    let term_ctx = term_context.filter(|s| !s.trim().is_empty());
     let slot2 = slot.clone();
     let app2 = app.clone();
     let session = name.clone();
     let task = tokio::spawn(async move {
         let mut ctl_rx = ctl_rx;
-        run_ai_job(&session, &slot2.agent, &ssh, &app2, &mut ctl_rx, &input, mode, ctx, &recorder).await;
+        run_ai_job(&session, &slot2.agent, &ssh, &app2, &mut ctl_rx, &input, mode, ctx, &recorder, term_ctx).await;
         slot2.busy.store(false, Ordering::SeqCst);
         let _ = app2.emit("ai", AiPayload::Busy { name: session, busy: false });
         // 此处刻意不清理 slot.ctl / slot.task：busy 复位后有 await 点位，新任务可能已写入

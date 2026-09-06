@@ -532,6 +532,12 @@ F:\Helm\
   3. **真机**:技能任务 **0.5s 完成**(LLM 路径同任务 12s,快 24 倍),金标 3 步入库(font-jbmono 同期);重跑 P84 基准 6/8 任务走技能路径 3s/个。
   4. **坑**:a) `len()` 是字节数,中文关键词长度评分必须 `chars().count()`;b) match 词表顺序敏感的平分场景用长度加权天然消解;c) 跑分器直连 invoke 绕过 UI 提交流,summary 元素不随任务刷新——状态判定需改读事件流而非 DOM(下一迭代)。
 
+- [x] **P86 终端上下文感知(用户确认方案一,已完成,真机端到端验证)**:
+  1. **动机**:AI 每次交互都是盲人——只知 PWD 不知屏幕内容,"这是什么错误"类问题必须人工复述上下文。注入终端屏幕最近输出后,问屏幕/接着刚才/分析报错类对话即刻可用。
+  2. **实现**:前端 TerminalTabs `extractTermContext()`(xterm buffer 最后 42 行 translateToString 纯文本,剔尾部空行,截 4000 字)→ dock 提交包装器自动携带 → `ai_submit` 加 `term_context` 参数 → QA 每轮 prompt 注入「[终端最近输出]」块;Agent 模式仅**首轮**注入(后续步骤工具结果比陈旧屏幕更新鲜)。
+  3. **真机验证**:终端敲 `echo HELMCTX-MAGIC-73912` → dock 问"那个编号是什么"(零额外提示)→ glm4 回答含该编号——**串只可能来自新上下文通道**(命令仅经 send_active_input 键入,AI 无其他来源)。转写小瑕疵属 8B 模型复读局限。
+  4. **坑**:a) 测试脚本直连 invoke ai_submit 传 null 会绕过前端提取链——验证必须走 UI dock 提交路径;b) node 内联改含反引号模板串的脚本再次炸裂(P43 教训第 N 次应验),一律用文件脚本或 Edit 工具;c) xterm buffer `translateToString(true)` 已是纯文本无 ANSI,天然免脱序处理。
+
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)
 - 全栈开发:`cargo tauri dev`

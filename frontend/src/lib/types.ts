@@ -33,6 +33,7 @@ export interface AiConfig {
   command_timeout_secs: number | null;
   system_prompt_agent: string | null;
   agent_fc: boolean;
+  ai_echo_terminal: boolean;
   mode: string;
   extra_headers: Record<string, string>;
   extra_body: unknown;

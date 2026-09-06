@@ -218,12 +218,30 @@
             <div class="thinking-text">{thinking}<span class="cursor">▋</span></div>
           </div>
         {/if}
-        {#each cards as c (c.id)}
+        {#each cards as c, ci (c.id)}
+          {@const planDone = c.kind === "plan" && cards.slice(ci + 1).some((x) => x.kind === "step")}
           {#if c.kind === "qa"}
             <div class="card qa" class:done={c.done}>
               <div class="qa-text">{c.text}{#if !c.done}<span class="cursor">▋</span>{/if}</div>
             </div>
           {:else if c.kind === "plan"}
+            {#if planDone}
+              <!-- P88-B：步骤卡已出现，计划卡折叠为单行摘要（点击展开命令列表） -->
+              <div class="card plan compact" role="button" tabindex="0" onclick={() => toggleOut(c.id)} onkeydown={(e) => { if (e.key === "Enter") toggleOut(c.id); }}>
+                <span class="st" aria-hidden="true">✓</span>
+                <span class="plan-title">计划（{c.commands.length} 条命令）· 已执行</span>
+                {#if expanded.has(c.id)}
+                  <div class="plan-cmds">
+                    {#each c.commands as pc (pc.command)}
+                      <div class="plan-cmd">
+                        <span class="plan-cmd-level" class:critical={pc.level !== "Safe"}>{(levelText as Record<string, string>)[pc.level] ?? pc.level}</span>
+                        <code class="cmd">$ {pc.command}</code>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {:else}
             <div class="card plan {c.status}">
               <div class="card-head plan-head">
                 <span class="st" aria-hidden="true">{statusIcon(c.status)}</span>
@@ -260,6 +278,7 @@
                 </div>
               {/if}
             </div>
+            {/if}
           {:else}
             <div class="card step {c.status}">
               <div class="card-head">
@@ -500,7 +519,26 @@
   .qa-text {
     white-space: pre-wrap;
     word-break: break-word;
-    line-height: 1.5;
+    line-height: 1.55;
+    font-size: 0.82rem;
+  }
+  /* P88-A：QA 卡片左侧 accent 竖条 + 更通透的底色（区分于步骤卡） */
+  .card.qa {
+    border-left: 2px solid var(--accent);
+    background: var(--bubble-bg);
+    padding: 0.45rem 0.6rem;
+  }
+  /* P88-B：计划卡折叠态（步骤卡已出现）——单行紧凑 */
+  .card.plan.compact {
+    padding: 0.25rem 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    cursor: pointer;
+    opacity: 0.85;
+  }
+  .card.plan.compact .plan-cmds {
+    margin-top: 0.3rem;
   }
   .thinking-live {
     border-color: var(--warning);

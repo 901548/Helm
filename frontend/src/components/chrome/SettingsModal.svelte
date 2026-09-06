@@ -48,6 +48,8 @@
   let agentConfirm = $state(aiConfig?.agent_confirm ?? false);
   // P83：结构化工具调用（function calling）开关
   let agentFc = $state(aiConfig?.agent_fc ?? false);
+  // P88：终端回显 AI 执行过程开关（关 = 终端干净，过程看卡片）
+  let aiEchoTerminal = $state(aiConfig?.ai_echo_terminal ?? false);
   let initMode = $state(aiConfig?.mode ?? "qa");
 
   // UI 表单（窗口几何由拖拽 + 退出自动落盘管理，弹窗不再提供宽高输入）
@@ -164,6 +166,7 @@
         : null,
       system_prompt_agent: systemPromptAgent.trim() || null,
       agent_fc: agentFc,
+      ai_echo_terminal: aiEchoTerminal,
       agent_confirm: agentConfirm,
       mode: initMode,
       extra_headers: aiConfig?.extra_headers ?? {},
@@ -297,6 +300,7 @@
           <label class="check"><input type="checkbox" bind:checked={stream} /> 流式输出</label>
           <label class="check" title="开启后所有命令都要确认；关闭时仅危险命令需要确认"><input type="checkbox" bind:checked={agentConfirm} /> 全部命令确认</label>
           <label class="check" title="Agent 用结构化工具调用（function calling）替代文本命令解析；需模型支持 FC，不支持时自动降级为文本协议"><input type="checkbox" bind:checked={agentFc} /> 工具调用（FC）</label>
+          <label class="check" title="开启后 AI 执行的命令会回显到终端；关闭时终端只留 shell 输出，执行过程看 AI 卡片"><input type="checkbox" bind:checked={aiEchoTerminal} /> 终端回显 AI 过程</label>
         </div>
 
         <label>自定义提示词

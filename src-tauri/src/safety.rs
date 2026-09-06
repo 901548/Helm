@@ -172,15 +172,94 @@ fn has_root_target(tokens: &[String]) -> bool {
 /// 判定"命令名令牌"时跳过这些前缀，避免把包装器误当命令。
 const COMMAND_WRAPPERS: [&str; 8] = ["sudo", "env", "command", "time", "nohup", "nice", "setsid", "stdbuf"];
 
-/// 取段内真正的命令名（跳过前置包装器与前导选项令牌）。返回空串表示拿不到。
-/// 仅用于 shutdown/reboot/pkill 等"以完整命令出现才告警"的规则，
+/// 取令牌的 basename（最后一个 `/` 之后的部分）：`/bin/rm` → `rm`。
+/// 危险命令用绝对路径（`/bin/rm -rf /`、`/sbin/shutdown`）时，精确词元比较会漏检，
+/// 归一化到裸命令名后统一判级。
+fn basename(t: &str) -> &str {
+    t.rsplit('/').next().unwrap_or(t)
+}
+
+/// 取段内真正的命令名（跳过前置包装器与前导选项令牌，并归一化 basename）。
+/// 返回空串表示拿不到。仅用于 shutdown/reboot/pkill 等"以完整命令出现才告警"的规则，
 /// 避免 `echo shutdown` 之类的文本被误判（旧版子串正则存在此误报）。
 fn first_command(tokens: &[String]) -> &str {
     tokens
         .iter()
         .find(|t| !t.starts_with('-') && !COMMAND_WRAPPERS.contains(&t.as_str()))
-        .map(|s| s.as_str())
+        .map(|s| basename(s.as_str()))
         .unwrap_or("")
+}
+
+/// 判断命令名（basename）是否为"执行器"：`sh -c`/`eval`/`python -c`/`perl -e` 等
+/// 会把后续参数字符串**真正执行**（不同于 `echo 'rm -rf /'` 只打印文本）。
+/// 这类包装器若不递归判级，危险命令会借壳绕过安全护栏。
+fn is_executor(name: &str) -> bool {
+    is_shell_executor(name) || is_script_executor(name)
+}
+
+/// shell 执行器：其 `-c`/eval 参数是 shell 代码，可递归进既有 shell 判级
+fn is_shell_executor(name: &str) -> bool {
+    matches!(
+        basename(name),
+        "sh" | "bash" | "dash" | "zsh" | "ksh" | "fish" | "csh" | "tcsh" | "eval"
+    )
+}
+
+/// 脚本语言执行器：其 `-c`/`-e` 参数是 python/perl/... 代码，非 shell，
+/// 无法完整静态解析，改用破坏性关键字保守扫描
+fn is_script_executor(name: &str) -> bool {
+    matches!(
+        basename(name),
+        "python" | "python2" | "python3" | "perl" | "ruby" | "node" | "php"
+    )
+}
+
+/// 定位执行器命令名（跳过 sudo/env 等前置包装器），返回 (token 下标, basename)。无执行器返回 None。
+fn executor_pos(tokens: &[String]) -> Option<(usize, &str)> {
+    let idx = tokens
+        .iter()
+        .position(|t| !t.starts_with('-') && !COMMAND_WRAPPERS.contains(&t.as_str()) && is_executor(t))?;
+    Some((idx, basename(&tokens[idx])))
+}
+
+/// 提取执行器真正要执行的代码串；不是执行器包装时返回 None。
+/// - `sh -c 'CODE'` / `python -c 'CODE'`：返回 CODE（独立或粘连 `-cCODE` 形式均可）
+/// - `eval CODE...`：eval 无 `-c` 标记，返回其后全部参数按空格连接
+fn executor_code(tokens: &[String]) -> Option<String> {
+    let (idx, name) = executor_pos(tokens)?;
+    if name == "eval" {
+        let rest: Vec<&str> = tokens[idx + 1..].iter().map(|s| s.as_str()).collect();
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(rest.join(" "));
+    }
+    for i in idx + 1..tokens.len() {
+        let t = tokens[i].as_str();
+        if matches!(t, "-c" | "-e" | "-E" | "-r") {
+            return tokens.get(i + 1).filter(|s| !s.is_empty()).cloned();
+        }
+        if (t.starts_with("-c") || t.starts_with("-e") || t.starts_with("-E") || t.starts_with("-r")) && t.len() > 2 {
+            return Some(t[2..].to_string());
+        }
+    }
+    None
+}
+
+/// 脚本语言代码串的破坏性关键字保守扫描（大小写不敏感）。
+/// 只扫「明确毁灭性」标记，避免把 `print("shutdown")` 这类文本误判；
+/// 定位的是 `os.system("rm -rf /")` / `subprocess` 等 shell-out 破坏面。
+fn contains_destructive_marker(code: &str) -> bool {
+    let lower = code.to_lowercase();
+    for m in [
+        "rm -rf", "rm -fr", "rm -r -f", "rm --recursive --force",
+        "shutdown", "reboot", "mkfs", "of=/dev/",
+    ] {
+        if lower.contains(m) {
+            return true;
+        }
+    }
+    false
 }
 
 /// 单个命令段的危险等级
@@ -197,15 +276,15 @@ fn check_segment(seg: &str) -> (DangerLevel, &'static str) {
 
 /// token 级危险判定(供段分析与 xargs 管道合并分析复用)
 fn check_tokens(tokens: &[String]) -> (DangerLevel, &'static str) {
-    // Critical：rm -rf 指向根路径
-    if tokens.iter().any(|t| t == "rm") && rm_flags(&tokens).is_some() {
+    // Critical：rm -rf 指向根路径（命令名按 basename 归一化，覆盖 /bin/rm 等绝对路径）
+    if tokens.iter().any(|t| basename(t) == "rm") && rm_flags(&tokens).is_some() {
         if has_root_target(&tokens) {
             return (DangerLevel::Critical, "删除根目录 (rm -rf /)");
         }
         return (DangerLevel::Warning, "递归删除文件 (rm -rf)");
     }
     // Critical：chmod 777 根路径 / shutdown / reboot / mkfs / dd 写磁盘
-    if tokens.iter().any(|t| t == "chmod") {
+    if tokens.iter().any(|t| basename(t) == "chmod") {
         let has777 = tokens.iter().any(|t| t.contains("777"));
         if has777 && has_root_target(&tokens) {
             return (DangerLevel::Critical, "根目录设置为 777 权限");
@@ -224,10 +303,10 @@ fn check_tokens(tokens: &[String]) -> (DangerLevel, &'static str) {
         "parted" => return (DangerLevel::Warning, "磁盘分区操作 (parted)"),
         _ => {}
     }
-    if tokens.iter().any(|t| t.starts_with("mkfs")) {
+    if tokens.iter().any(|t| basename(t).starts_with("mkfs")) {
         return (DangerLevel::Critical, "格式化磁盘 (mkfs)");
     }
-    if tokens.iter().any(|t| t == "dd")
+    if tokens.iter().any(|t| basename(t) == "dd")
         && tokens.iter().any(|t| {
             t.starts_with("of=/dev/sd")
                 || t.starts_with("of=/dev/nvme")
@@ -255,6 +334,15 @@ fn token_is_root_wipe(t: &str) -> bool {
 
 /// 检查命令的危险等级，返回 (等级, 中文原因说明)
 pub fn check_danger(cmd: &str) -> (DangerLevel, String) {
+    check_danger_inner(cmd, 0)
+}
+
+/// 递归判级：执行器包装（sh -c/eval/python -c 等）里的代码串要借壳递归，
+/// 深度上限 8 防 `eval eval ...` 自嵌套（每层至少剥掉一层执行器，输入必然缩短）。
+fn check_danger_inner(cmd: &str, depth: u8) -> (DangerLevel, String) {
+    if depth > 8 {
+        return (DangerLevel::Safe, "命令安全".to_string());
+    }
     let segs = split_commands(cmd);
     // 二次执行防护 1:命令替换——危险命令的 $(...) 内出现根目标即升级
     // (`rm -rf $(echo /)` 分词后看不到完整目标,替换体按保守原则判)
@@ -263,8 +351,8 @@ pub fn check_danger(cmd: &str) -> (DangerLevel, String) {
             continue;
         }
         let tokens = tokenize_segment(seg);
-        let dangerous = (tokens.iter().any(|t| t == "rm") && rm_flags(&tokens).is_some())
-            || tokens.iter().any(|t| t.starts_with("mkfs"));
+        let dangerous = (tokens.iter().any(|t| basename(t) == "rm") && rm_flags(&tokens).is_some())
+            || tokens.iter().any(|t| basename(t).starts_with("mkfs"));
         if dangerous && tokens.iter().any(|t| token_is_root_wipe(t)) {
             return (DangerLevel::Critical, "命令替换中出现根目标 (rm -rf $(... /))".to_string());
         }
@@ -277,13 +365,31 @@ pub fn check_danger(cmd: &str) -> (DangerLevel, String) {
         let has_xargs = tokens.iter().any(|t| t == "xargs");
         let has_danger = XARGS_DANGER_CMDS
             .iter()
-            .any(|c| tokens.iter().any(|t| t.starts_with(c)));
+            .any(|c| tokens.iter().any(|t| basename(t).starts_with(c)));
         if has_xargs && has_danger {
             let merged = tokenize_segment(&cmd.replace(['|', ';', '\n'], " "));
             let (level, reason) = check_tokens(&merged);
             if level == DangerLevel::Critical {
                 return (level, reason.to_string());
             }
+        }
+    }
+    // 二次执行防护 3:执行器包装——`sh -c 'rm -rf /'`/`eval 'rm -rf /'`/
+    // `python -c 'import os;os.system("rm -rf /")'` 的参数字符串会被真正执行。
+    // shell 执行器(sh/bash/eval)递归判级代码串;脚本语言执行器(python/perl/...)做破坏性关键字扫描(P90)。
+    for seg in &segs {
+        let tokens = tokenize_segment(seg);
+        let Some(code) = executor_code(&tokens) else { continue };
+        let is_script = executor_pos(&tokens)
+            .map(|(_, n)| is_script_executor(n))
+            .unwrap_or(false);
+        let crit = if is_script {
+            contains_destructive_marker(&code)
+        } else {
+            check_danger_inner(&code, depth + 1).0 == DangerLevel::Critical
+        };
+        if crit {
+            return (DangerLevel::Critical, "执行器包装的命令含危险操作".to_string());
         }
     }
     for seg in &segs {
@@ -296,6 +402,18 @@ pub fn check_danger(cmd: &str) -> (DangerLevel, String) {
         let (level, reason) = check_segment(seg);
         if level == DangerLevel::Warning {
             return (DangerLevel::Warning, reason.to_string());
+        }
+    }
+    // 执行器包装内的 Warning(如 `sh -c 'rm -rf /tmp'`)也要提级,不能只透出 Safe
+    for seg in &segs {
+        let tokens = tokenize_segment(seg);
+        let Some(code) = executor_code(&tokens) else { continue };
+        let is_script = executor_pos(&tokens)
+            .map(|(_, n)| is_script_executor(n))
+            .unwrap_or(false);
+        // 脚本语言执行器只做 Critical 关键字扫描,不做 Warning 提级(避免 `print("rm -rf")` 误报)
+        if !is_script && check_danger_inner(&code, depth + 1).0 == DangerLevel::Warning {
+            return (DangerLevel::Warning, "执行器包装的命令含风险操作".to_string());
         }
     }
     (DangerLevel::Safe, "命令安全".to_string())
@@ -417,5 +535,54 @@ mod tests {
     fn split_respects_quotes() {
         let segs = split_commands("echo 'a;b' && ls");
         assert_eq!(segs, vec!["echo 'a;b'".to_string(), "ls".to_string()]);
+    }
+
+    // ---- P90：执行器包装 + 绝对路径 回归（安全护栏绕过修复） ----
+
+    #[test]
+    fn absolute_path_dangerous_commands() {
+        // 危险命令用绝对路径，旧精确词元比较会漏检
+        is(DangerLevel::Critical, "/bin/rm -rf /");
+        is(DangerLevel::Critical, "/usr/bin/rm -rf /");
+        is(DangerLevel::Critical, "/sbin/shutdown -h now");
+        is(DangerLevel::Critical, "/sbin/reboot");
+        is(DangerLevel::Critical, "/usr/sbin/mkfs.ext4 /dev/sdb1");
+        is(DangerLevel::Warning, "/bin/rm -rf /tmp/a");
+        is(DangerLevel::Warning, "/bin/rm -rf ./backup");
+        // 不带危险旗标的绝对路径 rm 仍是普通命令（rm_flags 需 -r/-f 同时命中）
+        is(DangerLevel::Safe, "ls /bin/rm");
+    }
+
+    #[test]
+    fn executor_wrapper_dangerous_commands() {
+        // sh/bash -c 真正执行参数字符串（区别于 echo 只打印）
+        is(DangerLevel::Critical, "sh -c 'rm -rf /'");
+        is(DangerLevel::Critical, "bash -c 'rm -rf /'");
+        is(DangerLevel::Critical, "sh -c \"rm -rf /\"");
+        is(DangerLevel::Critical, "sh -c 'shutdown -h now'");
+        is(DangerLevel::Critical, "sudo sh -c 'rm -rf /'");
+        // eval 直接执行其后参数
+        is(DangerLevel::Critical, "eval 'rm -rf /'");
+        is(DangerLevel::Critical, "eval rm -rf /");
+        // 脚本语言执行器
+        is(DangerLevel::Critical, "python3 -c 'import os; os.system(\"rm -rf /\")'");
+        is(DangerLevel::Critical, "perl -e 'system(\"rm -rf /\")'");
+        is(DangerLevel::Critical, "python -c 'import os; os.system(\"rm -rf /\")'");
+        // 执行器内的非根删除 → Warning（不是 Safe，也不能当 Critical）
+        is(DangerLevel::Warning, "sh -c 'rm -rf /tmp'");
+        is(DangerLevel::Warning, "bash -c 'rm -rf /tmp/a'");
+        // 嵌套执行器借壳
+        is(DangerLevel::Critical, "sh -c \"bash -c 'rm -rf /'\"");
+        // 非执行器仍不误报（echo 只打印）
+        is(DangerLevel::Safe, "echo 'rm -rf /'");
+        is(DangerLevel::Safe, "echo sh -c rm");
+    }
+
+    #[test]
+    fn executor_wrapper_non_dangerous_ok() {
+        // 执行器但代码串无害 → Safe
+        is(DangerLevel::Safe, "sh -c 'echo hello'");
+        is(DangerLevel::Safe, "python3 -c 'print(1+1)'");
+        is(DangerLevel::Safe, "bash -c 'ls -la'");
     }
 }

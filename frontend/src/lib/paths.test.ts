@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fmtSize, joinPath, parentPathWindows, resolvePath, shq } from "./paths";
+import { fmtSize, isValidEntryName, joinPath, parentPathWindows, resolvePath, shq } from "./paths";
 
 describe("joinPath", () => {
   it("linux 拼接", () => {
@@ -59,6 +59,28 @@ describe("shq", () => {
   });
   it("含单引号转义为 '\\''", () => {
     expect(shq("/a'b")).toBe("'/a'\\''b'");
+  });
+});
+
+describe("isValidEntryName", () => {
+  it("普通单一文件名合法", () => {
+    expect(isValidEntryName("a.txt")).toBe(true);
+    expect(isValidEntryName("新建目录")).toBe(true);
+    expect(isValidEntryName("a b")).toBe(true);
+    expect(isValidEntryName("  x  ")).toBe(true);
+  });
+  it("空/点拒绝", () => {
+    expect(isValidEntryName("")).toBe(false);
+    expect(isValidEntryName("   ")).toBe(false);
+    expect(isValidEntryName(".")).toBe(false);
+    expect(isValidEntryName("..")).toBe(false);
+  });
+  it("含路径分隔符或 .. 拒绝(穿越/覆盖面)", () => {
+    expect(isValidEntryName("../x")).toBe(false);
+    expect(isValidEntryName("a/../b")).toBe(false);
+    expect(isValidEntryName("a/b")).toBe(false);
+    expect(isValidEntryName("a\\b")).toBe(false);
+    expect(isValidEntryName("..\\..\\windows")).toBe(false);
   });
 });
 

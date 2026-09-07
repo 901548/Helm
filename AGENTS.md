@@ -568,6 +568,12 @@ F:\Helm\
   3. **core.rs `open_external` 注入修复**:抽 `validate_external_url`——trim + 仅 http/https + 拒绝内嵌 `"`/`\n`/`\r`,返回**加引号** URL 再拼 `cmd /c start "" "<url>"`;`&` 不再被 cmd 当命令分隔符。+单测(正常/含 & 查询串/非 http(s)/内嵌引号换行)。
   4. **单测**:safety 新增 `absolute_path_dangerous_commands`/`executor_wrapper_dangerous_commands`/`executor_wrapper_non_dangerous_ok`;core 新增 `validate_external_url_quotes_and_blocks_injection`。共 114 项全过。
   5. **坑**:a) `check_tokens` 的「任一 token basename==rm」沿用自旧「任一 token==rm」——`echo rm -rf /`(未加引号)仍是 Critical 误报(旧版即如此,非本次引入,属已知过度保守,未在本次范围);b) 脚本语言执行器无法静态解析 python/perl 代码,只能关键字扫描,`os.remove("/etc/passwd")` 之类不含破坏性关键字的仍漏——属已知残余,已注释说明。
+- [x] **P91 文件安全 + 数据正确性批(4 项,已完成,`cargo test` 116 项+`cargo build` 零警告+`npm run build`/Vitest 29 项通过)**:
+  1. **rename/mkdir 单一分量校验(前端)**:`paths.ts` 加 `isValidEntryName`(非空、非 `.`/`..`、不含 `/`/`\`),FileBrowser `submitName` 校验通过才拼路径——修掉 `../x` 逃逸目录、`a/b` 任意路径移动 + POSIX rename 覆盖已存在文件的隐患。+Vitest 3 组。
+  2. **fs.rs 后端拒绝 `..` 穿越(纵深防御)**:新增 `reject_parent_traversal`(按 `/` 与 `\` 切分,任一分量 `..` 即拒),`remove`/`rename`(新旧两路径)/`mkdir` 三处接入——配合 `assert_removable` 的深度模型,拦 `/home/user/..`、`/home/link/..`(软链→根)这类字符串级逃逸。+单测。
+  3. **预览下载用错上下文修复**:FileBrowser 预览弹窗「下载」原用 `lastFile + 当前 activeTab/cwd`(切标签会下错机器/目录),抽 `downloadToBrowser(session,path,filename)`,预览下载改用 `preview.session/preview.path/preview.name`(与保存一致)。
+  4. **AI 回显后台会话丢失修复**:TerminalTabs 的 `aiEcho` 消费循环原「先 `lastEchoSeq = e.seq` 再 `if e.name !== activeTab continue`」——后台会话的 AI 命令/输出镜像被标记已消费却从未写终端,切回也不补写;改为按 `e.name` 写各自终端,seq 在写入后才推进。
+  5. **坑**:`reject_parent_traversal` 用 `split(['/', '\\'])` 一次切两种分隔符,Windows 盘符绝对路径 `C:\Users\a.txt` 切出 `C:`/`Users`/`a.txt` 均非 `..` 故放行,正确。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

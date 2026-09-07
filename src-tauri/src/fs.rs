@@ -211,12 +211,28 @@ async fn create_dir_all(sftp: &SftpSession, path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 拒绝路径中含 `..` 分量（同时按 `/` 与 `\` 切分）——SFTP 服务端会解析 `..`，
+/// 前端只发「cwd + 条目名」拼接的规范路径（条目名/单分量输入均不含 `..`），
+/// 故后端可安全拒绝，防 rename/mkdir 目标经 `..` 逃逸出面板目录、防 remove 经
+/// `..` 递归删到父目录甚至根（P91 纵深防御，配合 assert_removable 的深度模型）。
+fn reject_parent_traversal(path: &str) -> Result<(), String> {
+    for comp in path.split(['/', '\\']) {
+        if comp == ".." {
+            return Err("不允许包含 .. 的路径".to_string());
+        }
+    }
+    Ok(())
+}
+
 /// 新建目录（父目录缺失时递归创建）
 pub async fn mkdir(
     ssh: &Arc<SshManager>,
     name: &str,
     path: &str,
 ) -> Result<FsResult, String> {
+    if let Err(e) = reject_parent_traversal(path) {
+        return Ok(FsResult::err(format!("路径校验失败: {}", e)));
+    }
     let sftp = sftp_session(ssh, name).await?;
     match create_dir_all(&sftp, path).await {
         Ok(_) => Ok(FsResult::ok()),
@@ -231,6 +247,9 @@ pub async fn rename(
     old_path: &str,
     new_path: &str,
 ) -> Result<FsResult, String> {
+    if let Err(e) = reject_parent_traversal(old_path).or_else(|_| reject_parent_traversal(new_path)) {
+        return Ok(FsResult::err(format!("路径校验失败: {}", e)));
+    }
     let sftp = sftp_session(ssh, name).await?;
     match sftp.rename(old_path, new_path).await {
         Ok(_) => Ok(FsResult::ok()),
@@ -245,6 +264,9 @@ pub async fn remove(
     path: &str,
 ) -> Result<FsResult, String> {
     if let Err(e) = assert_removable(path) {
+        return Ok(FsResult::err(format!("危险操作已拦截: {}", e)));
+    }
+    if let Err(e) = reject_parent_traversal(path) {
         return Ok(FsResult::err(format!("危险操作已拦截: {}", e)));
     }
     // 与旧 rm -rf -- 语义一致的危险命令拦截
@@ -476,6 +498,18 @@ mod tests {
             assert!(!resolves_to_root(p), "不应识别为根: {p}");
         }
         assert!(assert_removable("/home/user").is_ok());
+    }
+
+    #[test]
+    fn reject_parent_traversal_blocks_dotdot() {
+        // 含 `..` 分量（任意分隔 / 或 \）一律拒绝
+        for p in ["..", "../", "a/..", "/home/user/..", "/a/b/../../..", "..\\..\\windows", "/home/link/.."] {
+            assert!(reject_parent_traversal(p).is_err(), "应拒绝: {p}");
+        }
+        // 正常路径放行
+        for p in ["/home", "tmp/x", "a", "a.b", "/home/user/file.txt", "C:\\Users\\a.txt"] {
+            assert!(reject_parent_traversal(p).is_ok(), "应放行: {p}");
+        }
     }
 
     #[test]

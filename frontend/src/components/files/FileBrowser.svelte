@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import * as api from "../../lib/api";
   import type { FileEntry, SessionKind } from "../../lib/api";
-  import { fmtSize as fmtSizeLib, joinPath as joinPathLib, parentPathWindows, resolvePath as resolvePathLib, shq } from "../../lib/paths";
+  import { fmtSize as fmtSizeLib, isValidEntryName, joinPath as joinPathLib, parentPathWindows, resolvePath as resolvePathLib, shq } from "../../lib/paths";
 
   interface Props {
     activeTab: string | null;
@@ -202,7 +202,11 @@
   async function submitName() {
     if (!activeTab || !pendingName) return;
     const name = nameInput.trim();
-    if (!name) return;
+    // P91：必须是单一文件名分量——拒绝 `../x`（逃逸出目录/覆盖他文件）、含 `/`/`\` 的路径
+    if (!isValidEntryName(name)) {
+      error = "名称不能为空，且不能包含 /、\\ 或 ..";
+      return;
+    }
     try {
       if (pendingName.type === "mkdir") {
         // mkdir 的目标路径来自输入框,pendingName.name 此时为 undefined
@@ -231,25 +235,40 @@
     }
   }
 
+  // 下载到浏览器（base64 解码 → Blob → a.click 保存），按传入会话/路径取文件
+  async function downloadToBrowser(session: string, path: string, filename: string) {
+    const r = await api.fsDownload(session, path);
+    if (!r.ok) {
+      error = r.message;
+      return;
+    }
+    const binary = atob(r.message);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes]);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function doDownload(entry: FileEntry) {
     if (!activeTab) return;
     const path = joinPath(cwd, entry.name);
     try {
-      const r = await api.fsDownload(activeTab, path);
-      if (!r.ok) {
-        error = r.message;
-        return;
-      }
-      const binary = atob(r.message);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-      const blob = new Blob([bytes]);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = entry.name;
-      a.click();
-      URL.revokeObjectURL(url);
+      await downloadToBrowser(activeTab, path, entry.name);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  // P91：预览弹窗「下载」用预览绑定的会话/路径（与保存一致），切标签不会下错文件
+  async function downloadPreview() {
+    if (!preview) return;
+    try {
+      await downloadToBrowser(preview.session, preview.path, preview.name);
     } catch (e) {
       error = String(e);
     }
@@ -492,7 +511,7 @@
             {:else}
               <span></span>
             {/if}
-            <button class="pv-btn" onclick={() => lastFile && doDownload(lastFile)} disabled={!lastFile}>下载</button>
+            <button class="pv-btn" onclick={downloadPreview} disabled={!preview}>下载</button>
             <button
               class="pv-btn primary"
               onclick={savePreview}

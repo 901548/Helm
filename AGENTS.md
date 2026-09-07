@@ -590,6 +590,10 @@ F:\Helm\
   2. **FileBrowser refreshSeq 在阻塞/清空分支不递增**:`refresh()` 的 isBlocked 分支(切 rdp 会话)与 `$effect` 的 activeTab 置空分支原不 `++refreshSeq`,旧会话在途刷新结果照常写回 entries/cwd;两分支补 `refreshSeq++` 作废在途请求。
   3. **ai_submit conv clear+push 中间态**:原 clear 与 push 两次 `lock().await`,之间 `ai_conv_read` 读到「已清空未登记 Task」的空列表;合成一次取锁内 `clear()+push()`。
   4. **config 写盘丢失更新竞态**:`persist_sessions`/`update_ui_config` 原是「锁内 clone → 锁外 save」,与 `update_ai_config` 的锁内 save 交错时后写者覆盖先写者的快照(丢失对方改动);统一为三处都在**锁内 clone+save**。顺带 `update_ai_config` 的 `rebuild_idle` 移出 config 锁(旧持锁跨 await 阻塞所有会话 CRUD)。
+- [x] **P95 全局 aiMode 串扰修复(多会话模式按会话隔离,纯前端,`npm run build`/Vitest 29 项通过)**:
+  1. **动机**:`aiMode` 是全局单值,但后端模式按会话隔离(AiSlot.mode_agent)。多会话 QA/Agent 混跑时,事件 handler 用全局模式判路由——A 会话 QA 完成/流式,被 B 会话的 agent 模式误判(摘要文案错、QA 卡片不收尾、镜像错)。
+  2. **修复(App.svelte)**:`aiMode` 由单值改 `Record<会话名, mode>`;`refreshAiMode(name)` 按会话存(空名早退);streaming/done/error handler 改读 `aiMode[p.name] ?? "qa"`;`submitFromDock` 读活动会话模式;`handleModeChange` 按会话写;TerminalTabs 传 `aiMode[activeTab] ?? "qa"`;改名迁移 + 删除会话清理 aiMode 桶(与 aiBusy/aiState 对齐)。
+  3. **验证**:`npm run build` + Vitest 29 项通过(纯前端零后端改动)。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

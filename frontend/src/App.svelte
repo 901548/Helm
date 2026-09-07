@@ -18,7 +18,9 @@
   let aiBusy = $state<Record<string, boolean>>({});
   // §8.7.1 唯一状态机前端侧：ai_job 广播的 State 事件按会话落盘，dock 只读活动会话那份
   let aiState = $state<Record<string, AiState>>({});
-  let aiMode = $state<"qa" | "agent">("qa");
+  // P95：AI 模式按会话隔离（Record<会话名, mode>）——旧全局单值在多会话 QA/Agent
+  // 混跑时事件路由串扰（A 会话 QA 完成被 B 会话的 agent 模式误判）
+  let aiMode = $state<Record<string, "qa" | "agent">>({});
   let aiConfig = $state<AiConfig | null>(null);
   let uiConfig = $state<UiConfig | null>(null);
   // P39 AI 常驻命令条 + 活动流状态
@@ -83,8 +85,10 @@
   }
 
   async function refreshAiMode(name?: string) {
+    const n = name ?? activeTab ?? "";
+    if (!n) return;
     try {
-      aiMode = await api.aiMode(name ?? activeTab ?? "");
+      aiMode = { ...aiMode, [n]: await api.aiMode(n) };
     } catch {
       /* ignore */
     }
@@ -165,7 +169,7 @@
           break;
         case "streaming": {
           // QA 流式追加进活动流卡片;Agent 模式的模型原始输出不展示(等解析后的命令卡片)
-          if (!p.text || aiMode !== "qa" || !isActive) break;
+          if (!p.text || (aiMode[p.name] ?? "qa") !== "qa" || !isActive) break;
           updateCards(p.name, (cards) => {
             const last = cards[cards.length - 1];
             if (last && last.kind === "qa" && !last.done) {
@@ -272,7 +276,7 @@
         case "done":
           if (isActive) {
             // P88-A：QA 模式下完整回答已在卡片内流式展示，摘要只放短句（消除问/答挤一行）
-            const isQa = aiMode === "qa";
+            const isQa = (aiMode[p.name] ?? "qa") === "qa";
             aiSummary = { ...aiSummary, [p.name]: { text: isQa ? "已回答" : p.message, ok: true } };
             finishQaCard(p.name);
             addLog({
@@ -285,7 +289,7 @@
               output: "",
             });
           }
-          if (aiMode === "agent" && p.name) {
+          if ((aiMode[p.name] ?? "qa") === "agent" && p.name) {
             pushEcho(p.name, `\r\n\x1b[32m[AI] ✓ ${p.message}\x1b[0m\r\n`);
           }
           break;
@@ -303,7 +307,7 @@
               output: "",
             });
           }
-          if (aiMode === "agent" && p.name) {
+          if ((aiMode[p.name] ?? "qa") === "agent" && p.name) {
             pushEcho(p.name, `\r\n\x1b[31m[AI] ✗ ${p.message}\x1b[0m\r\n`);
           }
           break;
@@ -419,6 +423,10 @@
           aiState[info.name] = aiState[oldName];
           delete aiState[oldName];
         }
+        if (aiMode[oldName] !== undefined) {
+          aiMode[info.name] = aiMode[oldName];
+          delete aiMode[oldName];
+        }
         if (activeTab === oldName) {
           activeTab = info.name;
           api.setActive(info.name);
@@ -462,6 +470,9 @@
     delete aiTaskText[name];
     delete aiSummary[name];
     delete aiThinking[name];
+    delete aiBusy[name];
+    delete aiState[name];
+    delete aiMode[name];
     tabs = tabs.filter((t) => t !== name);
     if (activeTab === name) {
       activeTab = pickNextActive(name);
@@ -559,14 +570,15 @@
   async function submitFromDock(text: string, container?: string | null, termContext?: string | null) {
     if (!text.trim() || aiBusy[activeTab ?? ""]) return;
     const name = activeTab ?? "";
+    const mode = aiMode[name] ?? "qa";
     // 提交新任务：作废在途的旧 conv 拉取，避免其晚到覆盖刚建的任务头/卡片
     convSeq++;
-    updateCards(name, () => (aiMode === "qa" ? [{ id: ++cardId, kind: "qa", text: "", done: false }] : []));
+    updateCards(name, () => (mode === "qa" ? [{ id: ++cardId, kind: "qa", text: "", done: false }] : []));
     aiTaskText = { ...aiTaskText, [name]: text };
     aiSummary = { ...aiSummary, [name]: null };
     aiStreamOpen = true;
     aiThinking = { ...aiThinking, [name]: "" };
-    if (aiMode === "agent" && name) {
+    if (mode === "agent" && name) {
       pushEcho(name, `\r\n\x1b[90m[AI] 任务: ${text}\x1b[0m\r\n`);
     }
     const pwd = pwds[name] ?? "";
@@ -588,8 +600,9 @@
   }
 
   function handleModeChange(m: "qa" | "agent") {
-    aiMode = m;
-    api.aiSetMode(activeTab ?? "", m).catch(() => {});
+    const n = activeTab ?? "";
+    aiMode = { ...aiMode, [n]: m };
+    api.aiSetMode(n, m).catch(() => {});
   }
 
   /// Alt+I:聚焦命令条输入框
@@ -730,7 +743,7 @@
           onAdd={openNewSession}
           onCd={handleCd}
           onPwd={handlePwd}
-          {aiMode}
+          aiMode={aiMode[activeTab ?? ""] ?? "qa"}
           aiBusy={aiBusy[activeTab ?? ""] ?? false}
           aiState={aiState[activeTab ?? ""] ?? "idle"}
           cards={aiCards[activeTab ?? ""] ?? []}

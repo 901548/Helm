@@ -247,7 +247,12 @@ pub async fn rename(
     old_path: &str,
     new_path: &str,
 ) -> Result<FsResult, String> {
-    if let Err(e) = reject_parent_traversal(old_path).or_else(|_| reject_parent_traversal(new_path)) {
+    // P96：两条路径都独立校验，任一含 `..` 即拒。旧 `or_else` 语义反了——
+    // old 干净时 new 完全不校验、old 脏 new 净时整体返回 Ok，穿越校验形同虚设。
+    if let Err(e) = reject_parent_traversal(old_path) {
+        return Ok(FsResult::err(format!("路径校验失败: {}", e)));
+    }
+    if let Err(e) = reject_parent_traversal(new_path) {
         return Ok(FsResult::err(format!("路径校验失败: {}", e)));
     }
     let sftp = sftp_session(ssh, name).await?;
@@ -313,16 +318,28 @@ fn remove_recursive(
     })
 }
 
-/// 校验待删除路径是否危险（空路径 / 解析到根目录的变体直接拒绝）
+/// 校验待删除路径是否危险（空路径 / 解析到根目录 / Windows 盘符根直接拒绝）
 fn assert_removable(path: &str) -> Result<(), String> {
     let raw = path.trim();
     if raw.is_empty() {
         return Err("不允许删除空路径".to_string());
     }
-    if resolves_to_root(raw) {
+    if resolves_to_root(raw) || is_windows_drive_root(raw) {
         return Err("不允许删除根目录".to_string());
     }
     Ok(())
+}
+
+/// 判断是否为 Windows 盘符根（`C:`/`C:\`/`C:/`/`/C:`/`/C:/` 等形式）。
+/// P96：`resolves_to_root` 只按 `/` 切分，`C:\` 是单个普通分量（depth=1）放行，
+/// Windows 会话 SFTP 面板导航到盘符根时 remove 会递归删整盘，与删 `/` 同级危险。
+fn is_windows_drive_root(path: &str) -> bool {
+    let p = path.trim();
+    // Git Bash 风格 `/C:` 的前导斜杠
+    let p = p.strip_prefix('/').unwrap_or(p);
+    // 盘符根可能带尾分隔符（`C:\`/`C:/`）
+    let p = p.trim_end_matches(['/', '\\']);
+    p.len() == 2 && p.as_bytes()[1] == b':' && p.as_bytes()[0].is_ascii_alphabetic()
 }
 
 /// 判断路径经 POSIX 分量归一化后是否解析到根目录 `/`。
@@ -510,6 +527,27 @@ mod tests {
         for p in ["/home", "tmp/x", "a", "a.b", "/home/user/file.txt", "C:\\Users\\a.txt"] {
             assert!(reject_parent_traversal(p).is_ok(), "应放行: {p}");
         }
+    }
+
+    #[test]
+    fn windows_drive_root_rejected() {
+        // P96：Windows 盘符根 = 删整盘，与删 / 同级拒绝
+        for p in ["C:", "C:\\", "C:/", "/C:", "/C:/", "d:", "D:\\"] {
+            assert!(is_windows_drive_root(p), "应识别为盘符根: {p}");
+            assert!(assert_removable(p).is_err(), "应拒绝删除: {p}");
+        }
+        // 盘符子路径放行
+        for p in ["C:\\Users", "C:/Users/a.txt", "/C:/temp", "C:temp"] {
+            assert!(!is_windows_drive_root(p), "不应识别为盘符根: {p}");
+        }
+        assert!(assert_removable("C:\\Users").is_ok());
+    }
+
+    #[test]
+    fn rename_checks_both_paths_for_dotdot() {
+        // P96 回归：old 干净 new 含 .. 也必须拦（旧 or_else 短路漏检 new）
+        assert!(reject_parent_traversal("/home/a").is_ok());
+        assert!(reject_parent_traversal("../evil").is_err());
     }
 
     #[test]

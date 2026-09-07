@@ -594,6 +594,15 @@ F:\Helm\
   1. **动机**:`aiMode` 是全局单值,但后端模式按会话隔离(AiSlot.mode_agent)。多会话 QA/Agent 混跑时,事件 handler 用全局模式判路由——A 会话 QA 完成/流式,被 B 会话的 agent 模式误判(摘要文案错、QA 卡片不收尾、镜像错)。
   2. **修复(App.svelte)**:`aiMode` 由单值改 `Record<会话名, mode>`;`refreshAiMode(name)` 按会话存(空名早退);streaming/done/error handler 改读 `aiMode[p.name] ?? "qa"`;`submitFromDock` 读活动会话模式;`handleModeChange` 按会话写;TerminalTabs 传 `aiMode[activeTab] ?? "qa"`;改名迁移 + 删除会话清理 aiMode 桶(与 aiBusy/aiState 对齐)。
   3. **验证**:`npm run build` + Vitest 29 项通过(纯前端零后端改动)。
+- [x] **P96 二轮审查修复批(7 项,已完成,`cargo test` 121 项+`cargo build` 零警告+`npm run build`/Vitest 29 项通过)**:
+  1. **fs.rs rename `..` 校验失效(P91 引入的回归)**:旧 `reject_parent_traversal(old).or_else(|_| reject_parent_traversal(new))` 语义反了——old 干净则 new 完全不校验、old 脏 new 净时整体返回 Ok;改为两路径独立校验,任一含 `..` 即拒。
+  2. **fs.rs Windows 盘符根删除绕过**:`resolves_to_root` 只按 `/` 切分,`C:\` 是普通分量放行,Windows 会话 SFTP 面板可递归删整盘;新增 `is_windows_drive_root`(`C:`/`C:\`/`/C:` 等)接入 `assert_removable`。+单测。
+  3. **monitor.rs 首采样尖峰**:首个采样 prev 用全 0 初始化,`dt≈0` 使网速=累计字节/1ms 天文数字、CPU 显示开机均值;改为用「当前采样值」建基线(delta=0,首采样输出全 0)。
+  4. **recorder.rs ESC `~` 吞输入**:旧跳过循环只认 BEL/字母,`ESC[2~`(Insert) 的 `~` 非终结字节会吞掉同包后续键入;改为区分 CSI(ESC `[` 后参数/中间字节 0x20-0x3F 继续、终结字节 ≥0x40 结束)与单字节 ESC。+单测。
+  5. **recorder.rs 多字节跨包丢字**:旧 `from_utf8` 对截断切片返回 Err 直接丢弃,多字节字符跨 invoke 分包被整字丢光;新增 `pending` 字节缓冲(跨调用 prepend 不完整字节,处理完存回)。+单测。
+  6. **改名清空 AI 历史(前端)**:后端 `update_session` 改名时 `ai.remove` 丢弃含 conv 的槽,前端迁移卡片被空 conv 覆盖;新增 `AiManager::rename`(保留 conv/agent/mode,运行中任务 abort + reset busy),前端改名只迁移 aiMode/pwds,卡片/busy/state 交给 $effect 用后端 conv 重建。
+  7. **aiConvRead 丢进行中卡片(前端)**:切标签往返时后端 conv 只含「已完成」条目,全量覆盖清掉流式中的 QA 卡/待确认卡;`aiBusy[n]` 期间跳过覆盖(任务结束事件已更新卡片,下次切标签再读 conv)。+ aiEcho 终端未建时不再推进 seq(加 termVersion 信号,终端建立后重放滞留回显,连接失败错误不再丢失)。
+  8. **坑**:ESC/CSI 终结字节范围 0x40-0x7E **含 `[`(0x5B)本身**——直接按范围判会把 CSI 引入符 `[` 误当终结;必须显式 `if data[i] == b'['` 先跳引入符,再按 `c >= 0x40` 判终结。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

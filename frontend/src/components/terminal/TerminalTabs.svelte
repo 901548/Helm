@@ -328,6 +328,8 @@
       if (!e) {
         createTerminal(name);
         e = terminals.get(name)!;
+        // P96：终端建立，触发 aiEcho 回放滞留的连接失败/早期回显
+        termVersion++;
       }
       if (!e.open) {
         e.term.open(el);
@@ -628,14 +630,20 @@
   }
 
   /// AI 回显：把 App 推送的文本按 seq 顺序写入各自会话的终端。
-  /// P91：写目标终端按事件所属会话(e.name)，非活动会话的 AI 命令/输出镜像也写进其终端；
-  /// 此前先推进 seq 再过滤活动会话，后台会话的镜像被标记已消费却从未写入（切回也不补写，永久丢失）。
+  /// P91：写目标终端按事件所属会话(e.name)，非活动会话的 AI 命令/输出镜像也写进其终端。
+  /// P96：终端晚于回显条目建立时（如连接失败 pushEcho 先于 syncContainers 建终端），
+  /// 不推进 seq（保留待写），由 termVersion 递增触发本 effect 重跑补写——旧实现
+  /// term 不存在也推进 seq，连接失败的 "[连接失败] 错误原因" 被永久丢弃。
   let lastEchoSeq = 0;
+  let termVersion = $state(0);
   $effect(() => {
+    aiEcho;
+    void termVersion; // 依赖终端建立版本号，终端建好后重放滞留回显
     for (const e of aiEcho) {
       if (e.seq <= lastEchoSeq) continue;
       const term = terminals.get(e.name)?.term;
-      if (term) term.write(new TextEncoder().encode(e.text));
+      if (!term) continue; // 终端未建：不推进 seq，等 termVersion 递增后重放
+      term.write(new TextEncoder().encode(e.text));
       lastEchoSeq = e.seq;
     }
   });

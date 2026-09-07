@@ -403,30 +403,19 @@
           pwds[info.name] = pwds[oldName];
           delete pwds[oldName];
         }
-        // P89/P92：AI 对话桶 + busy/state 跟随改名（改名时 AI 任务进行中则同步迁移，
-        // 否则新名命令条看不到 busy/停止按钮，旧名成为孤儿键）
-        if (aiCards[oldName] !== undefined) {
-          aiCards[info.name] = aiCards[oldName];
-          delete aiCards[oldName];
-          aiTaskText[info.name] = aiTaskText[oldName];
-          delete aiTaskText[oldName];
-          aiSummary[info.name] = aiSummary[oldName];
-          delete aiSummary[oldName];
-          aiThinking[info.name] = aiThinking[oldName];
-          delete aiThinking[oldName];
-        }
-        if (aiBusy[oldName] !== undefined) {
-          aiBusy[info.name] = aiBusy[oldName];
-          delete aiBusy[oldName];
-        }
-        if (aiState[oldName] !== undefined) {
-          aiState[info.name] = aiState[oldName];
-          delete aiState[oldName];
-        }
+        // P96：后端 update_session 改名已 rename AI 槽（保留对话历史/模式，运行中任务停止）。
+        // 前端只迁移「静态」状态 aiMode/pwds；卡片/busy/state/summary/thinking 不迁移——
+        // $effect(activeTab) 会用后端迁移后的 conv 重建历史卡片，busy/state 默认复位（后端已 reset busy）。
         if (aiMode[oldName] !== undefined) {
           aiMode[info.name] = aiMode[oldName];
           delete aiMode[oldName];
         }
+        delete aiCards[oldName];
+        delete aiTaskText[oldName];
+        delete aiSummary[oldName];
+        delete aiThinking[oldName];
+        delete aiBusy[oldName];
+        delete aiState[oldName];
         if (activeTab === oldName) {
           activeTab = info.name;
           api.setActive(info.name);
@@ -530,6 +519,10 @@
       .aiConvRead(n)
       .then((conv) => {
         if (seq !== convSeq || activeTab !== n) return; // 已切走或已有更新拉取，丢弃
+        // P96：任务进行中（busy/pending）时，后端 conv 只含「已完成」条目，
+        // 全量覆盖会清掉前端正在流的 QA 卡/待确认命令卡；busy 期间跳过覆盖，
+        // 任务结束(done/error)后前端卡片已由事件更新，下次切标签再读 conv 重建即可
+        if (aiBusy[n]) return;
         // Task 条目回填任务文本（非卡片）；Qa/Plan/Step 映射为卡片
         const taskEntry = conv.find((e) => String(e.kind ?? "") === "task");
         const taskText = taskEntry ? String((taskEntry as Record<string, unknown>).task ?? "") : "";

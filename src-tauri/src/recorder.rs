@@ -22,12 +22,19 @@ pub struct Recorder {
     enabled: AtomicBool,
     /// 每会话未成行的输入半行（Enter 前的字符，跨 invoke 分包累积）
     bufs: Mutex<HashMap<String, String>>,
+    /// 每会话跨 invoke 遗留的不完整 UTF-8 字节（多字节字符被分包时暂存，下次 prepend）
+    pending: Mutex<HashMap<String, Vec<u8>>>,
 }
 
 impl Recorder {
     pub fn new(dir: PathBuf, enabled: bool) -> Self {
         let _ = std::fs::create_dir_all(&dir);
-        Self { dir, enabled: AtomicBool::new(enabled), bufs: Mutex::new(HashMap::new()) }
+        Self {
+            dir,
+            enabled: AtomicBool::new(enabled),
+            bufs: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn set_enabled(&self, on: bool) {
@@ -44,6 +51,12 @@ impl Recorder {
         if !self.enabled.load(Ordering::SeqCst) || data.is_empty() {
             return;
         }
+        // P96：拼接上次跨包遗留的不完整 UTF-8 字节——旧实现 `from_utf8` 对
+        // 截断切片返回 Err 直接丢弃，多字节字符被整字丢光（违反"任意分包"契约）
+        let mut stream: Vec<u8> = self.pending.lock().unwrap().remove(session).unwrap_or_default();
+        stream.extend_from_slice(data);
+        let data = stream;
+        let mut leftover: Vec<u8> = Vec::new();
         let mut completed: Vec<String> = Vec::new();
         {
             let mut bufs = self.bufs.lock().unwrap();
@@ -52,13 +65,27 @@ impl Recorder {
             while i < data.len() {
                 let b = data[i];
                 if b == 0x1b {
-                    // ESC 序列：跳到终止字母或 BEL
+                    // ESC 序列跳过。P96：区分 CSI（ESC [ ...）与单字节 ESC 序列——
+                    // CSI 的引入符 `[`(0x5B) 之后，参数/中间字节为 0x20-0x3F，
+                    // 终结字节为 0x40-0x7E（含字母与 `~`）；旧逻辑只认字母/BEL，
+                    // `~` 结尾的 Insert/Delete/Home/End/PgUp/PgDn 会吞掉同包后续键入
                     i += 1;
-                    while i < data.len() {
-                        let c = data[i];
-                        i += 1;
-                        if c == 0x07 || c.is_ascii_alphabetic() {
-                            break;
+                    if i < data.len() && data[i] == b'[' {
+                        i += 1; // 跳过 CSI 引入符 [
+                        while i < data.len() {
+                            let c = data[i];
+                            i += 1;
+                            if c >= 0x40 {
+                                break;
+                            }
+                        }
+                    } else {
+                        while i < data.len() {
+                            let c = data[i];
+                            i += 1;
+                            if c == 0x07 || c.is_ascii_alphabetic() {
+                                break;
+                            }
                         }
                     }
                     continue;
@@ -76,10 +103,22 @@ impl Recorder {
                 if b >= 0x20 {
                     let len = utf8_len(b);
                     let end = (i + len).min(data.len());
-                    if let Ok(ch) = std::str::from_utf8(&data[i..end]) {
-                        buf.push_str(ch);
+                    match std::str::from_utf8(&data[i..end]) {
+                        Ok(ch) => {
+                            buf.push_str(ch);
+                            i = end;
+                        }
+                        Err(_) => {
+                            if i + len > data.len() {
+                                // 跨包不完整多字节序列：留待下次 prepend 拼接
+                                leftover.extend_from_slice(&data[i..]);
+                                i = data.len();
+                            } else {
+                                // 完整长度但非法字节序列：丢弃
+                                i = end;
+                            }
+                        }
                     }
-                    i = end;
                     continue;
                 }
                 i += 1; // 其余控制字符丢弃
@@ -89,6 +128,12 @@ impl Recorder {
             if chars > MAX_BUF_CHARS {
                 *buf = buf.chars().skip(chars - MAX_INPUT_LINE).collect();
             }
+        }
+        if !leftover.is_empty() {
+            self.pending
+                .lock()
+                .unwrap()
+                .insert(session.to_string(), leftover);
         }
         for line in completed {
             let t = line.trim();
@@ -194,6 +239,28 @@ mod tests {
         r.record_input("s", b"\x1b[Aab\x7fc\r");
         let f = std::fs::read_to_string(dir.join(format!("terminal-{}.jsonl", now_parts().0))).unwrap();
         assert!(f.contains("\"ac\""), "got: {f}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn esc_csi_tilde_terminator_does_not_swallow_following_input() {
+        // P96：Insert(ESC[2~) 以 `~` 结尾，旧跳过循环只认字母/BEL，会吞掉后随的 "hi"
+        let (r, dir) = tmp_recorder();
+        r.record_input("s", b"\x1b[2~hi\r");
+        let f = std::fs::read_to_string(dir.join(format!("terminal-{}.jsonl", now_parts().0))).unwrap();
+        assert!(f.contains("\"hi\""), "`~` 结尾的 CSI 序列不应吞后续输入，got: {f}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn multibyte_char_split_across_packets_reassembled() {
+        // P96：「中」= E4 B8 AD，拆成两包分别送入，应重组为一个字符而非整字丢失
+        let (r, dir) = tmp_recorder();
+        let ch = "中".as_bytes();
+        r.record_input("s", &ch[..2]);
+        r.record_input("s", &[ch[2], b'\r']);
+        let f = std::fs::read_to_string(dir.join(format!("terminal-{}.jsonl", now_parts().0))).unwrap();
+        assert!(f.contains("中"), "跨包多字节字符应重组，got: {f}");
         std::fs::remove_dir_all(dir).ok();
     }
 

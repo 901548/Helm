@@ -44,6 +44,9 @@
   async function refresh(dir?: string) {
     if (!activeTab) return;
     if (isBlocked) {
+      // P94：作废在途刷新（rdp 会话/不支持平台）——否则旧会话在途结果 seq 仍等于 refreshSeq，
+      // 会照常写回 entries/cwd，短暂显示旧会话路径
+      refreshSeq++;
       entries = [];
       cwd = "";
       loading = false;
@@ -72,6 +75,8 @@
   $effect(() => {
     if (activeTab) refresh();
     else {
+      // P94：关闭全部标签时作废在途刷新，防过期结果写回
+      refreshSeq++;
       entries = [];
       cwd = "";
     }

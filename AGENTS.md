@@ -585,6 +585,11 @@ F:\Helm\
   2. **resolve_api_key 解密失败把密文当 Bearer 外发**:原 `decrypt_api_key(k).unwrap_or_else(|_| k.to_string())` 在 base64 密文解密失败(跨机/跨用户)时把密文当 Bearer 发出去;改为「非 base64 才按明文透传,base64 密文解密失败报错让用户重填」。+单测 `resolve_key_ciphertext_decrypt_fail_reports_error_not_passthrough`。
   3. **history_read/history_export 阻塞 I/O**:async 命令内做 std::fs 读/写阻塞 tokio worker;改 `tauri::async_runtime::spawn_blocking` 移出 async 线程。
   4. **aiConvRead 覆盖卡片桶缺序列号**:App.svelte 切标签拉取 conv 完成后整体覆盖 `aiCards[n]`,飞行期间落地的新卡片会被旧快照覆盖;加 `convSeq` last-write-wins(切标签 `++convSeq`、提交新任务 `convSeq++` 作废在途拉取,`.then` 里 `seq !== convSeq` 丢弃过期结果)。
+- [x] **P94 竞态收敛批(4 项,已完成,`cargo test` 117 项+`cargo build` 零警告+`npm run build`/Vitest 29 项通过)**:
+  1. **send_active_input 无名竞态**:TerminalTabs `onData`/`paste` 原 `api.sendActiveInput` 不带会话名,依赖后端 active 状态,切标签瞬间键入/粘贴可能路由到上一会话;改为 `api.sendInput(name, ...)`(闭包捕获的会话名)直发本会话。
+  2. **FileBrowser refreshSeq 在阻塞/清空分支不递增**:`refresh()` 的 isBlocked 分支(切 rdp 会话)与 `$effect` 的 activeTab 置空分支原不 `++refreshSeq`,旧会话在途刷新结果照常写回 entries/cwd;两分支补 `refreshSeq++` 作废在途请求。
+  3. **ai_submit conv clear+push 中间态**:原 clear 与 push 两次 `lock().await`,之间 `ai_conv_read` 读到「已清空未登记 Task」的空列表;合成一次取锁内 `clear()+push()`。
+  4. **config 写盘丢失更新竞态**:`persist_sessions`/`update_ui_config` 原是「锁内 clone → 锁外 save」,与 `update_ai_config` 的锁内 save 交错时后写者覆盖先写者的快照(丢失对方改动);统一为三处都在**锁内 clone+save**。顺带 `update_ai_config` 的 `rebuild_idle` 移出 config 锁(旧持锁跨 await 阻塞所有会话 CRUD)。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

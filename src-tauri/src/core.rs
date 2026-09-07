@@ -275,7 +275,9 @@ impl CoreState {
 
     /// 将会话列表写回配置文件
     async fn persist_sessions(&self) -> Result<()> {
-        let config = self.config.lock().await.clone();
+        // P94：持锁内完成 clone + save——旧实现锁外 save，与 update_ai_config/update_ui_config
+        // 的锁内 save 交错时可能丢失更新（后写者覆盖先写者未含对方改动的快照）
+        let config = self.config.lock().await;
         save_config(&self.config_path, &config)
     }
 }
@@ -879,11 +881,13 @@ pub async fn ai_submit(
     let recorder = state.recorder.clone();
     let term_ctx = term_context.filter(|s| !s.trim().is_empty());
     let conv = slot.conv.clone();
-    // P89：新任务开始——清空上一任务的对话记录，登记本轮任务文本
+    // P89：新任务开始——清空上一任务的对话记录，登记本轮任务文本。
+    // P94：clear + push 合成一次取锁，消除「已清空未登记 Task」的中间态
+    // （旧两次 lock 之间 ai_conv_read 会读到空列表）。
     {
-        let conv = slot.conv.clone();
-        conv.lock().await.clear();
-        conv.lock().await.push(ConvEntry::Task { task: input.clone() });
+        let mut guard = slot.conv.lock().await;
+        guard.clear();
+        guard.push(ConvEntry::Task { task: input.clone() });
     }
     let slot2 = slot.clone();
     let app2 = app.clone();
@@ -1045,12 +1049,16 @@ pub async fn update_ai_config(
     {
         let mut cfg = state.config.lock().await;
         cfg.ai = Some(config);
-        // 持久化
-        let snap = cfg.clone();
-        save_config(&state.config_path, &snap).map_err(|e| e.to_string())?;
-        // 重建所有空闲会话槽（运行中的跳过，不与进行中请求互踩；不阻塞等 agent 锁）
-        state.ai.rebuild_idle(cfg.ai.as_ref()).await;
+        // P94：save 在锁内完成（与 persist_sessions/update_ui_config 对齐，防丢失更新）
+        save_config(&state.config_path, &cfg).map_err(|e| e.to_string())?;
     }
+    // P94：释放 config 锁后再重建空闲槽——旧实现持锁跨 rebuild_idle 的 await，
+    // 阻塞所有会话 CRUD/ai_submit 读 config
+    let ai_cfg = {
+        let cfg = state.config.lock().await;
+        cfg.ai.clone()
+    };
+    state.ai.rebuild_idle(ai_cfg.as_ref()).await;
     Ok(())
 }
 
@@ -1147,10 +1155,12 @@ pub async fn update_ui_config(
             config.window_y = existing.window_y;
         }
         cfg.ui = Some(config.clone());
+        // P94：save 在锁内完成，与 persist_sessions/update_ai_config 的锁内 save 对齐，防丢失更新
+        save_config(&state.config_path, &cfg).map_err(|e| e.to_string())?;
     }
     // P70：记录开关即时生效
     state.recorder.set_enabled(config.recording_enabled);
-    save_config(&state.config_path, &state.config.lock().await.clone()).map_err(|e| e.to_string())
+    Ok(())
 }
 
 // ---------- 后台任务 ----------

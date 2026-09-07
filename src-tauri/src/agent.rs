@@ -10,6 +10,7 @@ use std::env;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use data_encoding::BASE64;
 use futures_util::StreamExt;
 use serde_json::json;
 
@@ -715,34 +716,35 @@ impl Agent {
 
         let mut stream = resp.bytes_stream();
         let mut full = String::new();
-        let mut buffer = String::new();
+        // P93：跨 chunk 累积原始字节，只在完整行（\n 分隔）上做 UTF-8 解码。
+        // 旧版每个 chunk 独立 from_utf8_lossy，跨块的 UTF-8 多字节字符会被替换成
+        // U+FFFD（中文流式答案概率性乱码）。\n 是 ASCII，不可能出现在多字节字符内部，
+        // 故按 \n 切出的完整行必含完整字符。
+        let mut buffer: Vec<u8> = Vec::new();
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| anyhow!("读取响应流失败: {}", e))?;
-            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            buffer.extend_from_slice(&chunk);
             loop {
-                match buffer.find('\n') {
-                    Some(pos) => {
-                        let line = buffer[..pos].to_string();
-                        buffer.drain(..=pos);
-                        match parse_sse_line(&line) {
-                            SseEvent::Content(delta) => {
-                                *started = true;
-                                sink(AiStreamEvent::Content(delta.clone()));
-                                full.push_str(&delta);
-                            }
-                            SseEvent::Reasoning(delta) => {
-                                // 思考过程只推给 UI，不写入 full（防污染命令解析/答案）
-                                sink(AiStreamEvent::Reasoning(delta));
-                            }
-                            SseEvent::Done => return Ok(full),
-                            SseEvent::Error(msg) => {
-                                return Err(anyhow!("API 流式错误: {}", msg));
-                            }
-                            SseEvent::Ignore => {}
-                        }
+                let Some(pos) = buffer.iter().position(|&b| b == b'\n') else { break };
+                let line_bytes: Vec<u8> = buffer.drain(..=pos).collect();
+                let line = String::from_utf8(line_bytes)
+                    .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
+                match parse_sse_line(&line) {
+                    SseEvent::Content(delta) => {
+                        *started = true;
+                        sink(AiStreamEvent::Content(delta.clone()));
+                        full.push_str(&delta);
                     }
-                    None => break,
+                    SseEvent::Reasoning(delta) => {
+                        // 思考过程只推给 UI，不写入 full（防污染命令解析/答案）
+                        sink(AiStreamEvent::Reasoning(delta));
+                    }
+                    SseEvent::Done => return Ok(full),
+                    SseEvent::Error(msg) => {
+                        return Err(anyhow!("API 流式错误: {}", msg));
+                    }
+                    SseEvent::Ignore => {}
                 }
             }
         }
@@ -811,8 +813,19 @@ impl Agent {
             .map(str::trim)
             .filter(|k| !k.is_empty())
         {
-            // 字段值可能是 DPAPI 密文（配置落盘的），也可能是明文（测试连接直传/手改配置）
-            return Ok(crypto::decrypt_api_key(k).unwrap_or_else(|_| k.to_string()));
+            // 字段值两种形态：DPAPI 密文（落盘 base64）或明文（测试连接直传/手改配置）。
+            return match crypto::decrypt_api_key(k) {
+                Ok(plain) => Ok(plain),
+                Err(e) => {
+                    // P93：只有「非 base64」才按明文原样透传；base64 密文解密失败 = 跨机/跨用户，
+                    // 绝不能把密文当 Bearer 外发——报错让用户重新填写。
+                    if BASE64.decode(k.trim().as_bytes()).is_ok() {
+                        Err(anyhow!("API Key 解密失败（可能不是本机/本用户加密）：{e}，请重新填写"))
+                    } else {
+                        Ok(k.to_string())
+                    }
+                }
+            };
         }
         if !config.api_key_env.is_empty() {
             if let Ok(v) = env::var(&config.api_key_env) {
@@ -1388,6 +1401,15 @@ mod tests {
         // 本地服务免 Key
         cfg.api_base_url = Some("http://localhost:11434/v1".into());
         assert_eq!(Agent::resolve_api_key(&cfg).unwrap(), "");
+    }
+
+    #[test]
+    fn resolve_key_ciphertext_decrypt_fail_reports_error_not_passthrough() {
+        // 合法 base64 但非本机 DPAPI 密文 → 解密失败必须报错，绝不能把密文当 Bearer 外发
+        let mut cfg = crate::config::AiConfig::default();
+        cfg.api_key = Some(BASE64.encode(b"garbage-garbage"));
+        let err = Agent::resolve_api_key(&cfg).unwrap_err().to_string();
+        assert!(err.contains("解密失败"), "应报解密失败而非透传密文，got: {err}");
     }
 
     #[test]

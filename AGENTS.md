@@ -580,6 +580,11 @@ F:\Helm\
   3. **会话改名迁移 aiBusy/aiState**:App.svelte 改名分支原只迁移 aiCards/aiTaskText/aiSummary/aiThinking,pwds——漏 `aiBusy`/`aiState`(任务中改名则新名命令条看不到 busy/停止按钮、旧名成孤儿键);补迁移两桶。
   4. **交互 PTY 输出无上限**:ssh.rs `drain_output` 单次 drain 无上限,`yes`/`cat /dev/zero` 刷屏会撑爆内存;加 `MAX_SHELL_DRAIN_BYTES`(8MiB),超限 `out.drain(..excess)` 只保留最新尾部(最旧刷屏内容丢弃,等价滚动缓冲淘汰)。
   5. **坑**:impl 块内关联常量在方法里要写 `Self::MAX_SHELL_DRAIN_BYTES`(裸名报 E0425 not found in scope)。
+- [x] **P93 健壮性批(4 项,已完成,`cargo test` 117 项+`cargo build` 零警告+`npm run build`/Vitest 29 项通过)**:
+  1. **SSE 跨块多字节字符损坏**:agent.rs `call_api_stream` 原每个 chunk 独立 `from_utf8_lossy`,跨块 UTF-8 多字节字符(中文流式答案)被替换成 U+FFFD;改为 `Vec<u8>` 累积原始字节、只在 `\n` 分隔的完整行上 `String::from_utf8`(`\n` 是 ASCII,不会出现在多字节字符内部,完整行必含完整字符)。
+  2. **resolve_api_key 解密失败把密文当 Bearer 外发**:原 `decrypt_api_key(k).unwrap_or_else(|_| k.to_string())` 在 base64 密文解密失败(跨机/跨用户)时把密文当 Bearer 发出去;改为「非 base64 才按明文透传,base64 密文解密失败报错让用户重填」。+单测 `resolve_key_ciphertext_decrypt_fail_reports_error_not_passthrough`。
+  3. **history_read/history_export 阻塞 I/O**:async 命令内做 std::fs 读/写阻塞 tokio worker;改 `tauri::async_runtime::spawn_blocking` 移出 async 线程。
+  4. **aiConvRead 覆盖卡片桶缺序列号**:App.svelte 切标签拉取 conv 完成后整体覆盖 `aiCards[n]`,飞行期间落地的新卡片会被旧快照覆盖;加 `convSeq` last-write-wins(切标签 `++convSeq`、提交新任务 `convSeq++` 作废在途拉取,`.then` 里 `seq !== convSeq` 丢弃过期结果)。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

@@ -132,6 +132,20 @@ impl AiManager {
         }
     }
 
+    /// 会话改名时迁移槽（保留对话历史/Agent 历史/模式缓存）。
+    /// P96：旧实现直接 remove 会把后端权威 conv（对话记录）连槽一起丢弃，改名即清空历史。
+    /// 运行中任务 abort 并复位 busy——任务闭包捕获的旧会话名已失效（事件会发到旧名），
+    /// 继续跑会导致前端收不到 busy/事件，故必须停止。
+    pub async fn rename(&self, old: &str, new: &str) {
+        let slot = self.slots.lock().await.remove(old);
+        let Some(slot) = slot else { return };
+        if let Some(handle) = slot.task.lock().await.take() {
+            handle.abort();
+        }
+        slot.busy.store(false, Ordering::SeqCst);
+        self.slots.lock().await.insert(new.to_string(), slot);
+    }
+
     /// 用最新 AI 配置重建所有空闲会话槽（运行中的跳过，避免与进行中请求互踩）
     async fn rebuild_idle(&self, ai_cfg: Option<&crate::config::AiConfig>) {
         // P92：先在 slots 锁内收集空闲槽的 Arc 与新模式，释放锁后再逐个取 agent 锁重建。
@@ -392,8 +406,8 @@ pub async fn update_session(
         }
         // 迁移文件面板跟踪目录,避免残留旧键
         state.fs_cwd.lock().await.remove(&old_name);
-        // 迁移 AI 槽:旧名历史/忙碌/控制通道不残留(新名会懒创建)
-        state.ai.remove(&old_name).await;
+        // 迁移 AI 槽：保留对话历史/模式（P96），运行中任务停止；新名懒创建不再清空历史
+        state.ai.rename(&old_name, &info.name).await;
     }
     state.persist_sessions().await.map_err(|e| e.to_string())
 }

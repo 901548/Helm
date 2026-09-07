@@ -340,9 +340,14 @@ pub fn spawn_sysmon_poller(app: AppHandle, ssh: Arc<SshManager>) {
                     } else {
                         parse_sample(&text).map(|s| {
                             let now = Instant::now();
+                            // P96：首个采样以「当前累计值」建基线——旧实现用全 0 初始化，
+                            // 首次 dt≈0 使网速 = 累计字节/1ms 产生天文数字尖峰、CPU 显示开机以来均值
                             let p = prev.entry(name.clone()).or_insert_with(|| SysPrev {
+                                cpu_total: s.cpu_total,
+                                cpu_idle: s.cpu_idle,
+                                rx: s.rx,
+                                tx: s.tx,
                                 last_time: now,
-                                ..SysPrev::default()
                             });
                             let elapsed = now.duration_since(p.last_time);
                             let payload = build_payload(&name, &s, p, elapsed);

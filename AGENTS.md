@@ -574,6 +574,12 @@ F:\Helm\
   3. **预览下载用错上下文修复**:FileBrowser 预览弹窗「下载」原用 `lastFile + 当前 activeTab/cwd`(切标签会下错机器/目录),抽 `downloadToBrowser(session,path,filename)`,预览下载改用 `preview.session/preview.path/preview.name`(与保存一致)。
   4. **AI 回显后台会话丢失修复**:TerminalTabs 的 `aiEcho` 消费循环原「先 `lastEchoSeq = e.seq` 再 `if e.name !== activeTab continue`」——后台会话的 AI 命令/输出镜像被标记已消费却从未写终端,切回也不补写;改为按 `e.name` 写各自终端,seq 在写入后才推进。
   5. **坑**:`reject_parent_traversal` 用 `split(['/', '\\'])` 一次切两种分隔符,Windows 盘符绝对路径 `C:\Users\a.txt` 切出 `C:`/`Users`/`a.txt` 均非 `..` 故放行,正确。
+- [x] **P92 并发/资源批(4 项,已完成,`cargo test` 116 项+`cargo build` 零警告+`npm run build`/Vitest 29 项通过)**:
+  1. **test_ai_connection/ai_list_models 释放 config 锁再发网络**:原 `state.config.lock().await` 持有跨 `Agent::test_connection/list_models` 的 HTTP 请求(超时≥20s),阻塞全部会话 CRUD,且 `main.rs` 的 `blocking_lock` 可能冻结 UI 线程;改为锁内 `merged_ai_config` 出副本、释放锁后再 `.await`。
+  2. **rebuild_idle 释放 slots 锁再重建**:原持全局 `slots` 锁跨 `slot.agent.lock().await`,阻塞所有会话的 ai_submit/ai_stop/ai_control 槽访问;改为锁内只收集空闲槽 Arc + 新模式,释放锁后逐个重建 agent。
+  3. **会话改名迁移 aiBusy/aiState**:App.svelte 改名分支原只迁移 aiCards/aiTaskText/aiSummary/aiThinking,pwds——漏 `aiBusy`/`aiState`(任务中改名则新名命令条看不到 busy/停止按钮、旧名成孤儿键);补迁移两桶。
+  4. **交互 PTY 输出无上限**:ssh.rs `drain_output` 单次 drain 无上限,`yes`/`cat /dev/zero` 刷屏会撑爆内存;加 `MAX_SHELL_DRAIN_BYTES`(8MiB),超限 `out.drain(..excess)` 只保留最新尾部(最旧刷屏内容丢弃,等价滚动缓冲淘汰)。
+  5. **坑**:impl 块内关联常量在方法里要写 `Self::MAX_SHELL_DRAIN_BYTES`(裸名报 E0425 not found in scope)。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

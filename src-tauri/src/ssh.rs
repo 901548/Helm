@@ -447,6 +447,11 @@ impl SshManager {
         }
     }
 
+    /// 单次 drain 的累积上限（字节）。远端 `yes`/`cat /dev/zero` 之类会以远超
+    /// poller 消费速度刷屏，若单次 drain 无上限，内存会被撑爆（P92 修复）。
+    /// 超限时保留最新尾部（最旧字节丢弃，等价终端滚动缓冲淘汰旧内容）。
+    const MAX_SHELL_DRAIN_BYTES: usize = 8 * 1024 * 1024;
+
     /// 取回指定会话 shell 的所有待处理输出（供输出 poller 消费）
     pub async fn drain_output(&self, name: &str) -> Option<Vec<u8>> {
         let session = self.sessions.lock().await.get(name)?.clone();
@@ -455,6 +460,11 @@ impl SshManager {
         let mut out = Vec::new();
         while let Ok(bytes) = shell.rx.try_recv() {
             out.extend_from_slice(&bytes);
+            // 累积超限：只保留最新尾部，防内存膨胀（丢弃的只是最旧刷屏内容）
+            if out.len() > Self::MAX_SHELL_DRAIN_BYTES {
+                let excess = out.len() - Self::MAX_SHELL_DRAIN_BYTES;
+                out.drain(..excess);
+            }
         }
         if out.is_empty() {
             None

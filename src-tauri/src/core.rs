@@ -134,19 +134,27 @@ impl AiManager {
 
     /// 用最新 AI 配置重建所有空闲会话槽（运行中的跳过，避免与进行中请求互踩）
     async fn rebuild_idle(&self, ai_cfg: Option<&crate::config::AiConfig>) {
-        let mut m = self.slots.lock().await;
-        for slot in m.values_mut() {
-            if !slot.busy.load(Ordering::SeqCst) {
-                let agent = match ai_cfg {
-                    Some(c) => Agent::new(c).unwrap_or_default(),
-                    None => Agent::default(),
-                };
-                slot.mode_agent.store(
-                    ai_cfg.map(|c| c.mode.eq_ignore_ascii_case("agent")).unwrap_or(false),
-                    Ordering::SeqCst,
-                );
-                *slot.agent.lock().await = agent;
-            }
+        // P92：先在 slots 锁内收集空闲槽的 Arc 与新模式，释放锁后再逐个取 agent 锁重建。
+        // 此前持全局 slots 锁跨 `slot.agent.lock().await`，阻塞所有会话的 ai_submit/ai_stop 等槽访问。
+        let targets: Vec<(Arc<AiSlot>, bool)> = {
+            let m = self.slots.lock().await;
+            m.values()
+                .filter(|s| !s.busy.load(Ordering::SeqCst))
+                .map(|s| {
+                    let mode_agent = ai_cfg
+                        .map(|c| c.mode.eq_ignore_ascii_case("agent"))
+                        .unwrap_or(false);
+                    (s.clone(), mode_agent)
+                })
+                .collect()
+        };
+        for (slot, mode_agent) in targets {
+            let agent = match ai_cfg {
+                Some(c) => Agent::new(c).unwrap_or_default(),
+                None => Agent::default(),
+            };
+            slot.mode_agent.store(mode_agent, Ordering::SeqCst);
+            *slot.agent.lock().await = agent;
         }
     }
 }
@@ -1075,8 +1083,14 @@ pub async fn test_ai_connection(
     api_base_url: Option<String>,
     api_key: Option<String>,
 ) -> Result<String, String> {
-    let cfg = state.config.lock().await;
-    Agent::test_connection(&merged_ai_config(&cfg, model, api_base_url, api_key)).await
+    // P92：先在锁内合并出配置副本，释放锁后再发网络请求——
+    // 否则测试连接(HTTP 超时≥20s)期间全局 config 锁被持有，阻塞所有会话 CRUD，
+    // 且 main.rs 的 blocking_lock 可能冻结 UI 线程。
+    let merged = {
+        let cfg = state.config.lock().await;
+        merged_ai_config(&cfg, model, api_base_url, api_key)
+    };
+    Agent::test_connection(&merged).await
 }
 
 /// 拉取提供商可用模型列表（GET /models，只读探测，规则同 test_ai_connection）
@@ -1087,8 +1101,11 @@ pub async fn ai_list_models(
     api_base_url: Option<String>,
     api_key: Option<String>,
 ) -> Result<Vec<String>, String> {
-    let cfg = state.config.lock().await;
-    Agent::list_models(&merged_ai_config(&cfg, model, api_base_url, api_key)).await
+    let merged = {
+        let cfg = state.config.lock().await;
+        merged_ai_config(&cfg, model, api_base_url, api_key)
+    };
+    Agent::list_models(&merged).await
 }
 
 /// 读取 UI 配置（None 表示未配置，用默认值）

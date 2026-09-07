@@ -396,7 +396,8 @@
           pwds[info.name] = pwds[oldName];
           delete pwds[oldName];
         }
-        // P89：AI 对话桶跟随改名
+        // P89/P92：AI 对话桶 + busy/state 跟随改名（改名时 AI 任务进行中则同步迁移，
+        // 否则新名命令条看不到 busy/停止按钮，旧名成为孤儿键）
         if (aiCards[oldName] !== undefined) {
           aiCards[info.name] = aiCards[oldName];
           delete aiCards[oldName];
@@ -406,6 +407,14 @@
           delete aiSummary[oldName];
           aiThinking[info.name] = aiThinking[oldName];
           delete aiThinking[oldName];
+        }
+        if (aiBusy[oldName] !== undefined) {
+          aiBusy[info.name] = aiBusy[oldName];
+          delete aiBusy[oldName];
+        }
+        if (aiState[oldName] !== undefined) {
+          aiState[info.name] = aiState[oldName];
+          delete aiState[oldName];
         }
         if (activeTab === oldName) {
           activeTab = info.name;

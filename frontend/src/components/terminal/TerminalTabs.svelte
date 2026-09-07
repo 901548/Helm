@@ -288,7 +288,9 @@
     term.onData((data) => {
       // P73：ZMODEM 会话进行中吞掉键入（协议字节专用通道，防破坏帧序）
       if (terminals.get(name)?.zsession) return;
-      api.sendActiveInput(new TextEncoder().encode(data));
+      // P94：直发到本会话（闭包捕获的 name），不依赖后端"active"状态——
+      // 旧 send_active_input 无名，切标签瞬间键入的字节可能路由到上一会话
+      api.sendInput(name, new TextEncoder().encode(data));
     });
     term.onSelectionChange(() => {
       if (term.hasSelection()) {
@@ -375,6 +377,8 @@
   }
 
   function paste() {
+    const name = activeTab;
+    if (!name) return;
     navigator.clipboard
       .readText()
       .then((text) => {
@@ -383,7 +387,8 @@
         if (lines > 1 && !window.confirm(`粘贴内容包含 ${lines} 行命令，将逐行发送到终端执行。确定继续？`)) {
           return;
         }
-        api.sendActiveInput(new TextEncoder().encode(text));
+        // P94：直发到粘贴发起时的会话，防切标签竞态路由错会话
+        api.sendInput(name, new TextEncoder().encode(text));
       })
       .catch(() => {});
   }

@@ -37,6 +37,9 @@
   let echoSeq = 0;
   let logId = 0;
   let cardId = 0;
+  // P93：conv 拉取的 last-write-wins 序列号——切标签/提交新任务都会作废在途的旧快照，
+  // 防旧 aiConvRead 结果晚到覆盖掉刚落地的新卡片
+  let convSeq = 0;
 
   let showSessionForm = $state(false);
   let editingSession = $state<SessionInfo | null>(null);
@@ -511,10 +514,11 @@
   $effect(() => {
     const n = activeTab;
     if (!n) return;
+    const seq = ++convSeq;
     api
       .aiConvRead(n)
       .then((conv) => {
-        if (activeTab !== n) return; // 会话已切走，丢弃
+        if (seq !== convSeq || activeTab !== n) return; // 已切走或已有更新拉取，丢弃
         // Task 条目回填任务文本（非卡片）；Qa/Plan/Step 映射为卡片
         const taskEntry = conv.find((e) => String(e.kind ?? "") === "task");
         const taskText = taskEntry ? String((taskEntry as Record<string, unknown>).task ?? "") : "";
@@ -555,6 +559,8 @@
   async function submitFromDock(text: string, container?: string | null, termContext?: string | null) {
     if (!text.trim() || aiBusy[activeTab ?? ""]) return;
     const name = activeTab ?? "";
+    // 提交新任务：作废在途的旧 conv 拉取，避免其晚到覆盖刚建的任务头/卡片
+    convSeq++;
     updateCards(name, () => (aiMode === "qa" ? [{ id: ++cardId, kind: "qa", text: "", done: false }] : []));
     aiTaskText = { ...aiTaskText, [name]: text };
     aiSummary = { ...aiSummary, [name]: null };

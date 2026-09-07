@@ -37,6 +37,17 @@ export function parentPathWindows(cwd: string): string | null {
   return "\\";
 }
 
+/// 校验为单一文件名/目录名分量（新建目录、重命名的输入框）：
+/// 非空、不含路径分隔符 `/` 或 `\`、不是 `.` / `..`。
+/// 拒绝穿越/覆盖面：`../x` 会逃逸出当前目录，`a/b` 会变成任意路径移动且可覆盖已存在文件。
+export function isValidEntryName(name: string): boolean {
+  const t = name.trim();
+  if (!t) return false;
+  if (t === "." || t === "..") return false;
+  if (t.includes("/") || t.includes("\\")) return false;
+  return true;
+}
+
 /// bash 单引号安全包裹(`'` → `'\''`)
 export function shq(p: string): string {
   return "'" + p.replace(/'/g, "'\\''") + "'";

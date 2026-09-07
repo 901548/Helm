@@ -622,15 +622,16 @@
     }
   }
 
-  /// AI 回显：把 App 推送的文本按 seq 顺序写入活动终端(队列消费,不丢批次中间条目)
+  /// AI 回显：把 App 推送的文本按 seq 顺序写入各自会话的终端。
+  /// P91：写目标终端按事件所属会话(e.name)，非活动会话的 AI 命令/输出镜像也写进其终端；
+  /// 此前先推进 seq 再过滤活动会话，后台会话的镜像被标记已消费却从未写入（切回也不补写，永久丢失）。
   let lastEchoSeq = 0;
   $effect(() => {
     for (const e of aiEcho) {
       if (e.seq <= lastEchoSeq) continue;
-      lastEchoSeq = e.seq;
-      if (!activeTab || e.name !== activeTab) continue;
-      const term = terminals.get(activeTab)?.term;
+      const term = terminals.get(e.name)?.term;
       if (term) term.write(new TextEncoder().encode(e.text));
+      lastEchoSeq = e.seq;
     }
   });
 

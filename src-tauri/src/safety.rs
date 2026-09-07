@@ -190,6 +190,19 @@ fn first_command(tokens: &[String]) -> &str {
         .unwrap_or("")
 }
 
+/// 命令名（first_command，含 basename 归一化）或任一令牌**精确**等于 name。
+/// 「任一精确匹配」是给 xargs 合并分析用的（危险命令出现在 xargs 之后、非命令位）；
+/// 只对命令名做 basename，避免把 `tar -rf archive /etc/rm`、`ls /usr/sbin/mkfs.ext4`
+/// 这类「路径参数恰好叫 rm/mkfs」误判成危险命令。
+fn cmd_is(tokens: &[String], name: &str) -> bool {
+    first_command(tokens) == name || tokens.iter().any(|t| t == name)
+}
+
+/// 命令名或任一令牌前缀匹配 prefix（mkfs 系列：mkfs.ext4/mkfs.xfs...）
+fn cmd_starts(tokens: &[String], prefix: &str) -> bool {
+    first_command(tokens).starts_with(prefix) || tokens.iter().any(|t| t.starts_with(prefix))
+}
+
 /// 判断命令名（basename）是否为"执行器"：`sh -c`/`eval`/`python -c`/`perl -e` 等
 /// 会把后续参数字符串**真正执行**（不同于 `echo 'rm -rf /'` 只打印文本）。
 /// 这类包装器若不递归判级，危险命令会借壳绕过安全护栏。
@@ -214,12 +227,19 @@ fn is_script_executor(name: &str) -> bool {
     )
 }
 
-/// 定位执行器命令名（跳过 sudo/env 等前置包装器），返回 (token 下标, basename)。无执行器返回 None。
+/// 定位执行器命令名，返回 (token 下标, basename)。无执行器返回 None。
+/// 语义与 first_command 一致：只认「第一个非包装器/非前导选项」的命令名——
+/// 绝不扫描参数位置，否则 `echo sh -c 'rm -rf /'` 会把参数里的 `sh` 当执行器误判。
 fn executor_pos(tokens: &[String]) -> Option<(usize, &str)> {
     let idx = tokens
         .iter()
-        .position(|t| !t.starts_with('-') && !COMMAND_WRAPPERS.contains(&t.as_str()) && is_executor(t))?;
-    Some((idx, basename(&tokens[idx])))
+        .position(|t| !t.starts_with('-') && !COMMAND_WRAPPERS.contains(&t.as_str()))?;
+    let name = basename(&tokens[idx]);
+    if is_executor(name) {
+        Some((idx, name))
+    } else {
+        None
+    }
 }
 
 /// 提取执行器真正要执行的代码串；不是执行器包装时返回 None。
@@ -277,14 +297,14 @@ fn check_segment(seg: &str) -> (DangerLevel, &'static str) {
 /// token 级危险判定(供段分析与 xargs 管道合并分析复用)
 fn check_tokens(tokens: &[String]) -> (DangerLevel, &'static str) {
     // Critical：rm -rf 指向根路径（命令名按 basename 归一化，覆盖 /bin/rm 等绝对路径）
-    if tokens.iter().any(|t| basename(t) == "rm") && rm_flags(&tokens).is_some() {
+    if cmd_is(tokens, "rm") && rm_flags(&tokens).is_some() {
         if has_root_target(&tokens) {
             return (DangerLevel::Critical, "删除根目录 (rm -rf /)");
         }
         return (DangerLevel::Warning, "递归删除文件 (rm -rf)");
     }
     // Critical：chmod 777 根路径 / shutdown / reboot / mkfs / dd 写磁盘
-    if tokens.iter().any(|t| basename(t) == "chmod") {
+    if cmd_is(tokens, "chmod") {
         let has777 = tokens.iter().any(|t| t.contains("777"));
         if has777 && has_root_target(&tokens) {
             return (DangerLevel::Critical, "根目录设置为 777 权限");
@@ -303,10 +323,10 @@ fn check_tokens(tokens: &[String]) -> (DangerLevel, &'static str) {
         "parted" => return (DangerLevel::Warning, "磁盘分区操作 (parted)"),
         _ => {}
     }
-    if tokens.iter().any(|t| basename(t).starts_with("mkfs")) {
+    if cmd_starts(tokens, "mkfs") {
         return (DangerLevel::Critical, "格式化磁盘 (mkfs)");
     }
-    if tokens.iter().any(|t| basename(t) == "dd")
+    if cmd_is(tokens, "dd")
         && tokens.iter().any(|t| {
             t.starts_with("of=/dev/sd")
                 || t.starts_with("of=/dev/nvme")
@@ -351,8 +371,8 @@ fn check_danger_inner(cmd: &str, depth: u8) -> (DangerLevel, String) {
             continue;
         }
         let tokens = tokenize_segment(seg);
-        let dangerous = (tokens.iter().any(|t| basename(t) == "rm") && rm_flags(&tokens).is_some())
-            || tokens.iter().any(|t| basename(t).starts_with("mkfs"));
+        let dangerous = (cmd_is(&tokens, "rm") && rm_flags(&tokens).is_some())
+            || cmd_starts(&tokens, "mkfs");
         if dangerous && tokens.iter().any(|t| token_is_root_wipe(t)) {
             return (DangerLevel::Critical, "命令替换中出现根目标 (rm -rf $(... /))".to_string());
         }
@@ -576,6 +596,8 @@ mod tests {
         // 非执行器仍不误报（echo 只打印）
         is(DangerLevel::Safe, "echo 'rm -rf /'");
         is(DangerLevel::Safe, "echo sh -c rm");
+        // 参数位置出现执行器名不算（echo sh -c 'rm -rf /' 只是打印）
+        is(DangerLevel::Safe, "echo sh -c 'rm -rf /'");
     }
 
     #[test]
@@ -584,5 +606,16 @@ mod tests {
         is(DangerLevel::Safe, "sh -c 'echo hello'");
         is(DangerLevel::Safe, "python3 -c 'print(1+1)'");
         is(DangerLevel::Safe, "bash -c 'ls -la'");
+    }
+
+    /// basename 归一化只作用于命令名位置，路径参数恰好叫 rm/mkfs/dd 不得误判
+    #[test]
+    fn path_argument_named_like_danger_not_misjudged() {
+        is(DangerLevel::Safe, "cat /etc/rm");
+        is(DangerLevel::Safe, "tar -rf archive /etc/rm");
+        is(DangerLevel::Safe, "ls /usr/sbin/mkfs.ext4");
+        is(DangerLevel::Safe, "cp -rf src /tmp/rm");
+        is(DangerLevel::Safe, "ls /bin/dd");
+        is(DangerLevel::Safe, "echo /sbin/shutdown");
     }
 }

@@ -603,6 +603,11 @@ F:\Helm\
   6. **改名清空 AI 历史(前端)**:后端 `update_session` 改名时 `ai.remove` 丢弃含 conv 的槽,前端迁移卡片被空 conv 覆盖;新增 `AiManager::rename`(保留 conv/agent/mode,运行中任务 abort + reset busy),前端改名只迁移 aiMode/pwds,卡片/busy/state 交给 $effect 用后端 conv 重建。
   7. **aiConvRead 丢进行中卡片(前端)**:切标签往返时后端 conv 只含「已完成」条目,全量覆盖清掉流式中的 QA 卡/待确认卡;`aiBusy[n]` 期间跳过覆盖(任务结束事件已更新卡片,下次切标签再读 conv)。+ aiEcho 终端未建时不再推进 seq(加 termVersion 信号,终端建立后重放滞留回显,连接失败错误不再丢失)。
   8. **坑**:ESC/CSI 终结字节范围 0x40-0x7E **含 `[`(0x5B)本身**——直接按范围判会把 CSI 引入符 `[` 误当终结;必须显式 `if data[i] == b'['` 先跳引入符,再按 `c >= 0x40` 判终结。
+- [x] **P97 文件面板拖拽调高修复(纯前端,`npm run build` 通过 + CDP 真机验证)**:
+  1. **动机**:用户反馈「文件窗口没办法用鼠标拉动」。根因:`.fs-panel` 高度是 `collapsed ? 32 : panelHeight`,**折叠态下 height 被锁死 32px**,而 `.fs-resize` 拖拽手柄始终渲染——折叠态拖拽时 `startResize` 虽改了 panelHeight 但被 collapsed 覆盖,视觉上"拉不动"。
+  2. **修复(FileBrowser.svelte)**:`startResize` 里若 `collapsed` 则先置 `collapsed=false` 展开,且 `startH` 取当前 32px(而非上次 panelHeight),折叠态拖拽即「展开 + 从 32px 起调高」;拖拽手柄高度 4px → 6px(提升可点性)。
+  3. **验证**:CDP 折叠态拖拽 → 自动展开 + 高度 32→182px;展开态拖拽 327→527px 正常。
+  4. **坑**:dev 模式下用 Edit 改 svelte 文件时,vite 文件 watcher 可能 `EBUSY` 崩溃(Windows 文件锁),HMR 不生效且 beforeDevCommand 非零退出——需重启 `cargo tauri dev` 让改动生效。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

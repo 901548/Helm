@@ -337,8 +337,11 @@
 
   function startResize(e: MouseEvent) {
     e.preventDefault();
+    // P97：折叠态下拖拽手柄也应能调高——先展开，起点取当前 32px（而非上次 panelHeight），
+    // 否则 height 被 collapsed 锁死 32，折叠态拖拽完全无效（用户"拉不动"）
     const startY = e.clientY;
-    const startH = panelHeight;
+    const startH = collapsed ? 32 : panelHeight;
+    if (collapsed) collapsed = false;
     const onMove = (ev: MouseEvent) => {
       panelHeight = Math.min(600, Math.max(80, startH + (startY - ev.clientY)));
     };
@@ -940,7 +943,7 @@
     top: 0;
     left: 0;
     right: 0;
-    height: 4px;
+    height: 6px;
     cursor: ns-resize;
     z-index: 6;
   }

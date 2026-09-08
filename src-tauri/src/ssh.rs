@@ -678,7 +678,7 @@ mod tests {
 
     
     /// 真实服务器连接测试：连接 → 打开交互 shell → 发命令 → 读输出。
-    /// 依赖 10.0.0.20 (root/<test-password>) 在线，离线时跳过。
+    /// 依赖 config.yaml 中配置的测试服务器在线，离线时跳过。
     fn live_session() -> Option<SessionInfo> {
         let cfg = crate::config::load_config(None).ok()?;
         cfg.sessions.into_iter().next()

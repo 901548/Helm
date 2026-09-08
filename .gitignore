@@ -35,3 +35,6 @@ logs/
 
 # P84 评测基准运行结果(时间戳产物,不入库;脚本 scripts/bench/run.mjs 保留)
 scripts/bench/results-*.json
+
+# 内部开发档案(含内网 IP/测试凭据/踩坑记录,仅本地保留;公开仓库不含)
+AGENTS.md

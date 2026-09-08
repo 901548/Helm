@@ -607,7 +607,7 @@ mod tests {
     }
 
     /// 真实服务器 SFTP 链路验证（只读）：列根目录 → 读 /etc/hostname → 取当前目录。
-    /// 依赖 192.168.79.150 在线，离线时跳过。
+    /// 依赖 config.yaml 中配置的测试服务器在线，离线时跳过。
     fn live_mgr() -> Option<(Arc<SshManager>, String)> {
         let cfg = crate::config::load_config(None).ok()?;
         let info = cfg.sessions.into_iter().next()?;
@@ -652,7 +652,7 @@ mod tests {
 
     /// 真实服务器 SFTP 读写链路验证：mkdir → 分块上传(覆盖+追加) → 列目录 →
     /// 预览(含截断/二进制拒绝) → 下载回读 base64 → 改名 → 递归删除 → 断开。
-    /// 依赖 192.168.79.150 在线，离线时跳过。
+    /// 依赖 config.yaml 中配置的测试服务器在线，离线时跳过。
     #[tokio::test]
     async fn sftp_live_readwrite() {
         let Some((mgr, name)) = live_mgr() else {

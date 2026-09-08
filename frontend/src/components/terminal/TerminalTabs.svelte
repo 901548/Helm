@@ -25,7 +25,6 @@
     onReconnect: () => void;
     onSelect: (name: string) => void;
     onClose: (name: string) => void;
-    onAdd: () => void;
     onCd?: (name: string, target: string) => void;
     onPwd?: (name: string, pwd: string) => void;
     aiMode: "qa" | "agent";
@@ -62,7 +61,6 @@
     onReconnect,
     onSelect,
     onClose,
-    onAdd,
     onCd,
     onPwd,
     aiMode,
@@ -785,9 +783,6 @@
   <button class="tab-btn" title="搜索 (Ctrl+F)" onclick={() => (showSearch = true)}>
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" /></svg>
   </button>
-  <button class="tab-add" title="新建会话" onclick={onAdd}>
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
-  </button>
 </div>
 
 <SysMonitor {activeTab} />
@@ -1022,23 +1017,6 @@
     transition: color 0.12s ease, background 0.12s ease;
   }
   .tab-btn:hover {
-    color: var(--accent);
-    background: var(--hover);
-  }
-  .tab-add {
-    border: none;
-    background: transparent;
-    color: var(--tabbar-fg);
-    cursor: pointer;
-    padding: 0 0.8rem;
-    height: 100%;
-    border-radius: var(--radius-sm);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    transition: color 0.12s ease, background 0.12s ease;
-  }
-  .tab-add:hover {
     color: var(--accent);
     background: var(--hover);
   }

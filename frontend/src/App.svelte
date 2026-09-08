@@ -733,7 +733,6 @@
           onReconnect={() => { if (activeTab) connectSession(activeTab); }}
           onSelect={selectSession}
           onClose={onTabClose}
-          onAdd={openNewSession}
           onCd={handleCd}
           onPwd={handlePwd}
           aiMode={aiMode[activeTab ?? ""] ?? "qa"}

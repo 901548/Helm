@@ -608,6 +608,10 @@ F:\Helm\
   2. **修复(FileBrowser.svelte)**:`startResize` 里若 `collapsed` 则先置 `collapsed=false` 展开,且 `startH` 取当前 32px(而非上次 panelHeight),折叠态拖拽即「展开 + 从 32px 起调高」;拖拽手柄高度 4px → 6px(提升可点性)。
   3. **验证**:CDP 折叠态拖拽 → 自动展开 + 高度 32→182px;展开态拖拽 327→527px 正常。
   4. **坑**:dev 模式下用 Edit 改 svelte 文件时,vite 文件 watcher 可能 `EBUSY` 崩溃(Windows 文件锁),HMR 不生效且 beforeDevCommand 非零退出——需重启 `cargo tauri dev` 让改动生效。
+- [x] **P98 移除 tabbar 重复「新建会话」按钮(纯前端,`npm run build`/Vitest 29 项通过)**:
+  1. **动机**:用户反馈左上角(会话栏 header)与右上角(tabbar)各有一个「＋」按钮、都调 `openNewSession` 新建会话,功能重复冲突。
+  2. **修复**:删除 TerminalTabs 的 `.tab-add` 按钮及其 `onAdd` prop、对应 CSS,App 移除 `onAdd={openNewSession}` 传参。保留会话栏 header 的「＋新建会话」作为唯一权威入口(语义清晰:会话列表旁建会话);tabbar 现在只留标签 + 搜索按钮。
+  3. **坑**:删除 prop 要同步清理三处(Props 声明 / `$props` 解构 / 调用点传参)与对应 CSS,漏任一处会留死代码或 `onAdd is not a function`。
 
 ## 6. 命令与验证
 - 前端开发:`npm run dev`(Vite)

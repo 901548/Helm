@@ -4,16 +4,6 @@
 
 Windows 桌面应用：多标签 SSH 终端、SFTP 文件管理、系统监控，以及一个能直接在远程服务器上逐步执行命令、完成自然语言任务的 AI Agent。基于 Tauri v2（WebView2），Win10/11 双击即用，无需安装浏览器或运行时。
 
-## 截图
-
-| 主界面（SSH 终端 + 文件面板） | AI 问答 |
-|:---:|:---:|
-| ![主界面](docs/screenshots/ui-live-connected.png) | ![AI 问答](docs/screenshots/ui-audit-2-qa-answer.png) |
-
-| Agent 计划确认（危险命令） | 操作历史面板 |
-|:---:|:---:|
-| ![计划确认](docs/screenshots/ui-review-plan-confirm.png) | ![历史面板](docs/screenshots/p87-history-panel.png) |
-
 ## 功能特性
 
 ### 终端与连接

@@ -32,8 +32,6 @@ ai:
 ui:
   window_width: 1200
   window_height: 800
-  window_x: 244
-  window_y: 50
   dock_sessions: true
   dock_chat: true
   sessions_panel_pct: 22

@@ -77,7 +77,7 @@ cargo tauri build    # 打包 release:helm.exe + msi + nsis 安装包
 运行测试：
 
 ```bash
-cd src-tauri && cargo test    # 104 项(含 SSH/SFTP live 测试,服务器离线自动跳过)
+cd src-tauri && cargo test    # 121 项(含 SSH/SFTP live 测试,服务器离线自动跳过)
 npm run build                 # 前端构建
 npm test                     # 前端单元测试(Vitest)
 ```
@@ -87,6 +87,7 @@ npm test                     # 前端单元测试(Vitest)
 ## 配置
 
 配置文件查找顺序：命令行指定 > `./config.yaml` > `~/.config/helm/config.yaml`。
+首次使用可将 `config.example.yaml` 复制为 `config.yaml` 按需修改（真实 `config.yaml` 不入库）。
 
 ```yaml
 sessions:

@@ -392,13 +392,25 @@ pub fn load_config_with_path(cli_path: Option<&str>) -> Result<(PathBuf, HelmCon
 /// 将配置写回指定的 YAML 文件
 pub fn save_config(path: &Path, config: &HelmConfig) -> Result<()> {
     let content = serde_yaml::to_string(config)?;
-    // 原子写入:先写同目录唯一临时文件再 rename 替换,避免写一半崩溃损坏 config.yaml
-    // (会丢掉全部会话含 DPAPI 密文密码)。临时文件用 进程ID+序号 保证唯一,并发保存
-    // (persist_sessions 锁外 save、update_* 锁内 save)不再双写同一 tmp 相互踩踏;
-    // 崩溃残留至多一个唯一 tmp,rename 对已存在目标等同替换(Windows 亦然)。
+    atomic_write(path, &content)
+}
+
+/// P100-1：通用原子写（同目录唯一临时文件 + rename 替换），供 config.yaml 与 known_hosts.json 共用。
+/// 临时文件用 进程ID+序号 保证唯一,并发保存不再双写同一 tmp 相互踩踏;
+/// 崩溃残留至多一个唯一 tmp,rename 对已存在目标等同替换(Windows 亦然)。
+pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let nonce = SEQ.fetch_add(1, Ordering::Relaxed);
-    let tmp = path.with_extension(format!("yaml.tmp-{}-{}", std::process::id(), nonce));
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let tmp = path.with_extension(format!(
+        "{}.tmp-{}-{}",
+        if ext.is_empty() { "tmp" } else { &ext },
+        std::process::id(),
+        nonce
+    ));
     std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, path)?;
     Ok(())

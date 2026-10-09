@@ -287,13 +287,34 @@ impl CoreState {
         self.config.lock().await.sessions.clone()
     }
 
-    /// 将会话列表写回配置文件
-    async fn persist_sessions(&self) -> Result<()> {
-        // P94：持锁内完成 clone + save——旧实现锁外 save，与 update_ai_config/update_ui_config
-        // 的锁内 save 交错时可能丢失更新（后写者覆盖先写者未含对方改动的快照）
-        let config = self.config.lock().await;
-        save_config(&self.config_path, &config)
+    /// P100-3：配置变更统一入口——在**副本**上改动 → 落盘成功 → 提交内存。
+    ///
+    /// 旧实现（add/update/delete_session、update_ai/ui_config）都是"先改内存再 save"：
+    /// save 失败只返回 Err，但内存已经生效 → 当前进程按新值工作、重启后改动消失，
+    /// 出现"界面看着改了、重启就没了"的内存/磁盘发散。改为副本提交后，失败即整体无改动。
+    async fn mutate_config<F>(&self, f: F) -> Result<(), String>
+    where
+        F: FnOnce(&mut crate::config::HelmConfig) -> Result<(), String>,
+    {
+        let mut guard = self.config.lock().await;
+        commit_mutation(&mut *guard, f, |next| {
+            save_config(&self.config_path, next).map_err(|e| e.to_string())
+        })
     }
+}
+
+/// 副本提交：`current` 的克隆上执行 `f`，`save` 成功后才写回 `current`。
+/// 抽成自由函数是为了可单测（注入必定失败的 save 闭包即可验证"不提交"）。
+fn commit_mutation<T: Clone>(
+    current: &mut T,
+    f: impl FnOnce(&mut T) -> Result<(), String>,
+    save: impl FnOnce(&T) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut next = current.clone();
+    f(&mut next)?;
+    save(&next)?;
+    *current = next;
+    Ok(())
 }
 
 // ---------- 会话 commands ----------
@@ -363,14 +384,15 @@ pub async fn session_status(
 #[tauri::command]
 pub async fn add_session(state: State<'_, CoreState>, mut info: SessionInfo) -> Result<(), String> {
     info.password = persist_session_password(info.password.as_deref(), None)?;
-    {
-        let mut config = state.config.lock().await;
-        if config.sessions.iter().any(|s| s.name == info.name) {
-            return Err(format!("会话名称 {} 已存在", info.name));
-        }
-        config.sessions.push(info);
-    }
-    state.persist_sessions().await.map_err(|e| e.to_string())
+    state
+        .mutate_config(|cfg| {
+            if cfg.sessions.iter().any(|s| s.name == info.name) {
+                return Err(format!("会话名称 {} 已存在", info.name));
+            }
+            cfg.sessions.push(info.clone());
+            Ok(())
+        })
+        .await
 }
 
 /// 更新会话（旧名定位；重名但非自身报错），密码哨兵/留空保留旧密文，明文重新加密，成功写回配置。
@@ -381,25 +403,30 @@ pub async fn update_session(
     old_name: String,
     mut info: SessionInfo,
 ) -> Result<(), String> {
-    {
-        let mut config = state.config.lock().await;
-        if config
-            .sessions
-            .iter()
-            .any(|s| s.name == info.name && s.name != old_name)
-        {
-            return Err(format!("会话名称 {} 已存在", info.name));
-        }
-        if let Some(pos) = config.sessions.iter().position(|s| s.name == old_name) {
-            let old_pw = config.sessions[pos].password.clone();
-            info.password = persist_session_password(info.password.as_deref(), old_pw.as_deref())?;
-            config.sessions[pos] = info.clone();
-        } else {
-            // 旧名不存在:显式报错,不再静默成功(前端会误以为已保存)
-            return Err(format!("会话 {} 不存在(可能已被删除或改名)", old_name));
-        }
-    }
-    if old_name != info.name {
+    let new_name = info.name.clone();
+    state
+        .mutate_config(|cfg| {
+            if cfg
+                .sessions
+                .iter()
+                .any(|s| s.name == info.name && s.name != old_name)
+            {
+                return Err(format!("会话名称 {} 已存在", info.name));
+            }
+            if let Some(pos) = cfg.sessions.iter().position(|s| s.name == old_name) {
+                let old_pw = cfg.sessions[pos].password.clone();
+                info.password =
+                    persist_session_password(info.password.as_deref(), old_pw.as_deref())?;
+                cfg.sessions[pos] = info.clone();
+                Ok(())
+            } else {
+                // 旧名不存在:显式报错,不再静默成功(前端会误以为已保存)
+                Err(format!("会话 {} 不存在(可能已被删除或改名)", old_name))
+            }
+        })
+        .await?;
+    // 落盘成功后再做运行时迁移，失败时不留半成品状态
+    if old_name != new_name {
         let ssh = state.ssh.clone();
         if ssh.get_status(&old_name).await != SessionStatus::Disconnected {
             ssh.disconnect(&old_name).await;
@@ -407,24 +434,25 @@ pub async fn update_session(
         // 迁移文件面板跟踪目录,避免残留旧键
         state.fs_cwd.lock().await.remove(&old_name);
         // 迁移 AI 槽：保留对话历史/模式（P96），运行中任务停止；新名懒创建不再清空历史
-        state.ai.rename(&old_name, &info.name).await;
+        state.ai.rename(&old_name, &new_name).await;
     }
-    state.persist_sessions().await.map_err(|e| e.to_string())
+    Ok(())
 }
 
 /// 删除会话并断开连接，成功写回配置
 #[tauri::command]
 pub async fn delete_session(state: State<'_, CoreState>, name: String) -> Result<(), String> {
-    {
-        state.ssh.remove(&name).await;
-        state.fs_cwd.lock().await.remove(&name);
-        state.ai.remove(&name).await;
-    }
-    {
-        let mut config = state.config.lock().await;
-        config.sessions.retain(|s| s.name != name);
-    }
-    state.persist_sessions().await.map_err(|e| e.to_string())
+    state
+        .mutate_config(|cfg| {
+            cfg.sessions.retain(|s| s.name != name);
+            Ok(())
+        })
+        .await?;
+    // 配置已落盘，再清理运行时资源
+    state.ssh.remove(&name).await;
+    state.fs_cwd.lock().await.remove(&name);
+    state.ai.remove(&name).await;
+    Ok(())
 }
 
 /// 后台连接会话：connect → open_shell(cols,rows) → set_active，结果发 "connection" 事件
@@ -794,10 +822,16 @@ pub async fn zmodem_save(name: String, b64: String) -> Result<String, String> {
     if safe.is_empty() {
         return Err("空文件名".into());
     }
+    // P100-2：先按 base64 长度估算再解码——旧实现先 decode 再判上限，
+    // 超限内容已被完整展开进内存（内存放大），估算后可直接拒绝
+    const MAX_ZMODEM_BYTES: usize = 256 * 1024 * 1024;
+    if b64.len() / 4 * 3 > MAX_ZMODEM_BYTES {
+        return Err("文件超过 256MiB 上限".into());
+    }
     let bytes = BASE64
         .decode(b64.as_bytes())
         .map_err(|e| format!("base64 解码失败: {e}"))?;
-    if bytes.len() > 256 * 1024 * 1024 {
+    if bytes.len() > MAX_ZMODEM_BYTES {
         return Err("文件超过 256MiB 上限".into());
     }
     let mut dir = dirs::home_dir().ok_or("无法定位主目录")?;
@@ -1052,20 +1086,21 @@ pub async fn update_ai_config(
     state: State<'_, CoreState>,
     mut config: crate::config::AiConfig,
 ) -> Result<(), String> {
-    {
-        let cfg = state.config.lock().await;
-        let old_cipher = cfg.ai.as_ref().and_then(|a| a.api_key.clone());
-        match config.api_key.as_ref().map(|k| k.trim()).unwrap_or("") {
-            "" | "·" => config.api_key = old_cipher,
-            plain => config.api_key = Some(crate::crypto::encrypt_api_key(plain).map_err(|e| e.to_string())?),
-        }
-    }
-    {
-        let mut cfg = state.config.lock().await;
-        cfg.ai = Some(config);
-        // P94：save 在锁内完成（与 persist_sessions/update_ui_config 对齐，防丢失更新）
-        save_config(&state.config_path, &cfg).map_err(|e| e.to_string())?;
-    }
+    // 加密/保留密文需要读旧值；在副本提交闭包内完成（读的是克隆，语义不变）
+    state
+        .mutate_config(|cfg| {
+            let old_cipher = cfg.ai.as_ref().and_then(|a| a.api_key.clone());
+            match config.api_key.as_ref().map(|k| k.trim()).unwrap_or("") {
+                "" | "·" => config.api_key = old_cipher,
+                plain => {
+                    config.api_key =
+                        Some(crate::crypto::encrypt_api_key(plain).map_err(|e| e.to_string())?)
+                }
+            }
+            cfg.ai = Some(config.clone());
+            Ok(())
+        })
+        .await?;
     // P94：释放 config 锁后再重建空闲槽——旧实现持锁跨 rebuild_idle 的 await，
     // 阻塞所有会话 CRUD/ai_submit 读 config
     let ai_cfg = {
@@ -1158,20 +1193,20 @@ pub async fn update_ui_config(
     state: State<'_, CoreState>,
     mut config: crate::config::UiConfig,
 ) -> Result<(), String> {
-    {
-        let mut cfg = state.config.lock().await;
-        // 窗口几何(宽高/位置)只由 P26-6 的"拖拽 + 退出落盘"管理，设置弹窗不再改写：
-        // 一律保留磁盘现值，防止表单透传的陈旧值把窗口拉回旧尺寸/旧位置
-        if let Some(existing) = cfg.ui.as_ref() {
-            config.window_width = existing.window_width;
-            config.window_height = existing.window_height;
-            config.window_x = existing.window_x;
-            config.window_y = existing.window_y;
-        }
-        cfg.ui = Some(config.clone());
-        // P94：save 在锁内完成，与 persist_sessions/update_ai_config 的锁内 save 对齐，防丢失更新
-        save_config(&state.config_path, &cfg).map_err(|e| e.to_string())?;
-    }
+    state
+        .mutate_config(|cfg| {
+            // 窗口几何(宽高/位置)只由 P26-6 的"拖拽 + 退出落盘"管理，设置弹窗不再改写：
+            // 一律保留磁盘现值，防止表单透传的陈旧值把窗口拉回旧尺寸/旧位置
+            if let Some(existing) = cfg.ui.as_ref() {
+                config.window_width = existing.window_width;
+                config.window_height = existing.window_height;
+                config.window_x = existing.window_x;
+                config.window_y = existing.window_y;
+            }
+            cfg.ui = Some(config.clone());
+            Ok(())
+        })
+        .await?;
     // P70：记录开关即时生效
     state.recorder.set_enabled(config.recording_enabled);
     Ok(())
@@ -1320,7 +1355,7 @@ pub async fn forget_host_key(
     port: u16,
 ) -> Result<bool, String> {
     let mut store = state.known_hosts.lock().await;
-    Ok(store.forget(&host, port))
+    store.forget(&host, port)
 }
 
 /// 查询指定主机已记录的公钥指纹（未记录返回 None）
@@ -1337,6 +1372,56 @@ pub async fn host_key_fingerprint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P100-3：save 失败时**不得**提交内存（旧实现先改内存再 save，失败后内存已生效）
+    #[test]
+    fn commit_mutation_keeps_memory_when_save_fails() {
+        let mut cur = vec![1u32];
+        let err = commit_mutation(
+            &mut cur,
+            |v| {
+                v.push(2);
+                Ok(())
+            },
+            |_| Err("磁盘只读".to_string()),
+        );
+        assert!(err.is_err());
+        assert_eq!(cur, vec![1], "落盘失败必须整体无改动");
+    }
+
+    /// P100-3：save 成功后才提交内存
+    #[test]
+    fn commit_mutation_commits_after_successful_save() {
+        let mut cur = vec![1u32];
+        assert!(commit_mutation(
+            &mut cur,
+            |v| {
+                v.push(2);
+                Ok(())
+            },
+            |_| Ok(())
+        )
+        .is_ok());
+        assert_eq!(cur, vec![1, 2]);
+    }
+
+    /// P100-3：校验类错误（重名/不存在）直接返回，不触发落盘
+    #[test]
+    fn commit_mutation_skips_save_on_validation_error() {
+        let mut cur = vec![1u32];
+        let mut saved = false;
+        let err = commit_mutation(
+            &mut cur,
+            |_| Err("会话已存在".to_string()),
+            |_| {
+                saved = true;
+                Ok(())
+            },
+        );
+        assert!(err.is_err());
+        assert!(!saved, "校验失败不该写盘");
+        assert_eq!(cur, vec![1]);
+    }
 
     #[test]
     fn session_password_encrypts_on_persist() {

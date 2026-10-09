@@ -361,6 +361,25 @@ fn resolves_to_root(path: &str) -> bool {
 
 // ---------- 上传/下载/预览（SFTP 直传，无 base64 shell 中转上限） ----------
 
+/// 单次上传调用的解码后字节上限（与下载对称；前端 64KiB 分块追加，单次远超即为异常调用）
+const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
+
+/// P100-2：上传参数校验（纯函数，便于单测）。
+/// 旧实现只做了 base64 解码与写入，**既不拦 `..` 穿越也没有体积上限**——
+/// 与 mkdir/rename/remove 的校验不对称，异常调用可让 SFTP 通道吃下超大内容。
+/// 必须在**打开/截断目标文件之前**调用：否则拒绝时已经把既有文件清空了。
+fn check_upload_args(path: &str, b64_len: usize) -> Result<(), String> {
+    reject_parent_traversal(path)?;
+    let est = b64_len / 4 * 3; // base64 → 字节的上界估计（宁可偏大）
+    if est > MAX_UPLOAD_BYTES {
+        return Err(format!(
+            "上传内容超过 {} MiB 上限（请分块上传）",
+            MAX_UPLOAD_BYTES / 1024 / 1024
+        ));
+    }
+    Ok(())
+}
+
 /// 上传：把 base64 解码后的字节写入远端文件（append=false 截断覆盖，true 追加到尾部）
 pub async fn upload(
     ssh: &Arc<SshManager>,
@@ -369,6 +388,7 @@ pub async fn upload(
     b64: &str,
     append: bool,
 ) -> Result<FsResult, String> {
+    check_upload_args(path, b64.trim().len())?;
     let sftp = sftp_session(ssh, name).await?;
     let data = BASE64
         .decode(b64.trim().as_bytes())
@@ -527,6 +547,22 @@ mod tests {
         for p in ["/home", "tmp/x", "a", "a.b", "/home/user/file.txt", "C:\\Users\\a.txt"] {
             assert!(reject_parent_traversal(p).is_ok(), "应放行: {p}");
         }
+    }
+
+    /// P100-2：上传参数校验——`..` 穿越与超限都要拒绝，正常路径放行
+    #[test]
+    fn upload_args_reject_traversal_and_oversize() {
+        assert!(check_upload_args("/tmp/ok.txt", 1024).is_ok());
+        assert!(check_upload_args("tmp/sub/a.bin", 1024).is_ok());
+        // 穿越
+        assert!(check_upload_args("../evil", 16).is_err());
+        assert!(check_upload_args("/tmp/../../etc/passwd", 16).is_err());
+        assert!(check_upload_args("..\\..\\windows\\x", 16).is_err());
+        // 超限（按 base64 长度估算，64MiB 上限）
+        let just_under = MAX_UPLOAD_BYTES / 3 * 4 - 8;
+        let over = MAX_UPLOAD_BYTES / 3 * 4 + 8;
+        assert!(check_upload_args("/tmp/big.bin", just_under).is_ok());
+        assert!(check_upload_args("/tmp/big.bin", over).is_err());
     }
 
     #[test]

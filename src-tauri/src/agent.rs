@@ -1064,6 +1064,116 @@ fn strip_cmd_prefix(line: &str) -> &str {
     line
 }
 
+// ---------- P100-7：FC 工具名剥壳 ----------
+// 背景：模型不支持 function calling 时（glm4 等）会粘性降级到文本协议，但它仍可能把
+// FC 工具名当普通文本吐出来（实测 `run_command uname -r` / `run_command uptime -p`），
+// 旧解析层原样当 shell 命令执行 → `exit 127`（bash: run_command: 未找到命令），
+// 一个任务白烧 3 个回合，且这些假命令会写进 P70 训练日志污染 SFT 数据。
+
+/// 剥壳后保留命令的 FC 工具名（`run_command <cmd>` → `<cmd>`）
+const FC_TOOL_RUN: &str = "run_command";
+/// 纯协议行（不是 shell 命令）——整行丢弃：`set_goal …` / `goal_ok` / `reflect …` / `finish`
+const FC_TOOLS_DROP: [&str; 6] = ["set_goal", "goal_ok", "goal_done", "goal_fail", "reflect", "finish"];
+
+/// 工具名后的合法边界字符（含 markdown 包裹 `**run_command** ls`）
+fn is_tool_boundary(c: char) -> bool {
+    c.is_whitespace() || matches!(c, ':' | '(' | '{' | '[' | '*' | '`')
+}
+
+/// 行首是否为指定工具名；是则返回其后的剩余部分。仅在**行首**匹配，
+/// 故 `echo run_command` / `grep run_command f` 这类合法命令不受影响。
+fn strip_tool_name<'a>(lower: &str, orig: &'a str, name: &str) -> Option<&'a str> {
+    if !lower.starts_with(name) {
+        return None;
+    }
+    let rest = &orig[name.len()..];
+    match rest.chars().next() {
+        None => Some(rest),
+        Some(c) if is_tool_boundary(c) => Some(rest),
+        _ => None, // run_command_x / run_commands 之类不算
+    }
+}
+
+/// 从 `{"command": "ls -la"}` 形态里取命令值（含单双引号、简单转义）
+fn extract_json_command(s: &str) -> Option<String> {
+    let key = "\"command\"";
+    let low = s.to_ascii_lowercase();
+    let idx = low.find(key)?;
+    let after = s[idx + key.len()..].trim_start().strip_prefix(':')?.trim_start();
+    let quote = after.chars().next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let mut out = String::new();
+    let mut escaped = false;
+    for c in after[1..].chars() {
+        if escaped {
+            out.push(c);
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == quote {
+            let t = out.trim();
+            return if t.is_empty() { None } else { Some(t.to_string()) };
+        }
+        out.push(c);
+    }
+    None
+}
+
+/// 规范化工具调用载荷：`({"command": "x"})` / `: x` / `(x)` / `** x` → `x`
+fn normalize_tool_payload(rest: &str) -> String {
+    let s = rest.trim();
+    // 先试 JSON 形态——必须在剥引号**之前**，否则 key 自身的引号会被吃掉（单测抓到）
+    if let Some(cmd) = extract_json_command(s) {
+        return cmd;
+    }
+    s.trim_start_matches(|c: char| {
+        c.is_whitespace() || matches!(c, ':' | '(' | '[' | '{' | '*' | '`' | '"' | '\'')
+    })
+    .trim_end_matches(|c: char| {
+        c.is_whitespace() || matches!(c, ')' | ']' | '}' | '*' | '`' | '"' | '\'' | ';')
+    })
+    .trim()
+    .to_string()
+}
+
+/// P100-7：处理行首 FC 工具名。
+/// - `run_command <cmd>` / `: <cmd>` / `(<cmd>)` / `({"command":"<cmd>"})` → `Some(<剥壳后的命令>)`
+/// - `set_goal …` / `goal_ok` / `reflect …` / `finish` → `None`（整行丢弃）
+/// - 其它行 → `Some(原样)`（注意不做首尾 `*` 清理，避免破坏 `ls *` 这类命令）
+fn strip_fc_tool_wrapper(line: &str) -> Option<String> {
+    let t = line.trim();
+    // 允许 markdown 包裹：`**run_command …**` / `` `run_command …` ``
+    let (lead, body) = if let Some(r) = t.strip_prefix("**") {
+        ("**", r)
+    } else if let Some(r) = t.strip_prefix('`') {
+        ("`", r)
+    } else {
+        ("", t)
+    };
+    let lower = body.to_ascii_lowercase();
+    for name in FC_TOOLS_DROP {
+        if strip_tool_name(&lower, body, name).is_some() {
+            return None;
+        }
+    }
+    if let Some(rest) = strip_tool_name(&lower, body, FC_TOOL_RUN) {
+        let cmd = normalize_tool_payload(rest);
+        let cmd = match lead {
+            "**" => cmd.trim_end_matches("**").trim().to_string(),
+            "`" => cmd.trim_end_matches('`').trim().to_string(),
+            _ => cmd,
+        };
+        return if cmd.is_empty() { None } else { Some(cmd) };
+    }
+    Some(t.to_string())
+}
+
 /// 判定一行是否像一条可直接执行的 shell 命令。
 ///
 /// 弱本地模型（deepseek-r1 等）常把系统提示词回显出来（如
@@ -1154,9 +1264,15 @@ pub fn contains_done_line(s: &str) -> bool {
 pub fn parse_commands(text: &str) -> Vec<String> {
     clean_response(text)
         .lines()
-        .map(|l| strip_enumerator(strip_cmd_prefix(l.trim())))
-        .filter(|l| !l.is_empty() && !l.starts_with('#') && is_command_line(l))
-        .map(|s| s.to_string())
+        .filter_map(|raw| {
+            // 顺序：中文前缀 → 行首序号 → P100-7 FC 工具名（None = 协议行，整行丢弃）
+            let l = strip_fc_tool_wrapper(strip_enumerator(strip_cmd_prefix(raw.trim())))?;
+            let l = l.trim();
+            if l.is_empty() || l.starts_with('#') || !is_command_line(l) {
+                return None;
+            }
+            Some(l.to_string())
+        })
         .collect()
 }
 
@@ -1512,6 +1628,44 @@ mod tests {
     fn parse_commands_strips_prefix() {
         let cmds = parse_commands("命令：ls\n命令: pwd");
         assert_eq!(cmds, vec!["ls", "pwd"]);
+    }
+
+    /// P100-7：模型把 FC 工具名当文本吐出时必须剥壳，不能原样当 shell 命令执行
+    /// （真机 glm4 实测输出 `run_command uname -r` → exit 127，白烧 3 回合 + 污染训练日志）
+    #[test]
+    fn parse_commands_strips_fc_tool_wrapper() {
+        let raw = [
+            "run_command uname -r",
+            "run_command: uptime -p",
+            "run_command(uname -r)",
+            r#"run_command({"command": "free -h"})"#,
+            "**run_command** ls -la",
+            "goal_ok",
+            "set_goal 1. 预检",
+            "reflect 端口被占",
+            "finish",
+        ]
+        .join("\n");
+        assert_eq!(
+            parse_commands(&raw),
+            vec!["uname -r", "uptime -p", "uname -r", "free -h", "ls -la"]
+        );
+    }
+
+    /// 反例：命令里**提到**工具名（非行首）与以 `*` 结尾的合法命令都不得被改动
+    #[test]
+    fn parse_commands_keeps_lines_merely_mentioning_fc_tools() {
+        let raw = [
+            "echo run_command",
+            "grep run_command /tmp/f",
+            "run_commands --help",
+            "ls *",
+        ]
+        .join("\n");
+        assert_eq!(
+            parse_commands(&raw),
+            vec!["echo run_command", "grep run_command /tmp/f", "run_commands --help", "ls *"]
+        );
     }
 
     #[test]

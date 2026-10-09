@@ -44,6 +44,9 @@ export type Theme = "light" | "dark" | "system";
 export interface UiConfig {
   window_width: number;
   window_height: number;
+  /** 窗口位置（P26-6 拖拽 + 退出落盘管理；设置弹窗只透传，后端一律保留磁盘现值） */
+  window_x?: number | null;
+  window_y?: number | null;
   dock_sessions: boolean;
   dock_chat: boolean;
   sessions_panel_pct: number;

@@ -698,6 +698,17 @@
       return String(e);
     }
   }
+
+  // P105：设置弹窗主题即时预览——打开时记住已保存值，取消则还原，保存则写入 ui.theme
+  let themeBeforeSettings: Theme = "dark";
+  function openSettings() {
+    themeBeforeSettings = theme;
+    showSettings = true;
+  }
+  function cancelSettings() {
+    theme = themeBeforeSettings;
+    showSettings = false;
+  }
 </script>
 
 <svelte:head>
@@ -769,7 +780,7 @@
   <StatusBar
     {sessions}
     {statuses}
-    onOpenSettings={() => (showSettings = true)}
+    onOpenSettings={openSettings}
           onOpenHistory={() => (showHistory = true)}
   />
 </main>
@@ -786,8 +797,9 @@
   <SettingsModal
     {aiConfig}
     {uiConfig}
-    onCancel={() => (showSettings = false)}
+    onCancel={cancelSettings}
     onSave={saveSettings}
+    onPreviewTheme={(t) => (theme = t)}
   />
 {/if}
     {#if showHistory}

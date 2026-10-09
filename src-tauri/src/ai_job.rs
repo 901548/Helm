@@ -50,6 +50,45 @@ fn next_active_goal(states: &[GoalStatus]) -> Option<usize> {
     states.iter().position(|s| !matches!(s, GoalStatus::Ok))
 }
 
+/// P100-8：回复里**只有协议标记、没有可执行命令**且当前无进行中子目标时，
+/// 不该当成"模型未给出可执行命令"的失败步骤展示（真机实测收尾的 `GOAL_OK` 会弹出
+/// 「✗ $ GOAL_OK 模型未给出可执行命令」的误导卡片）——仅回喂提示即可。
+fn is_bare_goal_marker(next: &str, active_goal: Option<usize>) -> bool {
+    active_goal.is_none() && goal_marker(next).is_some() && parse_commands(next).is_empty()
+}
+
+/// P99-3：模型调用一步的驱动结果
+enum Driven<T> {
+    /// 模型正常返回
+    Returned(T),
+    /// 收到 Cancel：调用方负责 emit Done 并收尾
+    Cancelled,
+    /// 控制通道发送端已消失：视同终止。
+    /// 旧实现只处理 `Some(Cancel)`，通道关闭后 `recv()` 立即返回 `None` → select 分支反复就绪 →
+    /// 在模型返回前空转烧 CPU（实测真机上表现为任务期间一个核满载）。
+    ControlClosed,
+}
+
+/// P99-3：驱动一步模型调用，期间监听控制通道（抽出来供 FC / 文本两条路径复用）。
+/// - 仅 `Cancel` 结束任务；陈旧的 Approve/Reject 忽略并继续等模型返回
+/// - 通道关闭必须立即返回，不能继续循环
+async fn drive_step<F, T>(fut: F, ctl_rx: &mut UnboundedReceiver<AiControl>) -> Driven<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::pin!(fut);
+    loop {
+        tokio::select! {
+            r = &mut fut => return Driven::Returned(r),
+            ctl = ctl_rx.recv() => match ctl {
+                Some(AiControl::Cancel) => return Driven::Cancelled,
+                Some(_) => continue,
+                None => return Driven::ControlClosed,
+            },
+        }
+    }
+}
+
 /// 对子目标 idx 应用一次执行结局（确定性：闭包判ok）。
 /// - ok → 置 Ok，正常推进。
 /// - 失败 → 累加 fail_retries；未达上限置 Failed（停留供 REFLEXION 重规划）；
@@ -420,17 +459,11 @@ pub(crate) async fn run_ai_job(
                     if ag.fc_active() {
                         // FC 路径：非流式（工具调用参数需要完整 JSON），无 sink
                         let fut = ag.agent_step_fc(input, &last_output, &ctx_desc, &work_mem, term_ctx.as_deref());
-                        tokio::pin!(fut);
-                        loop {
-                            tokio::select! {
-                                r = &mut fut => { fc_turn = Some(r.map_err(|e| e.to_string())); break; }
-                                ctl = ctl_rx.recv() => {
-                                    if ctl == Some(AiControl::Cancel) {
-                                        let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
-                                        finished = true;
-                                        break;
-                                    }
-                                }
+                        match drive_step(fut, &mut *ctl_rx).await {
+                            Driven::Returned(r) => fc_turn = Some(r.map_err(|e| e.to_string())),
+                            Driven::Cancelled | Driven::ControlClosed => {
+                                let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
+                                finished = true;
                             }
                         }
                     } else {
@@ -440,19 +473,13 @@ pub(crate) async fn run_ai_job(
                         let sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)> =
                             sink.as_mut().map(|f| f as _);
                         let fut = ag.agent_step(input, &last_output, &ctx_desc, &work_mem, term_ctx.as_deref(), sink);
-                        tokio::pin!(fut);
                         // 仅 Cancel 结束任务;陈旧的 Approve/Reject 忽略并继续等模型返回,
                         // 否则一个错发的确认信号会静默终止整个任务。
-                        loop {
-                            tokio::select! {
-                                r = &mut fut => { next = Some(r); break; }
-                                ctl = ctl_rx.recv() => {
-                                    if ctl == Some(AiControl::Cancel) {
-                                        let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
-                                        finished = true;
-                                        break;
-                                    }
-                                }
+                        match drive_step(fut, &mut *ctl_rx).await {
+                            Driven::Returned(r) => next = Some(r),
+                            Driven::Cancelled | Driven::ControlClosed => {
+                                let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
+                                finished = true;
                             }
                         }
                     }
@@ -650,6 +677,24 @@ pub(crate) async fn run_ai_job(
                                 continue;
                             }
                             invalid_steps += 1;
+                            // P100-8：没有进行中子目标时的裸协议标记（如收尾的 `GOAL_OK`）不是失败步骤——
+                            // 旧实现会弹出「✗ $ GOAL_OK 模型未给出可执行命令」的误导卡片（真机实测出现）。
+                            // 仅回喂提示，并照常计入 invalid_steps（有界，防弱模型反复发标记死循环）。
+                            if is_bare_goal_marker(&next, step_active) {
+                                if invalid_steps >= MAX_INVALID_STEPS {
+                                    let _ = app.emit(
+                                        "ai",
+                                        AiPayload::Done {
+                                            name: session.to_string(),
+                                            message: "模型连续未给出可执行命令，任务已中止".to_string(),
+                                        },
+                                    );
+                                    finished = true;
+                                    break;
+                                }
+                                last_output = "已收到子目标标记，但当前没有进行中的子目标：任务若已完成请只输出 DONE，否则请直接输出要执行的 shell 命令".to_string();
+                                continue;
+                            }
                             // P89：无效步骤也登记对话记录（切标签回看时保留）
                             conv_push(&conv, crate::core::ConvEntry::Step {
                                 command: next.clone(),
@@ -1082,8 +1127,10 @@ async fn task_exec(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_goal_outcome, build_goal_summary, build_progress_summary, next_active_goal, GoalStatus,
+        apply_goal_outcome, build_goal_summary, build_progress_summary, drive_step, is_bare_goal_marker,
+        next_active_goal, Driven, GoalStatus,
     };
+    use crate::core::AiControl;
 
     #[test]
     fn progress_summary_empty_is_blank() {
@@ -1171,5 +1218,55 @@ mod tests {
         assert_eq!((final_ok, skipped), (false, true)); // 放弃：标记为"完成可推进"
         assert_eq!(st[0], GoalStatus::Ok);
         assert_eq!(next_active_goal(&st), None); // 全部(被放弃的子目标)视为完成 → 收敛
+    }
+
+    /// P99-3：控制通道发送端消失后必须立即返回——旧实现在此场景 select 分支反复就绪、
+    /// 空转烧 CPU 直到模型返回（真机表现为任务期间一个核满载）。
+    #[tokio::test]
+    async fn drive_step_returns_immediately_when_control_channel_closed() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AiControl>();
+        drop(tx); // 发送端消失 → rx.recv() 立即返回 None
+        let out = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            drive_step(std::future::pending::<i32>(), &mut rx),
+        )
+        .await;
+        assert!(matches!(out, Ok(Driven::ControlClosed)), "通道关闭应立即返回而非空转");
+    }
+
+    /// P99-3：陈旧控制（Approve/Reject/Edit）不得终止任务，应继续等模型返回。
+    #[tokio::test]
+    async fn drive_step_ignores_stale_controls_and_returns_model_result() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AiControl>();
+        tx.send(AiControl::Approve).unwrap();
+        tx.send(AiControl::Reject).unwrap();
+        let out = drive_step(async { 42 }, &mut rx).await;
+        assert!(matches!(out, Driven::Returned(42)));
+    }
+
+    /// P99-3：Cancel 必须能中断尚未完成的模型调用（drop future）。
+    #[tokio::test]
+    async fn drive_step_cancel_interrupts_pending_future() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AiControl>();
+        tx.send(AiControl::Cancel).unwrap();
+        let out = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            drive_step(std::future::pending::<i32>(), &mut rx),
+        )
+        .await;
+        assert!(matches!(out, Ok(Driven::Cancelled)));
+    }
+
+    /// P100-8：无进行中子目标时的裸 GOAL_OK 不该被当作"失败步骤"（真机出现误导卡片）
+    #[test]
+    fn bare_goal_marker_is_not_a_failed_step() {
+        assert!(is_bare_goal_marker("GOAL_OK", None));
+        assert!(is_bare_goal_marker("goal_done", None));
+        // 有进行中子目标 → 走 P57 的子目标收敛分支，不算"裸标记"
+        assert!(!is_bare_goal_marker("GOAL_OK", Some(0)));
+        // 真命令不受影响
+        assert!(!is_bare_goal_marker("uname -r", None));
+        // 普通散文/空回复仍走原"未给出命令"路径（需要计数与回喂）
+        assert!(!is_bare_goal_marker("我觉得已经完成了", None));
     }
 }

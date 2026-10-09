@@ -13,6 +13,7 @@
   import * as api from "../../lib/api";
   import type { AiCard, AiLogEntry, AiState, SessionKind, SessionStatus } from "../../lib/api";
   import { normalizePwd, parseOscPwd, stripAnsi as stripAnsiLib } from "../../lib/osc";
+  import { replayEcho } from "../../lib/echo";
   import SysMonitor from "./SysMonitor.svelte";
   import AiCopilot from "./AiCopilot.svelte";
 
@@ -630,20 +631,19 @@
   /// AI 回显：把 App 推送的文本按 seq 顺序写入各自会话的终端。
   /// P91：写目标终端按事件所属会话(e.name)，非活动会话的 AI 命令/输出镜像也写进其终端。
   /// P96：终端晚于回显条目建立时（如连接失败 pushEcho 先于 syncContainers 建终端），
-  /// 不推进 seq（保留待写），由 termVersion 递增触发本 effect 重跑补写——旧实现
-  /// term 不存在也推进 seq，连接失败的 "[连接失败] 错误原因" 被永久丢弃。
-  let lastEchoSeq = 0;
+  /// 不推进 seq（保留待写），由 termVersion 递增触发本 effect 重跑补写。
+  /// P99-2：游标改为**按会话独立**（`replayEcho` 纯函数）——旧的单一全局 lastEchoSeq 会被
+  /// 同批更高 seq 推过去，导致"终端未建"的低 seq 回显被永久跳过（多会话并行时最易触发）。
+  let lastEchoSeq = new Map<string, number>();
   let termVersion = $state(0);
   $effect(() => {
     aiEcho;
     void termVersion; // 依赖终端建立版本号，终端建好后重放滞留回显
-    for (const e of aiEcho) {
-      if (e.seq <= lastEchoSeq) continue;
-      const term = terminals.get(e.name)?.term;
-      if (!term) continue; // 终端未建：不推进 seq，等 termVersion 递增后重放
-      term.write(new TextEncoder().encode(e.text));
-      lastEchoSeq = e.seq;
-    }
+    const { writes, next } = replayEcho(aiEcho, lastEchoSeq, (n) => !!terminals.get(n)?.term);
+    if (writes.length === 0) return;
+    const enc = new TextEncoder();
+    for (const e of writes) terminals.get(e.name)?.term.write(enc.encode(e.text));
+    lastEchoSeq = next;
   });
 
   /// AI 日志：打开时滚到底（新条目到达也滚动）

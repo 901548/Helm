@@ -96,7 +96,9 @@
 
   function syncTerminal(path: string) {
     if (!activeTab || kind !== "linux") return;
-    api.sendInput(activeTab, new TextEncoder().encode(`cd ${shq(path)}\r`)).catch(() => {});
+    // P100-6：面板导航是**应用生成**的命令，不进训练日志（record:false，与 P73 ZMODEM 一致）——
+    // 否则会以 `cd '<path>'` 的带引号形态混入 SFT 数据，教出人类不会那样敲的模式。
+    api.sendInputRaw(activeTab, new TextEncoder().encode(`cd ${shq(path)}\r`)).catch(() => {});
   }
 
   function openDir(e: FileEntry) {

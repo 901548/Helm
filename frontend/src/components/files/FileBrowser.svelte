@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import * as api from "../../lib/api";
   import type { FileEntry, SessionKind } from "../../lib/api";
   import { fmtSize as fmtSizeLib, isValidEntryName, joinPath as joinPathLib, parentPathWindows, resolvePath as resolvePathLib, shq } from "../../lib/paths";
@@ -87,7 +87,10 @@
   $effect(() => {
     const r = cdReq;
     if (r && r.name === activeTab && kind === "linux") {
-      const target = resolvePath(r.target);
+      // P99-1：本 effect 只依赖 cdReq.seq（与 kind）。解析目标要读 cwd/sep，
+      // 若不隔离，refresh() 写 cwd 会让本 effect 再跑一次（用陈旧目标重复刷新，
+      // 慢链路或非 bash 会话下表现为面板回跳）。untrack 切断该隐性依赖。
+      const target = untrack(() => resolvePath(r.target));
       refresh(target);
     }
   });

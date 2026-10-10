@@ -297,8 +297,8 @@ fn check_segment(seg: &str) -> (DangerLevel, &'static str) {
 /// token 级危险判定(供段分析与 xargs 管道合并分析复用)
 fn check_tokens(tokens: &[String]) -> (DangerLevel, &'static str) {
     // Critical：rm -rf 指向根路径（命令名按 basename 归一化，覆盖 /bin/rm 等绝对路径）
-    if cmd_is(tokens, "rm") && rm_flags(&tokens).is_some() {
-        if has_root_target(&tokens) {
+    if cmd_is(tokens, "rm") && rm_flags(tokens).is_some() {
+        if has_root_target(tokens) {
             return (DangerLevel::Critical, "删除根目录 (rm -rf /)");
         }
         return (DangerLevel::Warning, "递归删除文件 (rm -rf)");
@@ -306,7 +306,7 @@ fn check_tokens(tokens: &[String]) -> (DangerLevel, &'static str) {
     // Critical：chmod 777 根路径 / shutdown / reboot / mkfs / dd 写磁盘
     if cmd_is(tokens, "chmod") {
         let has777 = tokens.iter().any(|t| t.contains("777"));
-        if has777 && has_root_target(&tokens) {
+        if has777 && has_root_target(tokens) {
             return (DangerLevel::Critical, "根目录设置为 777 权限");
         }
         if has777 {
@@ -314,7 +314,7 @@ fn check_tokens(tokens: &[String]) -> (DangerLevel, &'static str) {
         }
     }
     // 关停/进程/分区类:以独立命令出现才告警(带包装器),`echo shutdown` 不误报
-    match first_command(&tokens) {
+    match first_command(tokens) {
         "shutdown" => return (DangerLevel::Critical, "关闭系统 (shutdown)"),
         "reboot" => return (DangerLevel::Critical, "重启系统 (reboot)"),
         "pkill" => return (DangerLevel::Warning, "终止进程 (pkill)"),

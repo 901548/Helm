@@ -93,7 +93,8 @@ where
 /// - ok → 置 Ok，正常推进。
 /// - 失败 → 累加 fail_retries；未达上限置 Failed（停留供 REFLEXION 重规划）；
 ///   超过上限则**放弃该子目标**（置 Ok 跳过）继续后续，避免一个子目标反复失败烧穿 max_steps
-///     （模型漏发完成信号/无意义重复重试时的收敛兜底）。
+///   （模型漏发完成信号/无意义重复重试时的收敛兜底）。
+///
 /// 返回 (最终是否视为"完成可推进", 是否由重试上限放弃的)。
 fn apply_goal_outcome(
     idx: usize,
@@ -174,6 +175,11 @@ fn build_progress_summary(ledger: &[(String, bool, String)]) -> String {
 }
 
 /// 后台 AI 任务状态机：按模式驱动 Agent 引擎，事件经 app emit 回传（均带会话名）
+///
+/// 参数多但都是"这次任务的固定上下文"（会话/锁/事件出口/控制通道/任务文本/模式/
+/// 环境/记录器/终端上下文/对话记录），拆成结构体只是换个位置聚合同样的字段，
+/// 故保留直参 + 显式豁免（P103-a）。
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_ai_job(
     session: &str,
     agent: &Arc<Mutex<Agent>>,
@@ -230,14 +236,16 @@ pub(crate) async fn run_ai_job(
                         let _ = app.emit("ai", AiPayload::Error { name: session.to_string(), message: e.to_string() });
                     }
                 },
-                // 收到 Cancel(ai_stop)时,drop chat_fut 会中断进行中的 HTTP 请求
+                // 收到 Cancel(ai_stop)时,离开本分支即 drop 未完成的 chat_fut
+                // （中断进行中的 HTTP 请求），随后才释放 agent 锁。
+                // 注：future 由 tokio::pin! 存于本作用域局部，故显式 drop(chat_fut)
+                // 只是丢弃 Pin 守卫、对 future 无作用（P103-a 已移除该无效调用）。
                 ctl = ctl_rx.recv() => {
                     if ctl == Some(AiControl::Cancel) {
                         let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
                     }
                 }
             }
-            drop(chat_fut);
         }
         AgentMode::Agent => {
             let ctx = match ctx {

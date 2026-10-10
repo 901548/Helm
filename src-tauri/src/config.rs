@@ -325,7 +325,7 @@ fn default_recording_enabled() -> bool {
 }
 
 /// Helm 顶层配置
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct HelmConfig {
     /// 所有 SSH 会话配置
     #[serde(default)]
@@ -336,16 +336,6 @@ pub struct HelmConfig {
     /// 界面/窗口配置（可选）
     #[serde(default)]
     pub ui: Option<UiConfig>,
-}
-
-impl Default for HelmConfig {
-    fn default() -> Self {
-        Self {
-            sessions: Vec::new(),
-            ai: None,
-            ui: None,
-        }
-    }
 }
 
 /// 按优先级查找并加载配置文件

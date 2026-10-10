@@ -108,7 +108,7 @@ pub fn match_skill(task: &str) -> Option<&'static Skill> {
             .filter(|k| t.contains(*k))
             .map(|k| k.chars().count())
             .sum();
-        if score > 0 && best.map_or(true, |(_, s)| score > s) {
+        if score > 0 && best.is_none_or(|(_, s)| score > s) {
             best = Some((skill, score));
         }
     }

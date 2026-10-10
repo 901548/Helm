@@ -247,8 +247,8 @@ fn build_win_payload(name: &str, s: &WinSample) -> SysMonPayload {
     SysMonPayload {
         name: name.to_string(),
         cpu: s.cpu.clamp(0.0, 100.0),
-        mem_total_mb: (s.mem_total_kb / 1024) as u64,
-        mem_used_mb: (s.mem_total_kb.saturating_sub(s.mem_free_kb) / 1024) as u64,
+        mem_total_mb: (s.mem_total_kb / 1024),
+        mem_used_mb: (s.mem_total_kb.saturating_sub(s.mem_free_kb) / 1024),
         load1: 0.0,
         load5: 0.0,
         load15: 0.0,
@@ -283,8 +283,8 @@ fn build_payload(
     SysMonPayload {
         name: name.to_string(),
         cpu,
-        mem_total_mb: (sample.mem_total_kb / 1024) as u64,
-        mem_used_mb: (used_kb / 1024) as u64,
+        mem_total_mb: (sample.mem_total_kb / 1024),
+        mem_used_mb: (used_kb / 1024),
         load1: sample.load1,
         load5: sample.load5,
         load15: sample.load15,

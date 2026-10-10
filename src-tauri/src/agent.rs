@@ -725,8 +725,7 @@ impl Agent {
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| anyhow!("读取响应流失败: {}", e))?;
             buffer.extend_from_slice(&chunk);
-            loop {
-                let Some(pos) = buffer.iter().position(|&b| b == b'\n') else { break };
+            while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
                 let line_bytes: Vec<u8> = buffer.drain(..=pos).collect();
                 let line = String::from_utf8(line_bytes)
                     .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
@@ -1204,9 +1203,9 @@ pub fn is_command_line(line: &str) -> bool {
     }
     // P57 L2 协议标记：GOAL/REFLEXION/EXPECT 开头的是子目标/反思/校验指令,不是 shell 命令
     let pfx = |p: &str| upper.starts_with(p);
-    if !(pfx("GOAL ") == false && pfx("GOAL:") == false && pfx("GOAL_") == false && upper != "GOAL"
-        && pfx("REFLEXION ") == false && pfx("REFLEXION:") == false
-        && pfx("EXPECT ") == false && pfx("EXPECT:") == false)
+    if !(!pfx("GOAL ") && !pfx("GOAL:") && !pfx("GOAL_") && upper != "GOAL"
+        && !pfx("REFLEXION ") && !pfx("REFLEXION:")
+        && !pfx("EXPECT ") && !pfx("EXPECT:"))
     {
         return false;
     }
@@ -1222,7 +1221,7 @@ pub fn is_command_line(line: &str) -> bool {
 
 /// 首字符是否为 CJK 统一表意文字（含扩展 A 与兼容区）
 fn starts_cjk(s: &str) -> bool {
-    s.chars().next().map_or(false, |c| {
+    s.chars().next().is_some_and(|c| {
         let u = c as u32;
         (0x3400..=0x4DBF).contains(&u)
             || (0x4E00..=0x9FFF).contains(&u)
@@ -1446,11 +1445,13 @@ mod tests {
     /// P83 FC：请求体携带工具表 + 历史 tool 消息正确序列化
     #[test]
     fn fc_request_body_serializes_tool_messages() {
-        let mut cfg = AiConfig::default();
-        cfg.model = "test-model".into();
-        cfg.api_base_url = Some("http://localhost:11434/v1".into());
-        cfg.mode = "agent".into();
-        cfg.agent_fc = true;
+        let cfg = AiConfig {
+            model: "test-model".into(),
+            api_base_url: Some("http://localhost:11434/v1".into()),
+            mode: "agent".into(),
+            agent_fc: true,
+            ..Default::default()
+        };
         let mut agent = Agent::new(&cfg).unwrap();
         agent.history.push(ChatMessage::user("任务"));
         let calls = serde_json::json!([
@@ -1504,10 +1505,12 @@ mod tests {
 
     #[test]
     fn resolve_key_prefers_field_over_env() {
-        let mut cfg = crate::config::AiConfig::default();
-        cfg.api_key_env = "HELM_TEST_UNSET_ENV_XYZ".into();
-        // 密文落盘不可行（单测环境也能 DPAPI），用"非密文明文"路径验证自适应
-        cfg.api_key = Some("sk-plain-key".into());
+        let mut cfg = crate::config::AiConfig {
+            api_key_env: "HELM_TEST_UNSET_ENV_XYZ".into(),
+            // 密文落盘不可行（单测环境也能 DPAPI），用"非密文明文"路径验证自适应
+            api_key: Some("sk-plain-key".into()),
+            ..Default::default()
+        };
         assert_eq!(Agent::resolve_api_key(&cfg).unwrap(), "sk-plain-key");
 
         // 字段为空 + 环境变量未设置 + 非本地 → 报错
@@ -1522,8 +1525,10 @@ mod tests {
     #[test]
     fn resolve_key_ciphertext_decrypt_fail_reports_error_not_passthrough() {
         // 合法 base64 但非本机 DPAPI 密文 → 解密失败必须报错，绝不能把密文当 Bearer 外发
-        let mut cfg = crate::config::AiConfig::default();
-        cfg.api_key = Some(BASE64.encode(b"garbage-garbage"));
+        let cfg = crate::config::AiConfig {
+            api_key: Some(BASE64.encode(b"garbage-garbage")),
+            ..Default::default()
+        };
         let err = Agent::resolve_api_key(&cfg).unwrap_err().to_string();
         assert!(err.contains("解密失败"), "应报解密失败而非透传密文，got: {err}");
     }

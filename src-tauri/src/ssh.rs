@@ -22,7 +22,6 @@ use crate::known_hosts::KnownHostsStore;
 
 /// 单次 exec 输出累积上限（超限即停读，丢尾部）
 const MAX_EXEC_OUTPUT: usize = 8 * 1024 * 1024;
-/// Agent 任务输出保留尾部上限（尾含 ###HELM_*### 标记，必须保留）
 
 /// 会话连接状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

@@ -615,7 +615,7 @@ pub fn rdp_connect(state: State<'_, CoreState>, name: String) -> Result<(), Stri
     let mut rdp = String::new();
     rdp.push_str(&format!("full address:s:{}\n", info.host));
     rdp.push_str(&format!("server port:i:{}\n", port));
-    rdp.push_str(&format!("prompt for credentials:i:1\n"));
+    rdp.push_str("prompt for credentials:i:1\n");
     rdp.push_str("enablecredsspsupport:i:1\n");
     rdp.push_str("authentication level:i:2\n");
     rdp.push_str("screen mode id:i:1\n");
@@ -1069,10 +1069,7 @@ pub async fn get_ai_config(
             .as_deref()
             .and_then(|k| crate::crypto::decrypt_api_key(k).ok())
             .filter(|p| !p.is_empty());
-        ai.api_key = match ai.api_key.as_ref().filter(|k| !k.is_empty()) {
-            Some(_) => Some("·".to_string()),
-            None => None,
-        };
+        ai.api_key = ai.api_key.as_ref().filter(|k| !k.is_empty()).map(|_| "·".to_string());
         if let Some(plain) = plain {
             for v in ai.extra_headers.values_mut() {
                 if *v == plain {
@@ -1243,8 +1240,8 @@ pub fn spawn_output_poller(app: AppHandle, ssh: Arc<SshManager>) {
             let names: Vec<String> = ssh.session_names().await;
             let active: std::collections::HashSet<String> = names.iter().cloned().collect();
             for name in &names {
-                let drained = ssh.drain_output(&name).await;
-                let is_connected = ssh.get_status(&name).await == SessionStatus::Connected;
+                let drained = ssh.drain_output(name).await;
+                let is_connected = ssh.get_status(name).await == SessionStatus::Connected;
                 // 状态翻转：之前已连接，现在断开 → 通知前端
                 if last_connected.get(name) == Some(&true) && !is_connected {
                     let _ = app.emit(

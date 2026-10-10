@@ -523,13 +523,13 @@ impl SshManager {
     ///
     /// 收集 stdout；若 stdout 为空则返回 stderr。
     /// 仅在调用瞬间短暂借用句柄，真正的通道读写不占用管理器锁。
-    /// 输出超过 `MAX_EXEC_OUTPUT` 时停止累积（防大输出拖垮内存）。
+    /// 输出超过 `MAX_EXEC_OUTPUT` 时返回 Err（截断的半截结果不该被当完整结果用）。
     pub async fn execute(&self, name: &str, cmd: &str) -> Result<String> {
         let handle = self
             .exec_handle(name)
             .await
             .ok_or_else(|| anyhow!("会话 {} 未连接", name))?;
-        run_exec(handle, cmd).await
+        run_exec(handle, cmd).await?.into_text()
     }
 
 /// 断开指定会话
@@ -614,6 +614,40 @@ impl Default for SshManager {
     }
 }
 
+/// 一次 exec 的完整结果
+#[derive(Debug, Clone)]
+pub struct ExecOutput {
+    /// 收集到的输出（stdout 优先；stdout 为空时取 stderr）
+    pub text: String,
+    /// 是否因超过 `MAX_EXEC_OUTPUT` 提前停读（此时 `text` 是保留下来的前半段）
+    pub truncated: bool,
+}
+
+impl ExecOutput {
+    /// 取出文本；截断即报错——调用方拿不到完整输出时，不应把半截当结果用
+    pub fn into_text(self) -> Result<String> {
+        if self.truncated {
+            Err(anyhow!(
+                "命令输出超过 {} MiB 上限，已截断",
+                MAX_EXEC_OUTPUT / (1024 * 1024)
+            ))
+        } else {
+            Ok(self.text)
+        }
+    }
+}
+
+/// 累积一块输出，超限即返回 true（调用方据此停读并置截断标志）
+///
+/// 保留策略保持**先到先留**（超限的那一块照旧追加后停读）：尾部标记只对
+/// task_exec 的关键，exec 通道不需要，故不改为保尾。
+fn push_limited(buf: &mut String, data: &[u8], total: &mut usize, limit: usize) -> bool {
+    let s = String::from_utf8_lossy(data);
+    buf.push_str(&s);
+    *total += s.len();
+    *total > limit
+}
+
 /// 在已有连接句柄上执行命令，30 秒超时
 ///
 /// 句柄由调用方以 Arc 持有，本函数只在通道建立瞬间借用句柄，
@@ -621,7 +655,7 @@ impl Default for SshManager {
 pub async fn run_exec(
     handle: Arc<client::Handle<SshHandler>>,
     cmd: &str,
-) -> Result<String> {
+) -> Result<ExecOutput> {
     let mut channel = handle
         .channel_open_session()
         .await
@@ -634,23 +668,20 @@ pub async fn run_exec(
     let mut stdout = String::new();
     let mut stderr = String::new();
     let mut total_len = 0usize;
+    let mut truncated = false;
 
     let read_result = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             match channel.wait().await {
                 Some(ChannelMsg::Data { data }) => {
-                    let s = String::from_utf8_lossy(&data);
-                    stdout.push_str(&s);
-                    total_len += s.len();
-                    if total_len > MAX_EXEC_OUTPUT {
+                    if push_limited(&mut stdout, &data, &mut total_len, MAX_EXEC_OUTPUT) {
+                        truncated = true;
                         break;
                     }
                 }
                 Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    let s = String::from_utf8_lossy(&data);
-                    stderr.push_str(&s);
-                    total_len += s.len();
-                    if total_len > MAX_EXEC_OUTPUT {
+                    if push_limited(&mut stderr, &data, &mut total_len, MAX_EXEC_OUTPUT) {
+                        truncated = true;
                         break;
                     }
                 }
@@ -663,11 +694,8 @@ pub async fn run_exec(
 
     read_result.map_err(|_| anyhow!("命令执行超时（30秒）"))?;
 
-    if stdout.is_empty() {
-        Ok(stderr)
-    } else {
-        Ok(stdout)
-    }
+    let text = if stdout.is_empty() { stderr } else { stdout };
+    Ok(ExecOutput { text, truncated })
 }
 
 
@@ -675,6 +703,37 @@ pub async fn run_exec(
 mod tests {
     use super::*;
     use crate::config::SessionInfo;
+
+    /// P100-4：截断标志在超限那块上置位，且保留策略仍是"先到先留"（与旧行为一致）
+    #[test]
+    fn push_limited_flags_truncation_and_keeps_head() {
+        let mut buf = String::new();
+        let mut total = 0usize;
+        assert!(!push_limited(&mut buf, b"aaaa", &mut total, 10));
+        assert!(!push_limited(&mut buf, b"bbbb", &mut total, 10)); // 8 <= 10
+        assert!(push_limited(&mut buf, b"cccc", &mut total, 10)); // 12 > 10 → 停读
+        assert_eq!(buf, "aaaabbbbcccc");
+        assert_eq!(total, 12);
+    }
+
+    /// 计长口径与旧实现相同：from_utf8_lossy 后的字节数（非法字节按 U+FFFD 3 字节计）
+    #[test]
+    fn push_limited_counts_lossy_byte_len() {
+        let mut buf = String::new();
+        let mut total = 0usize;
+        assert!(push_limited(&mut buf, &[0xff, 0xff, 0xff, 0xff], &mut total, 6));
+        assert_eq!(total, 12);
+    }
+
+    /// 截断结果不得被当完整输出交给调用方
+    #[test]
+    fn exec_output_into_text_reports_truncation() {
+        let whole = ExecOutput { text: "hi".into(), truncated: false };
+        assert_eq!(whole.into_text().unwrap(), "hi");
+        let cut = ExecOutput { text: "hi".into(), truncated: true };
+        let err = cut.into_text().unwrap_err().to_string();
+        assert!(err.contains("已截断"), "got: {err}");
+    }
 
     
     /// 真实服务器连接测试：连接 → 打开交互 shell → 发命令 → 读输出。

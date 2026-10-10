@@ -653,7 +653,8 @@ pub async fn send_input(
 ) -> Result<(), String> {
     state.ssh.send_input(&name, &data).await;
     if record.unwrap_or(true) {
-        state.recorder.record_input(&name, &data);
+        // P100-5：落盘走阻塞线程池，不在 tokio worker 上做文件 I/O
+        state.recorder.record_input_async(&name, &data).await;
     }
     Ok(())
 }
@@ -663,7 +664,7 @@ pub async fn send_input(
 pub async fn send_active_input(state: State<'_, CoreState>, data: Vec<u8>) -> Result<(), String> {
     state.ssh.send_active_input(&data).await;
     if let Some(name) = state.ssh.active_name().await {
-        state.recorder.record_input(&name, &data);
+        state.recorder.record_input_async(&name, &data).await;
     }
     Ok(())
 }

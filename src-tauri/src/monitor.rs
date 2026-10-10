@@ -333,6 +333,14 @@ pub fn spawn_sysmon_poller(app: AppHandle, ssh: Arc<SshManager>) {
                 .await
             };
 
+            // P100-4：截断的输出是半截数据，解析出的数字不可信——经 into_text 并入
+            // 既有「采集失败」分支（原先截断会静默返回前半段并被当有效样本解析）
+            let result = match result {
+                Ok(Ok(out)) => Ok(out.into_text()),
+                Ok(Err(e)) => Ok(Err(e)),
+                Err(e) => Err(e),
+            };
+
             match result {
                 Ok(Ok(text)) => {
                     let parsed: Option<SysMonPayload> = if kind == crate::config::SessionKind::Windows {

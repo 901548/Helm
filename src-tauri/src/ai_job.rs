@@ -183,7 +183,8 @@ pub(crate) async fn run_ai_job(
     input: &str,
     mode: AgentMode,
     ctx: Option<TaskCtx>,
-    recorder: &crate::recorder::Recorder,
+    // P100-5：以 Arc 传入——落盘经 spawn_blocking，需要能克隆出 'static 句柄
+    recorder: &std::sync::Arc<crate::recorder::Recorder>,
     term_ctx: Option<String>,
     conv: std::sync::Arc<tokio::sync::Mutex<Vec<crate::core::ConvEntry>>>,
 ) {
@@ -207,12 +208,12 @@ pub(crate) async fn run_ai_job(
             tokio::select! {
                 result = &mut chat_fut => match result {
                     Ok(reply) => {
-                        // P70 训练数据：QA 问答对
-                        recorder.log(serde_json::json!({
+                        // P70 训练数据：QA 问答对（P100-5：落盘走阻塞线程池）
+                        recorder.log_async(serde_json::json!({
                             "type": "qa", "session": session,
                             "q": crate::agent::truncate_text(input, 2000),
                             "a": crate::agent::truncate_text(&reply, 4000),
-                        }));
+                        })).await;
                         conv_push(&conv, crate::core::ConvEntry::Qa {
                             q: crate::agent::truncate_text(input, 2000),
                             a: crate::agent::truncate_text(&reply, 4000),
@@ -221,11 +222,11 @@ pub(crate) async fn run_ai_job(
                         let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: reply });
                     }
                     Err(e) => {
-                        recorder.log(serde_json::json!({
+                        recorder.log_async(serde_json::json!({
                             "type": "qa", "session": session, "ok": false,
                             "q": crate::agent::truncate_text(input, 2000),
                             "a": crate::agent::truncate_text(&e.to_string(), 1000),
-                        }));
+                        })).await;
                         let _ = app.emit("ai", AiPayload::Error { name: session.to_string(), message: e.to_string() });
                     }
                 },
@@ -257,10 +258,10 @@ pub(crate) async fn run_ai_job(
             };
             let mut cwd = if ctx.pwd.is_empty() { "/".to_string() } else { ctx.pwd.clone() };
             // P70 训练数据：任务起点（环境 + 目标 + 初始目录）
-            recorder.log(serde_json::json!({
+            recorder.log_async(serde_json::json!({
                 "type": "ai_task", "session": session, "host": ctx.host,
                 "task": crate::agent::truncate_text(input, 2000), "pwd": cwd,
-            }));
+            })).await;
             // cwd 恒为绝对路径（无尾斜杠），作初始执行目录
             let mut last_output = String::new();
             let mut finished = false;
@@ -380,13 +381,13 @@ pub(crate) async fn run_ai_job(
                         fail_count += 1;
                     }
                     // 金标训练数据：source:"skill"（确定性执行轨迹）
-                    recorder.log(serde_json::json!({
+                    recorder.log_async(serde_json::json!({
                         "type": "ai_step", "session": session, "host": ctx.host,
                         "source": "skill", "skill": sk.id,
                         "step": i + 1, "command": command,
                         "exit_code": code, "pwd": cwd,
                         "output": truncate_text(output.trim(), 2000),
-                    }));
+                    })).await;
                     conv_push(&conv, crate::core::ConvEntry::Step {
                         command: command.to_string(),
                         success: code == 0,
@@ -920,10 +921,10 @@ pub(crate) async fn run_ai_job(
                             Ok(Some(AiControl::Approve)) => {}
                             Ok(Some(AiControl::Reject)) => {
                                 // P70：人类干预信号（跳过）同样进训练轨迹
-                                recorder.log(serde_json::json!({
+                                recorder.log_async(serde_json::json!({
                                     "type": "ai_step", "session": session,
                                     "command": command, "level": format!("{level:?}"), "skipped": true,
-                                }));
+                                })).await;
                                 // P89：跳过也登记对话记录（切标签回看时保留"已跳过"步骤）
                                 conv_push(&conv, crate::core::ConvEntry::Step {
                                     command: command.clone(),
@@ -973,12 +974,12 @@ pub(crate) async fn run_ai_job(
                         fc_outputs.push(truncate_text(&output, max_output_chars));
                     }
                     // P70 训练核心三元组：(任务上下文, 动作命令, 结果输出+退出码+目录)
-                    recorder.log(serde_json::json!({
+                    recorder.log_async(serde_json::json!({
                         "type": "ai_step", "session": session, "host": ctx.host,
                         "step": _step, "command": command,
                         "level": format!("{level:?}"), "exit_code": code, "pwd": cwd,
                         "output": truncate_text(output.trim(), 2000),
-                    }));
+                    })).await;
                     conv_push(&conv, crate::core::ConvEntry::Step {
                         command: command.clone(),
                         success: code == 0,

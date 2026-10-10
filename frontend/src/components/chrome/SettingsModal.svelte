@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { testAiConnection, aiListModels } from "../../lib/api";
+  import { DEFAULT_API_KEY_ENV } from "../../lib/constants";
   import type { AiConfig, UiConfig, Theme } from "../../lib/api";
 
   interface Props {
@@ -178,7 +179,7 @@
     }
     const ai: AiConfig = {
       model: model.trim(),
-      api_key_env: "API_KEY",
+      api_key_env: DEFAULT_API_KEY_ENV,
       api_key: apiKey.trim() || null,
       api_base_url: apiBaseUrl.trim() || null,
       system_prompt: systemPrompt,

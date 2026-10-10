@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { SessionInfo } from "../../lib/api";
+  import { SECRET_MASK } from "../../lib/constants";
+  import ModalShell from "../ui/ModalShell.svelte";
 
   interface Props {
     editingSession: SessionInfo | null;
@@ -67,7 +69,7 @@
       host: host.trim(),
       port: parsedPort,
       user: user.trim() || "root",
-      password: hasSavedPassword && !password ? "·" : (password ? password : null),
+      password: hasSavedPassword && !password ? SECRET_MASK : (password ? password : null),
       key_file: keyFile ? keyFile : null,
       container: kind === "docker" ? container.trim() : null,
     };
@@ -77,15 +79,13 @@
   }
 </script>
 
-<!-- 遮罩：点击空白取消；modal 容器 stopPropagation 防误关，内部控件均为可访问的按钮/输入框 -->
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="veil" onclick={onCancel}>
-  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="modal" onclick={(e) => e.stopPropagation()}>
-    <header class="modal-head">
-      <h3>{editingSession ? "编辑会话" : "新建会话"}</h3>
-      <button class="close" title="关闭" onclick={onCancel}>×</button>
-    </header>
+<!-- 遮罩/对话框语义由 ModalShell 提供（Esc 关闭 + 点击空白关闭 + 挂载聚焦）；
+     内部控件均为可访问的按钮/输入框 -->
+<ModalShell labelledBy="sf-title" width="480px" onClose={onCancel}>
+  <header class="modal-head">
+    <h3 id="sf-title">{editingSession ? "编辑会话" : "新建会话"}</h3>
+    <button class="close" title="关闭 (Esc)" onclick={onCancel}>×</button>
+  </header>
 
     <div class="modal-body">
       <!-- 目标主机 -->
@@ -183,31 +183,9 @@
         {saving ? "保存中…" : "保存"}
       </button>
     </footer>
-  </div>
-</div>
+</ModalShell>
 
 <style>
-  .veil {
-    position: fixed;
-    inset: 0;
-    background: rgba(8, 12, 18, 0.5);
-    backdrop-filter: blur(2px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 200;
-  }
-  .modal {
-    background: var(--modal-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
-    width: 480px;
-    max-height: 90vh;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
   .modal-head {
     display: flex;
     align-items: center;

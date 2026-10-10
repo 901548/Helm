@@ -295,7 +295,8 @@
       if (term.hasSelection()) {
         const sel = term.getSelection();
         try {
-          navigator.clipboard.writeText(sel);
+          // P101-5：writeText 是 Promise，拒答（无焦点/无权限）不会被 try/catch 接住
+          navigator.clipboard.writeText(sel).catch(() => {});
         } catch {
           /* ignore */
         }
@@ -311,6 +312,7 @@
       if (!tabs.includes(name)) {
         e.term.dispose();
         terminals.delete(name);
+        dropZTransfer(name);
         echoBuffs.delete(name);
         decoders.delete(name);
         lastCdFire.delete(name);
@@ -373,7 +375,7 @@
     const e = activeTab ? terminals.get(activeTab) : undefined;
     if (!e) return;
     if (e.term.hasSelection()) {
-      navigator.clipboard.writeText(e.term.getSelection());
+      navigator.clipboard.writeText(e.term.getSelection()).catch(() => {});
     }
   }
 
@@ -400,6 +402,22 @@
   let ztransfers = $state<Record<string, ZTransfer | null>>({});
   function setZTransfer(name: string, t: ZTransfer | null) {
     ztransfers = { ...ztransfers, [name]: t };
+  }
+  /** 关标签时整键移除（置 null 会留下无主键，长跑会话下 Map 只增不减） */
+  function dropZTransfer(name: string) {
+    const { [name]: _removed, ...rest } = ztransfers;
+    ztransfers = rest;
+  }
+
+  // P101-5：定时器统一登记，组件卸载时清空。旧实现散落 setTimeout 无一处
+  // clearTimeout，卸载后回调仍会执行（碰已 dispose 的终端、已清理的传输态）。
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  function later(fn: () => void, ms: number) {
+    const id = setTimeout(() => {
+      timers.delete(id);
+      fn();
+    }, ms);
+    timers.add(id);
   }
 
   function clearZmodem(name: string) {
@@ -454,7 +472,7 @@
       zsession.on("session_end", () => {
         // 保留 note（保存路径提示）几秒后清
         const t = ztransfers[name];
-        if (t) setTimeout(() => clearZmodem(name), 4000);
+        if (t) later(() => clearZmodem(name), 4000);
         else clearZmodem(name);
       });
       // P73 关键：Receive 会话必须 start() 才会发 ZRINIT，否则服务器永远等不到握手
@@ -485,7 +503,7 @@
     })
       .then(() => {
         setZTransfer(name, { dir: "up", name: file.name, size: file.size, done: file.size, note: "发送完成" });
-        setTimeout(() => clearZmodem(name), 2500);
+        later(() => clearZmodem(name), 2500);
       })
       .catch((err: unknown) => {
         setZTransfer(name, { dir: "up", name: file.name, size: file.size, done: 0, note: `发送失败：${String(err)}` });
@@ -531,7 +549,7 @@
     else if (action === "paste") paste();
     else if (action === "search") {
       showSearch = true;
-      setTimeout(() => searchBar?.focus(), 0);
+      later(() => searchBar?.focus(), 0);
     } else if (action === "clear") term?.clear();
   }
 
@@ -571,7 +589,7 @@
       if (fromAppField) return;
       e.preventDefault();
       showSearch = true;
-      setTimeout(() => searchBar?.focus(), 0);
+      later(() => searchBar?.focus(), 0);
     } else if (ctrl && key === "c") {
       // 有选区才拦截做复制；无选区时放行，让 Ctrl+C 作为 SIGINT 发给远端
       if (fromAppField) return;
@@ -693,6 +711,9 @@
       termArea?.removeEventListener("wheel", onWheel);
       ro.disconnect();
       window.removeEventListener("keydown", handleKey, true);
+      // P101-5：清掉在途定时器（否则卸载后回调仍触发）
+      for (const id of timers) clearTimeout(id);
+      timers.clear();
       for (const e of terminals.values()) e.term.dispose();
       terminals.clear();
     };

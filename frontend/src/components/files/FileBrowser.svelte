@@ -3,6 +3,7 @@
   import * as api from "../../lib/api";
   import type { FileEntry, SessionKind } from "../../lib/api";
   import { fmtSize as fmtSizeLib, isValidEntryName, joinPath as joinPathLib, parentPathWindows, resolvePath as resolvePathLib, shq } from "../../lib/paths";
+  import ModalShell from "../ui/ModalShell.svelte";
 
   interface Props {
     activeTab: string | null;
@@ -496,44 +497,40 @@
     {/if}
 
     {#if preview || previewLoading}
-      <!-- 遮罩：点击空白关闭预览；pv-modal 容器 stopPropagation 防误关 -->
-      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-      <div class="pv-veil" onclick={() => (preview = null)}>
-        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-        <div class="pv-modal" onclick={(e) => e.stopPropagation()}>
-          <header class="pv-head">
-            <svg class="pv-glyph" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 2h5.5l3.5 3.5V13a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 2.5 13V3.5A1.5 1.5 0 0 1 3.5 2Z" stroke="currentColor" stroke-width="1.4"/><path d="M9 2v4h3.5" stroke="currentColor" stroke-width="1.4"/></svg>
-            <div class="pv-titles">
-              <span class="pv-title">{preview?.name ?? "读取中…"}</span>
-              {#if preview}
-                <span class="pv-sub">{preview.path}{preview.truncated ? " · 已截断" : ""}</span>
-              {/if}
-            </div>
-            <button class="pv-close" title="关闭 (Esc)" onclick={() => (preview = null)}>×</button>
-          </header>
-          {#if previewLoading}
-            <div class="pv-body pv-hint">加载中…</div>
-          {:else if preview}
-            <textarea class="pv-body" bind:value={preview.content} spellcheck="false"></textarea>
-          {/if}
-          <footer class="pv-foot">
-            {#if preview?.truncated}
-              <span class="pv-note">文件较大，仅预览前 60KB，保存已禁用。</span>
-            {:else if saved}
-              <span class="pv-saved">✓ 已保存</span>
-            {:else}
-              <span></span>
+      <!-- 遮罩/对话框语义由 ModalShell 提供（Esc 关闭 + 点击空白关闭 + 挂载聚焦） -->
+      <ModalShell labelledBy="pv-title" width="720px" onClose={() => (preview = null)}>
+        <header class="pv-head">
+          <svg class="pv-glyph" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 2h5.5l3.5 3.5V13a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 2.5 13V3.5A1.5 1.5 0 0 1 3.5 2Z" stroke="currentColor" stroke-width="1.4"/><path d="M9 2v4h3.5" stroke="currentColor" stroke-width="1.4"/></svg>
+          <div class="pv-titles">
+            <span class="pv-title" id="pv-title">{preview?.name ?? "读取中…"}</span>
+            {#if preview}
+              <span class="pv-sub">{preview.path}{preview.truncated ? " · 已截断" : ""}</span>
             {/if}
-            <button class="pv-btn" onclick={downloadPreview} disabled={!preview}>下载</button>
-            <button
-              class="pv-btn primary"
-              onclick={savePreview}
-              disabled={!preview || preview.truncated}
-              title={preview?.truncated ? "文件过大，编辑会截断内容，已禁用" : "保存并写回远端"}
-            >保存</button>
-          </footer>
-        </div>
-      </div>
+          </div>
+          <button class="pv-close" title="关闭 (Esc)" onclick={() => (preview = null)}>×</button>
+        </header>
+        {#if previewLoading}
+          <div class="pv-body pv-hint">加载中…</div>
+        {:else if preview}
+          <textarea class="pv-body" bind:value={preview.content} spellcheck="false"></textarea>
+        {/if}
+        <footer class="pv-foot">
+          {#if preview?.truncated}
+            <span class="pv-note">文件较大，仅预览前 60KB，保存已禁用。</span>
+          {:else if saved}
+            <span class="pv-saved">✓ 已保存</span>
+          {:else}
+            <span></span>
+          {/if}
+          <button class="pv-btn" onclick={downloadPreview} disabled={!preview}>下载</button>
+          <button
+            class="pv-btn primary"
+            onclick={savePreview}
+            disabled={!preview || preview.truncated}
+            title={preview?.truncated ? "文件过大，编辑会截断内容，已禁用" : "保存并写回远端"}
+          >保存</button>
+        </footer>
+      </ModalShell>
     {/if}
     {/if}
   {/if}
@@ -804,28 +801,6 @@
     background: var(--danger);
     color: #fff;
     border-color: var(--danger);
-  }
-  .pv-veil {
-    position: fixed;
-    inset: 0;
-    z-index: 160;
-    background: rgba(0, 0, 0, 0.45);
-    backdrop-filter: blur(2px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .pv-modal {
-    width: 720px;
-    max-width: 82vw;
-    max-height: 82vh;
-    background: var(--modal-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
   }
   .pv-head {
     display: flex;

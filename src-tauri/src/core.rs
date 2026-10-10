@@ -716,7 +716,7 @@ pub async fn history_read(
                 if line.trim().is_empty() {
                     continue;
                 }
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                let Ok(mut v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
                 if let Some(s) = &session {
                     if v.get("session").and_then(|x| x.as_str()) != Some(s.as_str()) {
                         continue;
@@ -726,6 +726,11 @@ pub async fn history_read(
                     if v.get("type").and_then(|x| x.as_str()) != Some(t.as_str()) {
                         continue;
                     }
+                }
+                // P101-6：注入位置序号作前端稳定标识——本列表按"新→旧"确定性收集，
+                // idx 单调且与前端筛选无关，故筛选/刷新后"展开态"不会错指到别的记录
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("idx".to_string(), serde_json::json!(out.len()));
                 }
                 out.push(v);
                 if out.len() >= cap {

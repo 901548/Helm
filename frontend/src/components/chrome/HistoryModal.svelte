@@ -2,6 +2,7 @@
   // P87 操作历史面板：记录器 JSONL 的可视化审核 + 训练数据导出
   import { onMount } from "svelte";
   import { historyRead, historyExport } from "../../lib/api";
+  import ModalShell from "../ui/ModalShell.svelte";
 
   interface Props {
     onClose: () => void;
@@ -94,15 +95,12 @@
   }
 </script>
 
-<!-- 遮罩：点击空白关闭；modal 容器 stopPropagation 防误关 -->
-<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="veil" onclick={onClose}>
-  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="modal" onclick={(e) => e.stopPropagation()}>
-    <header class="modal-head">
-      <h3>操作历史</h3>
-      <button class="close" title="关闭" onclick={onClose}>×</button>
-    </header>
+<!-- 遮罩/对话框语义由 ModalShell 提供（Esc 关闭 + 点击空白关闭 + 挂载聚焦） -->
+<ModalShell labelledBy="hist-title" width="720px" onClose={onClose}>
+  <header class="modal-head">
+    <h3 id="hist-title">操作历史</h3>
+    <button class="close" title="关闭 (Esc)" onclick={onClose}>×</button>
+  </header>
 
     <div class="toolbar">
       <select bind:value={typeFilter} onchange={() => (expanded = null)}>
@@ -129,8 +127,8 @@
       {:else if filtered.length === 0}
         <p class="hint">暂无记录</p>
       {:else}
-        {#each filtered as r, i (i)}
-          {@const key = `${r.ts}-${i}`}
+        {#each filtered as r (r.idx)}
+          {@const key = `#${r.idx}`}
           <div class="rec" role="button" tabindex="0" onclick={() => (expanded = expanded === key ? null : key)} onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { expanded = expanded === key ? null : key; } }}>
             <span class="badge" style:color={typeColor(r.type)}>{typeLabel(r.type)}</span>
             <span class="sess">{r.session}</span>
@@ -150,31 +148,9 @@
       <span class="stats">{filtered.length} 条记录（新→旧）</span>
       <button class="primary" onclick={onClose}>关闭</button>
     </footer>
-  </div>
-</div>
+</ModalShell>
 
 <style>
-  .veil {
-    position: fixed;
-    inset: 0;
-    background: rgba(8, 12, 18, 0.5);
-    backdrop-filter: blur(2px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 200;
-  }
-  .modal {
-    background: var(--modal-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
-    width: 720px;
-    max-height: 88vh;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
   .modal-head {
     display: flex;
     align-items: center;

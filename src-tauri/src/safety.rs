@@ -444,59 +444,210 @@ fn check_danger_inner(cmd: &str, depth: u8) -> (DangerLevel, String) {
 // 一切修改类命令一律拒绝。与 check_danger 的"危险分级"互补——
 // check_danger 只识别破坏性命令，touch/mkdir/yum install 等修改类命令是 Safe，
 // 不能仅靠它保证"只读"，故用白名单 + 逃逸通道封堵双保险。
+//
+// P111 重构：白名单与逃逸守卫合并为**单一规格表**（命令, 守卫）——
+// 旧版两张表分维护，首版就漏了 8 个命令本体（单测逐个抓出来的漂移）。
 // ============================================================================
 
-/// 只读命令白名单（按 basename 匹配首个 token）。刻意从紧：
-/// 拿不准的命令一律不在表内（拒绝），宁可少执行不能误放行。
-/// find/sed/awk/git/docker/systemctl/ip/env 在表内但带守卫（readonly_with_guard）。
-const READONLY_COMMANDS: [&str; 70] = [
-    "df", "free", "ps", "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "du", "wc", "sort",
-    "uniq", "cut", "tr", "column", "comm", "nl", "tac", "rev", "stat", "file", "which", "whereis",
-    "lscpu", "lsblk", "findmnt", "blkid", "uname", "uptime", "hostname", "hostnamectl", "date",
-    "cal", "who", "w", "whoami", "id", "groups", "env", "printenv", "lsof", "vmstat", "iostat",
-    "mpstat", "pidof", "pgrep", "top", "last", "lastlog", "ping", "journalctl", "dmesg", "md5sum",
-    "sha1sum", "sha256sum", "cksum", "base64", "printf", "echo", "bc", "seq", "systemctl", "ip",
-    "find", "sed", "awk", "git", "docker",
+/// QA 只读命令的逃逸守卫：该命令在白名单内，但其某些参数/子命令会改系统，逐一封堵。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RoGuard {
+    /// 纯查看，无参数逃逸口
+    Plain,
+    /// find：-delete/-exec/-ok 系会删会执行
+    Find,
+    /// sed：-i/--in-place 就地写
+    Sed,
+    /// awk：system()/getline/协程/文件重定向
+    Awk,
+    /// git：只放纯读子命令
+    Git,
+    /// docker：只放纯读子命令
+    Docker,
+    /// systemctl：修改子命令黑名单（status 前可插 --no-pager，查 tokens[1] 会漏）
+    Systemctl,
+    /// ip：修改子命令黑名单
+    Ip,
+    /// nmcli：连接的启停/增删/网络开关黑名单
+    Nmcli,
+    /// env：无参数才是读，env CMD 会执行 CMD
+    EnvNoArgs,
+    /// date：-s/--set 改系统时钟
+    Date,
+    /// hostname：带非旗标参数=改主机名
+    Hostname,
+    /// hostnamectl：set-* 子命令改机器标识
+    HostnameCtl,
+    /// sort：-o/--output 写文件
+    Sort,
+    /// dmesg：-c 清缓冲、-w 跟随、--console-* 改控制台日志
+    Dmesg,
+    /// journalctl：-f 跟随、--rotate/--vacuum-* 删日志、--flush
+    Journalctl,
+    /// tail：-f/--follow 永不退出（占满 60s 步骤超时）
+    Tail,
+    /// ping：必须带 -c 次数（否则永不退出）
+    Ping,
+    /// top：必须 -b -n（批量模式，否则交互挂起）
+    Top,
+}
+
+/// 单一规格表：白名单命令 + 各自守卫。**新增命令只改这里一行**（P110 漂移教训）。
+const READONLY_SPECS: &[(&str, RoGuard)] = &[
+    ("df", RoGuard::Plain),
+    ("free", RoGuard::Plain),
+    ("ps", RoGuard::Plain),
+    ("ls", RoGuard::Plain),
+    ("cat", RoGuard::Plain),
+    ("head", RoGuard::Plain),
+    ("tail", RoGuard::Tail),
+    ("grep", RoGuard::Plain),
+    ("egrep", RoGuard::Plain),
+    ("fgrep", RoGuard::Plain),
+    ("du", RoGuard::Plain),
+    ("wc", RoGuard::Plain),
+    ("sort", RoGuard::Sort),
+    ("uniq", RoGuard::Plain),
+    ("cut", RoGuard::Plain),
+    ("tr", RoGuard::Plain),
+    ("column", RoGuard::Plain),
+    ("comm", RoGuard::Plain),
+    ("nl", RoGuard::Plain),
+    ("tac", RoGuard::Plain),
+    ("rev", RoGuard::Plain),
+    ("stat", RoGuard::Plain),
+    ("file", RoGuard::Plain),
+    ("which", RoGuard::Plain),
+    ("whereis", RoGuard::Plain),
+    ("lscpu", RoGuard::Plain),
+    ("lsblk", RoGuard::Plain),
+    ("findmnt", RoGuard::Plain),
+    ("blkid", RoGuard::Plain),
+    ("uname", RoGuard::Plain),
+    ("uptime", RoGuard::Plain),
+    ("hostname", RoGuard::Hostname),
+    ("hostnamectl", RoGuard::HostnameCtl),
+    ("date", RoGuard::Date),
+    ("cal", RoGuard::Plain),
+    ("who", RoGuard::Plain),
+    ("w", RoGuard::Plain),
+    ("whoami", RoGuard::Plain),
+    ("id", RoGuard::Plain),
+    ("groups", RoGuard::Plain),
+    ("env", RoGuard::EnvNoArgs),
+    ("printenv", RoGuard::Plain),
+    ("lsof", RoGuard::Plain),
+    ("vmstat", RoGuard::Plain),
+    ("iostat", RoGuard::Plain),
+    ("mpstat", RoGuard::Plain),
+    ("pidof", RoGuard::Plain),
+    ("pgrep", RoGuard::Plain),
+    ("top", RoGuard::Top),
+    ("last", RoGuard::Plain),
+    ("lastlog", RoGuard::Plain),
+    ("ping", RoGuard::Ping),
+    ("ss", RoGuard::Plain),
+    ("netstat", RoGuard::Plain),
+    ("lspci", RoGuard::Plain),
+    ("lsusb", RoGuard::Plain),
+    ("lsmod", RoGuard::Plain),
+    ("nproc", RoGuard::Plain),
+    ("nmcli", RoGuard::Nmcli),
+    ("journalctl", RoGuard::Journalctl),
+    ("dmesg", RoGuard::Dmesg),
+    ("md5sum", RoGuard::Plain),
+    ("sha1sum", RoGuard::Plain),
+    ("sha256sum", RoGuard::Plain),
+    ("cksum", RoGuard::Plain),
+    ("base64", RoGuard::Plain),
+    ("printf", RoGuard::Plain),
+    ("echo", RoGuard::Plain),
+    ("bc", RoGuard::Plain),
+    ("seq", RoGuard::Plain),
+    ("systemctl", RoGuard::Systemctl),
+    ("ip", RoGuard::Ip),
+    ("find", RoGuard::Find),
+    ("sed", RoGuard::Sed),
+    ("awk", RoGuard::Awk),
+    ("git", RoGuard::Git),
+    ("docker", RoGuard::Docker),
 ];
 
-/// 允许但带"逃逸口"的命令：整段还得通过各自的子命令/旗标守卫
-fn readonly_with_guard(cmd: &str, tokens: &[String], seg: &str) -> bool {
-    match cmd {
-        // find 的删除/执行旗标
-        "find" => !tokens
-            .iter()
-            .any(|t| matches!(t.as_str(), "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fprintf" | "-fprint" | "-fls")),
-        // sed 的就地修改
-        "sed" => !tokens.iter().any(|t| t == "-i" || t.starts_with("--in-place")),
-        // awk 的 system()/管道协程/文件重定向
-        "awk" => !(seg.contains("system(") || seg.contains("|&") || seg.contains("getline")),
-        // git 只放行纯读子命令（branch/tag/remote 带参数会写）
-        "git" => tokens.get(1).map(|s| s.as_str()).is_some_and(|sub| matches!(sub, "status" | "log" | "diff" | "show")),
-        // docker 只放行纯读子命令（rm/run/exec/kill 全拒）
-        "docker" => tokens.get(1).map(|s| s.as_str()).is_some_and(|sub| {
-            matches!(sub, "ps" | "images" | "logs" | "inspect" | "version" | "info" | "top" | "stats" | "port")
-        }),
-        // systemctl 用修改子命令黑名单（status 前可插 --no-pager 等全局旗标，白名单查 tokens[1] 会漏）
-        "systemctl" => !tokens.iter().any(|t| {
+/// 守卫实现：true = 该次调用仍是只读
+fn guard_ok(guard: RoGuard, tokens: &[String], seg: &str) -> bool {
+    let has = |needle: &str| tokens.iter().any(|t| t.as_str() == needle);
+    let has_prefix = |needle: &str| tokens.iter().any(|t| t.as_str().starts_with(needle));
+    match guard {
+        RoGuard::Plain => true,
+        RoGuard::Find => !tokens.iter().any(|t| {
             matches!(
                 t.as_str(),
-                "start" | "stop" | "restart" | "reload" | "try-reload" | "try-restart" | "enable" | "disable"
-                    | "mask" | "unmask" | "kill" | "isolate" | "set-default" | "link" | "revert" | "freeze" | "thaw"
+                "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fprintf" | "-fprint" | "-fls"
             )
         }),
-        // ip 用修改子命令黑名单（addr/route/link/neigh 的查看形态放行）
-        "ip" => !tokens.iter().any(|t| {
-            matches!(t.as_str(), "add" | "del" | "delete" | "flush" | "set" | "change" | "replace" | "append")
+        RoGuard::Sed => !has_prefix("-i") && !has("--in-place"),
+        RoGuard::Awk => {
+            // 比较运算符 `> 100` 合法；重定向形态是 `> "file"` / `>>`，协程是 `| "cmd"`
+            !(seg.contains("system(")
+                || seg.contains("getline")
+                || seg.contains("|&")
+                || seg.contains("> \"")
+                || seg.contains(">>")
+                || seg.contains("| \""))
+        }
+        RoGuard::Git => tokens
+            .get(1)
+            .map(|s| s.as_str())
+            .is_some_and(|sub| matches!(sub, "status" | "log" | "diff" | "show")),
+        RoGuard::Docker => tokens.get(1).map(|s| s.as_str()).is_some_and(|sub| {
+            matches!(
+                sub,
+                "ps" | "images" | "logs" | "inspect" | "version" | "info" | "top" | "stats" | "port"
+            )
         }),
-        // env 无参数才是读环境变量，env CMD 会执行 CMD
-        "env" => tokens.len() == 1,
-        _ => true,
+        RoGuard::Systemctl => !tokens.iter().any(|t| {
+            matches!(
+                t.as_str(),
+                "start" | "stop" | "restart" | "reload" | "try-reload" | "try-restart" | "enable"
+                    | "disable" | "mask" | "unmask" | "kill" | "isolate" | "set-default" | "link"
+                    | "revert" | "freeze" | "thaw"
+            )
+        }),
+        RoGuard::Ip => !tokens.iter().any(|t| {
+            matches!(
+                t.as_str(),
+                "add" | "del" | "delete" | "flush" | "set" | "change" | "replace" | "append"
+            )
+        }),
+        RoGuard::Nmcli => !tokens.iter().any(|t| {
+            matches!(
+                t.as_str(),
+                "up" | "down" | "connect" | "disconnect" | "modify" | "add" | "delete" | "remove"
+                    | "reload" | "reapply" | "monitor" | "on" | "off"
+            )
+        }),
+        RoGuard::EnvNoArgs => tokens.len() == 1,
+        RoGuard::Date => !has("-s") && !has("--set"),
+        RoGuard::Hostname => tokens.len() == 1 || tokens[1..].iter().all(|t| t.starts_with('-')),
+        RoGuard::HostnameCtl => !tokens.iter().any(|t| t.starts_with("set-")),
+        RoGuard::Sort => !has("-o") && !has_prefix("--output"),
+        RoGuard::Dmesg => !tokens.iter().any(|t| {
+            matches!(t.as_str(), "-c" | "--clear" | "-w" | "--follow")
+                || t.starts_with("--console")
+        }),
+        RoGuard::Journalctl => !tokens.iter().any(|t| {
+            matches!(t.as_str(), "-f" | "--follow" | "--rotate" | "--flush" | "--relinquish-var")
+                || t.starts_with("--vacuum")
+        }),
+        RoGuard::Tail => !has("-f") && !has("--follow"),
+        RoGuard::Ping => has("-c"),
+        RoGuard::Top => has("-b") && has("-n"),
     }
 }
 
 /// QA 模式只读判定：true = 允许自动执行。
-/// 规则：整条命令重定向/命令替换/后台与逃逸通道全禁 + 每个管道段首命令在白名单内
-/// + 白名单内的可编程命令再过各自的逃逸守卫。
+/// 规则：整条命令重定向/命令替换/后台与逃逸通道全禁 + 每个管道段首命令在规格表内
+/// + 表内的可编程命令再过各自的逃逸守卫。
 pub fn is_readonly_command(cmd: &str) -> bool {
     let c = cmd.trim();
     if c.is_empty() {
@@ -522,10 +673,10 @@ pub fn is_readonly_command(cmd: &str) -> bool {
         let tokens = tokenize_segment(seg);
         let Some(first) = tokens.first() else { return false };
         let base = basename(first);
-        if !READONLY_COMMANDS.contains(&base) {
+        let Some((_, guard)) = READONLY_SPECS.iter().find(|(name, _)| *name == base) else {
             return false;
-        }
-        if !readonly_with_guard(base, &tokens, seg) {
+        };
+        if !guard_ok(*guard, &tokens, seg) {
             return false;
         }
     }
@@ -736,6 +887,25 @@ mod tests {
             "env",
             "uname -r && uptime",
             "df -h; free -m; ps aux",
+            // P111 新守卫的合法形态
+            "sort /etc/passwd",
+            "sort -t: -k3 /etc/passwd",
+            "date +%F",
+            "date",
+            "hostname -s",
+            "hostname",
+            "hostnamectl status",
+            "tail -n 20 /var/log/messages",
+            "dmesg | tail -n 20",
+            "journalctl -u sshd -n 20",
+            "ping -c 3 example.com",
+            "top -b -n 1",
+            "ss -tlnp",
+            "netstat -rn",
+            "lsmod",
+            "nproc",
+            "nmcli device status",
+            "nmcli connection show",
         ] {
             assert!(is_readonly_command(ok), "应放行: {ok}");
         }
@@ -791,8 +961,34 @@ mod tests {
             "find / | xargs rm -rf",
             // 空命令
             "   ",
+            // P111 新守卫：白名单内命令的写形态/挂起形态
+            "sort -o /etc/passwd /tmp/in",
+            "sort --output=/etc/passwd /tmp/in",
+            "date -s '2020-01-01'",
+            "hostname newname",
+            "hostname -F /tmp/hostname-file",
+            "hostnamectl set-hostname web1",
+            "tail -f /var/log/messages",
+            "dmesg -c",
+            "journalctl --vacuum-size=1M",
+            "journalctl -f",
+            "ping example.com",
+            "top",
+            "awk '{print $1 > \"/tmp/x\"}' /etc/in",
+            "awk '{print | \"sh\"}' /etc/in",
+            "nmcli networking off",
+            "nmcli connection down ens33",
         ] {
             assert!(!is_readonly_command(bad), "应拒绝: {bad}");
+        }
+    }
+
+    /// P111 规格表结构不变量：命令名不得重复（防两张表时代的漂移复发）
+    #[test]
+    fn readonly_specs_have_no_duplicates() {
+        let mut seen = std::collections::HashSet::new();
+        for (name, _) in READONLY_SPECS {
+            assert!(seen.insert(*name), "规格表重复命令: {name}");
         }
     }
 }

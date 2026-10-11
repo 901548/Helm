@@ -689,24 +689,25 @@ impl Agent {
             Ok((content, value))
         };
 
-        match request_once().await {
-            Ok(reply) => Ok(reply),
-            Err(first) => {
-                // P106：瞬时失败自动重试（共 3 次，退避 1s/3s）；鉴权/参数错误立即报错
-                let mut last_err = first.to_string();
-                for attempt in 1..API_RETRY_ATTEMPTS {
-                    if !is_retryable_api_error(&last_err) {
-                        return Err(first);
-                    }
-                    tokio::time::sleep(Duration::from_millis(API_RETRY_BACKOFF_MS[attempt - 1])).await;
-                    match request_once().await {
-                        Ok(reply) => return Ok(reply),
-                        Err(e) => last_err = e.to_string(),
+        // P106：瞬时失败自动重试（共 3 次，退避 1s/3s）；鉴权/参数错误立即报错
+        let schedule = std::iter::once(0u64).chain(API_RETRY_BACKOFF_MS);
+        for (attempt, backoff_ms) in schedule.enumerate() {
+            if backoff_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            }
+            match request_once().await {
+                Ok(reply) => return Ok(reply),
+                Err(e) => {
+                    if attempt + 1 >= API_RETRY_ATTEMPTS || !is_retryable_api_error(&e.to_string()) {
+                        if attempt > 0 {
+                            return Err(anyhow!("AI API 调用失败（已重试{}次）: {}", attempt, e));
+                        }
+                        return Err(e);
                     }
                 }
-                Err(anyhow!("AI API 调用失败（已重试{}次）: {}", API_RETRY_ATTEMPTS - 1, last_err))
             }
         }
+        unreachable!("重试循环在固定尝试次数内必然返回")
     }
 
     /// 流式请求：读取 SSE 增量，逐个回调 sink，返回完整文本。
@@ -720,8 +721,12 @@ impl Agent {
         started: &mut bool,
     ) -> Result<String> {
         let mut emitted = false;
-        let mut last_err = String::new();
-        for attempt in 0..API_RETRY_ATTEMPTS {
+        // 尝试序列 = 首次(不等待) + 退避表逐项重试（P106）
+        let schedule = std::iter::once(0u64).chain(API_RETRY_BACKOFF_MS);
+        for (attempt, backoff_ms) in schedule.enumerate() {
+            if backoff_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            }
             match self.call_api_stream_once(sink, started, &mut emitted).await {
                 Ok(full) => return Ok(full),
                 Err(e) => {
@@ -732,12 +737,10 @@ impl Agent {
                         }
                         return Err(e);
                     }
-                    last_err = msg;
-                    tokio::time::sleep(Duration::from_millis(API_RETRY_BACKOFF_MS[attempt])).await;
                 }
             }
         }
-        Err(anyhow!("AI API 调用失败（已重试{}次）: {}", API_RETRY_ATTEMPTS - 1, last_err))
+        unreachable!("重试循环在固定尝试次数内必然返回")
     }
 
     async fn call_api_stream_once(

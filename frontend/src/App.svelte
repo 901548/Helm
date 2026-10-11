@@ -8,7 +8,7 @@
   import HistoryModal from "./components/chrome/HistoryModal.svelte";
   import StatusBar from "./components/chrome/StatusBar.svelte";
   import * as api from "./lib/api";
-  import type { AiCard, AiLogEntry, AiConfig, AiState, SessionInfo, SessionKind, SessionStatus, Theme, UiConfig } from "./lib/api";
+  import type { AiCard, AiLogEntry, AiQaCard, AiConfig, AiState, SessionInfo, SessionKind, SessionStatus, Theme, UiConfig } from "./lib/api";
 
   let sessions = $state<SessionInfo[]>([]);
   let statuses = $state<Record<string, SessionStatus>>({});
@@ -288,7 +288,19 @@
           if (isActive) {
             // P88-A：QA 模式下完整回答已在卡片内流式展示，摘要只放短句（消除问/答挤一行）
             const isQa = (aiMode[p.name] ?? "qa") === "qa";
-            aiSummary = { ...aiSummary, [p.name]: { text: isQa ? "已回答" : p.message, ok: true } };
+            if (isQa) {
+              // P106：空回答兜底——模型有时返回空 content（提示词/服务端异常），
+              // 只显示「已回答」会让用户以为答案丢了；明确提示并标警示色。
+              const cards = aiCards[p.name] ?? [];
+              const lastQa = [...cards].reverse().find((c): c is AiQaCard => c.kind === "qa");
+              const emptyAnswer = !lastQa || !lastQa.text.trim();
+              aiSummary = {
+                ...aiSummary,
+                [p.name]: { text: emptyAnswer ? "模型未返回内容" : "已回答", ok: !emptyAnswer },
+              };
+            } else {
+              aiSummary = { ...aiSummary, [p.name]: { text: p.message, ok: true } };
+            }
             finishQaCard(p.name);
             addLog({
               id: ++logId,

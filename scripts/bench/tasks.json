@@ -1,6 +1,6 @@
 {
-  "description": "Helm Agent 评测任务集 v1——真实运维任务，完成态计分（P84）",
-  "scoring": "success = Done 消息不含中止关键词；metrics = 步数/时长/命令数",
+  "description": "Helm Agent 评测任务集 v1——真实运维任务，完成态计分（P84 定版；v2 起支持 verify 后置校验）",
+  "scoring": "v2: success = done 无中止关键词 + (verify 通过 | 至少一条命令成功)；no-op = 零命令假完成；metrics = 步数/时长/失败步数",
   "tasks": [
     {
       "id": "T1-disk-usage",
@@ -25,7 +25,8 @@
     {
       "id": "T5-file-create",
       "category": "file-ops",
-      "task": "在 /tmp 下创建目录 helm-bench，并在里面写入一个包含当前系统时间的文件 now.txt"
+      "task": "在 /tmp 下创建目录 helm-bench，并在里面写入一个包含当前系统时间的文件 now.txt",
+      "verify": { "type": "file-exists", "path": "/tmp/helm-bench/now.txt" }
     },
     {
       "id": "T6-login-users",
@@ -40,7 +41,8 @@
     {
       "id": "T8-cleanup",
       "category": "cleanup",
-      "task": "删除 /tmp/helm-bench 目录并确认已经删除干净"
+      "task": "删除 /tmp/helm-bench 目录并确认已经删除干净",
+      "verify": { "type": "file-absent", "path": "/tmp/helm-bench" }
     }
   ]
 }

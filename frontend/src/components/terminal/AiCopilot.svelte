@@ -251,7 +251,15 @@
           {@const inGoal = inGoalGroup(cards, ci)}
           {#if c.kind === "qa"}
             <div class="card qa" class:done={c.done}>
-              <div class="qa-text">{c.text}{#if !c.done}<span class="cursor">▋</span>{/if}</div>
+              <div class="qa-text">
+                {#if c.text}
+                  {c.text}
+                {:else if c.done}
+                  <!-- P106：空回答占位——与摘要的警示一致，明示是模型没返回而非渲染丢失 -->
+                  <span class="qa-empty">（模型未返回内容，可重试或检查模型服务）</span>
+                {/if}
+                {#if !c.done}<span class="cursor">▋</span>{/if}
+              </div>
             </div>
           {:else if c.kind === "goal"}
             <!-- L2-beta：子目标组头卡——其后步骤卡缩进归属该组，直至下一个组头 -->
@@ -560,6 +568,10 @@
     word-break: break-word;
     line-height: 1.55;
     font-size: 0.82rem;
+  }
+  .qa-empty {
+    color: var(--fg-muted);
+    font-style: italic;
   }
   /* P88-A：QA 卡片左侧 accent 竖条 + 更通透的底色（区分于步骤卡） */
   .card.qa {

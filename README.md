@@ -81,7 +81,7 @@ cargo tauri build    # 打包 release:helm.exe + msi + nsis 安装包
 运行测试：
 
 ```bash
-cd src-tauri && cargo test                          # 138 项(含 SSH/SFTP live 测试,无 src-tauri/config.yaml 时自动跳过)
+cd src-tauri && cargo test                          # 147 项(含 SSH/SFTP live 测试,无 src-tauri/config.yaml 时自动跳过)
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings   # 静态检查(零告警)
 npm run build                                       # 前端构建
 npm test                                            # 前端单元测试(Vitest 35 项)

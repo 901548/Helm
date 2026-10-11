@@ -245,9 +245,39 @@ pub(crate) async fn run_ai_job(
             let mut ag = agent.lock().await;
             let timeout_secs = ag.command_timeout_secs();
             let max_out = ag.max_output_chars();
-            let mut sink = Some(|evt: AiStreamEvent| {
+            // P113：流式答案过滤器——RUN 行不进答案流（执行情况由步骤卡呈现）。
+            // Arc<Mutex> 因为 sink 跨工具轮次存活，回合结束要经它 finish 冲刷末行。
+            let line_filter = std::sync::Arc::new(std::sync::Mutex::new(crate::agent::QaLineFilter::new()));
+            let filter_for_sink = line_filter.clone();
+            let mut sink = Some(move |evt: AiStreamEvent| {
+                let evt = match evt {
+                    AiStreamEvent::Content(d) => {
+                        let visible = filter_for_sink
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .push(&d);
+                        if visible.is_empty() {
+                            return;
+                        }
+                        AiStreamEvent::Content(visible)
+                    }
+                    other => other,
+                };
                 let _ = app.emit("ai", stream_to_payload(session, evt));
             });
+            // 回合结束冲刷：把末行可见文本补发进流式答案（visible_reply 由 strip_run_lines 汇总，不重复计）
+            let flush_display = || {
+                let tail = line_filter
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .finish();
+                if !tail.is_empty() {
+                    let _ = app.emit(
+                        "ai",
+                        stream_to_payload(session, AiStreamEvent::Content(tail)),
+                    );
+                }
+            };
             let mut current_input = input.to_string();
             let mut current_term_ctx = term_ctx.clone();
             let mut visible_reply = String::new();
@@ -282,6 +312,7 @@ pub(crate) async fn run_ai_job(
                 };
                 match end {
                     QaRoundEnd::Cancelled => {
+                        flush_display();
                         cancelled = true;
                         break;
                     }
@@ -295,6 +326,8 @@ pub(crate) async fn run_ai_job(
                         return;
                     }
                     QaRoundEnd::Reply(reply) => {
+                        // 冲刷上一段挂起的末行（显示补齐；visible_reply 由 strip 汇总不重复计）
+                        flush_display();
                         // 提取 RUN 请求；无命令（或已到轮次上限）→ 本轮即最终回答
                         let runs = crate::agent::extract_run_commands(&reply);
                         visible_reply.push_str(&crate::agent::strip_run_lines(&reply));

@@ -1094,6 +1094,49 @@ pub fn strip_run_lines(reply: &str) -> String {
     filtered.join("\n")
 }
 
+/// P113 流式答案过滤器：RUN 行不进流式答案（执行情况由步骤卡呈现）。
+///
+/// 按行缓冲——`RUN:` 可能被 chunk 从中间切开，凑成完整行才判定；
+/// `finish` 在每轮回合结束时冲刷无换行的尾段（回答末行通常不带换行）。
+pub struct QaLineFilter {
+    buf: String,
+}
+
+impl Default for QaLineFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl QaLineFilter {
+    pub fn new() -> Self {
+        Self { buf: String::new() }
+    }
+
+    /// 喂入一段增量，返回其中可显示的文本（RUN 行被吞掉）
+    pub fn push(&mut self, delta: &str) -> String {
+        self.buf.push_str(delta);
+        let mut out = String::new();
+        while let Some(pos) = self.buf.find('\n') {
+            let line: String = self.buf.drain(..=pos).collect();
+            if !is_run_line(&line) {
+                out.push_str(&line);
+            }
+        }
+        out
+    }
+
+    /// 回合结束冲刷：返回剩余尾段中可显示的部分，并清空缓冲（下一轮从零开始）
+    pub fn finish(&mut self) -> String {
+        let rest = std::mem::take(&mut self.buf);
+        if is_run_line(&rest) {
+            String::new()
+        } else {
+            rest
+        }
+    }
+}
+
 /// P106：请求级重试判定——只重试瞬时失败。
 ///
 /// 判定对象是错误文案（HTTP 状态码已被格式化进文案），按内容甄别：
@@ -1776,6 +1819,25 @@ mod tests {
         assert_eq!(strip_run_lines("普通回答"), "普通回答");
         // 空 RUN 行被提取阶段丢弃
         assert_eq!(extract_run_commands("RUN:\nRUN: ls\n"), vec!["ls"]);
+    }
+
+    /// P113 流式过滤器：RUN 行跨 chunk 分包也不漏进答案流，末行正确冲刷
+    #[test]
+    fn qa_line_filter_hides_run_lines() {
+        let mut f = QaLineFilter::new();
+        // RUN: 被切在 chunk 中间（"RU" + "N: df -h\n"）；完整行立即透传，RUN 行被吞
+        assert_eq!(f.push("磁盘情况：\nRU"), "磁盘情况：\n");
+        assert_eq!(f.push("N: df -h\n"), "");
+        assert_eq!(f.push("总占用 9%。"), ""); // 无换行尾段挂起
+        assert_eq!(f.finish(), "总占用 9%。");
+        // finish 吞掉恰好是 RUN 行的尾段
+        let mut f = QaLineFilter::new();
+        assert_eq!(f.push("好的。\nRUN: free -m"), "好的。\n");
+        assert_eq!(f.finish(), "");
+        // 普通多行文本原样透传
+        let mut f = QaLineFilter::new();
+        assert_eq!(f.push("a\n\nb\n"), "a\n\nb\n");
+        assert_eq!(f.finish(), "");
     }
 
     /// P106：QA 内置提示词与 Agent 互不回落（QA 产出"回答"，Agent 产出"命令"）

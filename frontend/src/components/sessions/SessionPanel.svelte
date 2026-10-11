@@ -9,7 +9,7 @@
     sessions: SessionInfo[];
     statuses: Record<string, SessionStatus>;
     tabs: string[];
-    /** P115：折叠态由 App 持有（bindable）——终端空状态要据此给不同引导 */
+    /** P119：折叠态由 App 持有（开关在状态栏）——本组件只读，不再有内部折叠按钮 */
     collapsed?: boolean;
     onSelect: (name: string) => void;
     onConnect: (name: string) => void;
@@ -25,7 +25,7 @@
     sessions,
     statuses,
     tabs,
-    collapsed = $bindable(false),
+    collapsed = false,
     onSelect,
     onConnect,
     onDisconnect,
@@ -76,23 +76,7 @@
   <header class="panel-header">
       <span class="title">会话</span>
       <div class="head-actions">
-        <button
-          class="icon-btn"
-          title="折叠"
-          onclick={() => (collapsed = true)}
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="18"
-            height="18"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          ><path d="M15 6l-6 6 6 6" /></svg>
-        </button>
+        <!-- P120：此处的「折叠」按钮已删除——收/展开关统一在状态栏「会话 计数」处 -->
         <button class="icon-btn accent" title="新建会话" onclick={onNew}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
         </button>

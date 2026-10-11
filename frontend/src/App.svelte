@@ -764,7 +764,7 @@
         {sessions}
         {statuses}
         {tabs}
-        bind:collapsed={sessionsCollapsed}
+        collapsed={sessionsCollapsed}
         onSelect={selectSession}
         onConnect={connectSession}
         onDisconnect={disconnectSession}

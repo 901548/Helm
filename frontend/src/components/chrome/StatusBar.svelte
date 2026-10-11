@@ -95,11 +95,7 @@
     background: var(--hover);
     color: var(--fg);
   }
-  /* P119：会话开关——比普通菜单项更实一点（它是布局控制，不只是导航） */
-  .sessions-toggle {
-    color: var(--statusbar-fg);
-    font-weight: 600;
-  }
+  /* P119：会话开关——箭头保留 accent 色以示可点；文字不加重（P120：用户要求不突出） */
   .sessions-toggle .chev {
     display: block;
     color: var(--accent);

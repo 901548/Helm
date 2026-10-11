@@ -1031,11 +1031,20 @@ fn parse_sse_line(line: &str) -> SseEvent {
     }
     match value["choices"][0]["delta"]["content"].as_str() {
         Some(s) if !s.is_empty() => SseEvent::Content(s.to_string()),
-        _ => match value["choices"][0]["delta"]["reasoning_content"].as_str() {
-            // 推理型模型（deepseek-r1 等）的思考过程：单独归口，前端据此实时展示
-            Some(s) if !s.is_empty() => SseEvent::Reasoning(s.to_string()),
-            _ => SseEvent::Ignore,
-        },
+        _ => {
+            // 推理型模型（deepseek-r1 等）的思考过程：单独归口，前端据此实时展示。
+            // 字段名两套并存：DeepSeek 官方 API 用 `reasoning_content`，
+            // Ollama 的 OpenAI 兼容端点（新版本实测）用 `reasoning`——都认，
+            // 否则思考阶段在 UI 上表现为"长时间只有光标"（P104-5 真机实测）。
+            let delta = &value["choices"][0]["delta"];
+            match delta["reasoning_content"]
+                .as_str()
+                .or_else(|| delta["reasoning"].as_str())
+            {
+                Some(s) if !s.is_empty() => SseEvent::Reasoning(s.to_string()),
+                _ => SseEvent::Ignore,
+            }
+        }
     }
 }
 
@@ -1564,6 +1573,10 @@ mod tests {
         // 内容与思考同时存在时以 content 优先
         let both = r#"data: {"choices":[{"delta":{"reasoning_content":"想","content":"答"}}]}"#;
         assert_eq!(parse_sse_line(both), SseEvent::Content("答".into()));
+        // P104-5：Ollama 的 OpenAI 兼容端点用 `reasoning` 字段（旧版仅认 reasoning_content，
+        // Ollama 升级后思考流整体失效——真机实测思考阶段 UI 上只有光标）
+        let ollama = r#"data: {"choices":[{"delta":{"reasoning":"Hmm, let me think"}}]}"#;
+        assert_eq!(parse_sse_line(ollama), SseEvent::Reasoning("Hmm, let me think".into()));
     }
 
     #[test]

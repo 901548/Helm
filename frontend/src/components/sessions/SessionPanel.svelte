@@ -199,29 +199,26 @@
     overflow: hidden;
     transition: width 0.15s ease;
   }
+  /* P117：折叠态保留一条**真实宽度的轨道**——旧实现 `width: 0` + 胶囊 `position: fixed`
+     让它脱离布局浮在终端标签栏之上（视觉上"悬空"、与任何东西都不对齐） */
   .panel.collapsed {
-    width: 0;
-    border-right: none;
-    overflow: visible;
+    width: 44px;
   }
-  /* 折叠后:左上角悬浮的紧凑展开柄(带"会话"文字标签,避免仅凭小图标看不清) */
+  /* 折叠后：轨道顶部的竖向展开柄（图标在上、文字在下），在布局内、不再悬浮 */
   .reopen {
-    position: fixed;
-    top: 10px;
-    left: 10px;
-    z-index: 60;
+    align-self: center;
+    width: 36px;
+    margin-top: 8px;
+    padding: 0.45rem 0 0.4rem;
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: center;
-    gap: 0.35rem;
-    height: 32px;
-    padding: 0 0.7rem 0 0.45rem;
+    gap: 0.15rem;
     border: 1px solid var(--accent);
     border-radius: var(--radius);
     background: var(--bg-panel);
     color: var(--accent);
     cursor: pointer;
-    box-shadow: var(--shadow);
     transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
   }
   .reopen:hover {
@@ -234,7 +231,7 @@
     flex-shrink: 0;
   }
   .reopen-label {
-    font-size: 0.8rem;
+    font-size: 0.68rem;
     font-weight: 600;
     color: inherit;
     white-space: nowrap;

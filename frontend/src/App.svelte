@@ -75,11 +75,9 @@
     document.documentElement.style.colorScheme = resolvedTheme;
   });
 
-  // P116：折叠会话栏 + 零标签 = 死胡同——左侧只剩 44px「会话」胶囊、终端空、无从下手。
-  // 该状态没有任何合理用途（要折叠是为了给终端让宽度，而此刻没有终端），自动展开。
-  $effect(() => {
-    if (sessionsCollapsed && tabs.length === 0) sessionsCollapsed = false;
-  });
+  // 注：曾试过"折叠 + 零标签自动展开"的守卫（P116），但用户明确要"随时能折叠"——
+  // 折叠是用户的显式操作，不该被自动撤销；可发现性由 P115 的空状态提示
+  // （折叠时提示"点左上角「会话」展开"）+ P117 的轨道内嵌按钮共同保证。
 
   async function refreshStatuses() {
     await Promise.all(

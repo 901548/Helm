@@ -75,6 +75,12 @@
     document.documentElement.style.colorScheme = resolvedTheme;
   });
 
+  // P116：折叠会话栏 + 零标签 = 死胡同——左侧只剩 44px「会话」胶囊、终端空、无从下手。
+  // 该状态没有任何合理用途（要折叠是为了给终端让宽度，而此刻没有终端），自动展开。
+  $effect(() => {
+    if (sessionsCollapsed && tabs.length === 0) sessionsCollapsed = false;
+  });
+
   async function refreshStatuses() {
     await Promise.all(
       sessions.map(async (s) => {

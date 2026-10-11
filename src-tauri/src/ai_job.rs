@@ -238,48 +238,130 @@ pub(crate) async fn run_ai_job(
 
     match mode {
         AgentMode::QA => {
+            // P110 QA 只读命令协议：模型可输出 `RUN: <只读命令>` 请求查看类命令辅助回答。
+            // 循环：chat(流式回答) → 提取 RUN 行 → 经 safety::is_readonly_command 门禁 →
+            // 自动执行（无确认；CommandStep 步骤卡呈现，不进训练日志）→ 输出回喂 → 继续回答。
+            const QA_TOOL_ROUNDS: usize = 4;
             let mut ag = agent.lock().await;
+            let timeout_secs = ag.command_timeout_secs();
+            let max_out = ag.max_output_chars();
             let mut sink = Some(|evt: AiStreamEvent| {
                 let _ = app.emit("ai", stream_to_payload(session, evt));
             });
-            let sink: Option<&mut (dyn FnMut(AiStreamEvent) + Send)> = sink.as_mut().map(|f| f as _);
-            let chat_fut = ag.chat(input, term_ctx.as_deref(), sink);
-            tokio::pin!(chat_fut);
-            tokio::select! {
-                result = &mut chat_fut => match result {
-                    Ok(reply) => {
-                        // P70 训练数据：QA 问答对（P100-5：落盘走阻塞线程池）
-                        recorder.log_async(serde_json::json!({
-                            "type": "qa", "session": session,
-                            "q": crate::agent::truncate_text(input, 2000),
-                            "a": crate::agent::truncate_text(&reply, 4000),
-                        })).await;
-                        conv_push(&conv, crate::core::ConvEntry::Qa {
-                            q: crate::agent::truncate_text(input, 2000),
-                            a: crate::agent::truncate_text(&reply, 4000),
-                        })
-                        .await;
-                        let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: reply });
+            let mut current_input = input.to_string();
+            let mut current_term_ctx = term_ctx.clone();
+            let mut visible_reply = String::new();
+            let mut cancelled = false;
+            // 每轮 chat 的三种归宿（enum 定义在循环外避免重复定义）
+            enum QaRoundEnd {
+                Reply(String),
+                Cancelled,
+                Failed(String),
+            }
+            for round in 0..QA_TOOL_ROUNDS {
+                let last_round = round + 1 >= QA_TOOL_ROUNDS;
+                // chat_fut 借用 current_input/term_ctx——整轮 chat+select 收在块内，
+                // 块结束即归还借用，之后才能改写下一轮输入（E0506）。
+                let end = {
+                    let chat_fut = ag.chat(&current_input, current_term_ctx.as_deref(), sink.as_mut().map(|f| f as _));
+                    tokio::pin!(chat_fut);
+                    tokio::select! {
+                        result = &mut chat_fut => match result {
+                            Ok(r) => QaRoundEnd::Reply(r),
+                            Err(e) => QaRoundEnd::Failed(e.to_string()),
+                        },
+                        // 收到 Cancel(ai_stop)时,块结束即 drop 未完成的 chat_fut
+                        // （中断进行中的 HTTP 请求），随后才释放 agent 锁。
+                        ctl = ctl_rx.recv() => {
+                            if ctl == Some(AiControl::Cancel) {
+                                let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
+                            }
+                            QaRoundEnd::Cancelled
+                        }
                     }
-                    Err(e) => {
+                };
+                match end {
+                    QaRoundEnd::Cancelled => {
+                        cancelled = true;
+                        break;
+                    }
+                    QaRoundEnd::Failed(e) => {
                         recorder.log_async(serde_json::json!({
                             "type": "qa", "session": session, "ok": false,
-                            "q": crate::agent::truncate_text(input, 2000),
-                            "a": crate::agent::truncate_text(&e.to_string(), 1000),
+                            "q": crate::agent::truncate_text(&current_input, 2000),
+                            "a": crate::agent::truncate_text(&e, 1000),
                         })).await;
-                        let _ = app.emit("ai", AiPayload::Error { name: session.to_string(), message: e.to_string() });
+                        let _ = app.emit("ai", AiPayload::Error { name: session.to_string(), message: e });
+                        return;
                     }
-                },
-                // 收到 Cancel(ai_stop)时,离开本分支即 drop 未完成的 chat_fut
-                // （中断进行中的 HTTP 请求），随后才释放 agent 锁。
-                // 注：future 由 tokio::pin! 存于本作用域局部，故显式 drop(chat_fut)
-                // 只是丢弃 Pin 守卫、对 future 无作用（P103-a 已移除该无效调用）。
-                ctl = ctl_rx.recv() => {
-                    if ctl == Some(AiControl::Cancel) {
-                        let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
+                    QaRoundEnd::Reply(reply) => {
+                        // 提取 RUN 请求；无命令（或已到轮次上限）→ 本轮即最终回答
+                        let runs = crate::agent::extract_run_commands(&reply);
+                        visible_reply.push_str(&crate::agent::strip_run_lines(&reply));
+                        if runs.is_empty() || last_round {
+                            break;
+                        }
+
+                        // 执行 RUN：只读门禁 + task_exec（CommandStep 事件自带步骤卡呈现）
+                        let Some(ctx) = ctx.as_ref() else {
+                            current_input = "[系统] 未连接会话，无法执行命令，请直接根据已有知识回答。".to_string();
+                            continue;
+                        };
+                        let cwd = if ctx.pwd.is_empty() { "/" } else { ctx.pwd.as_str() };
+                        let mut outputs = String::new();
+                        for cmd in &runs {
+                            if !crate::safety::is_readonly_command(cmd) {
+                                let reason = "已拒绝：QA 模式仅允许只读命令（查看/检索类），任何修改类命令都不执行。";
+                                outputs.push_str(&format!("[命令被拒绝] {cmd}\n{reason}\n"));
+                                conv_push(&conv, crate::core::ConvEntry::Step {
+                                    command: cmd.clone(),
+                                    success: false,
+                                    message: reason.to_string(),
+                                    output: String::new(),
+                                })
+                                .await;
+                                let _ = app.emit("ai", AiPayload::CommandStep {
+                                    name: session.to_string(),
+                                    command: cmd.clone(),
+                                    success: false,
+                                    message: reason.to_string(),
+                                    output: String::new(),
+                                });
+                                continue;
+                            }
+                            let (out, code, _) = task_exec(ssh, app, &ctx.name, cmd, cwd, timeout_secs, ctx.container.as_deref()).await;
+                            outputs.push_str(&format!("$ {cmd}\n[退出码 {code}]\n{}\n", truncate_text(&out, max_out)));
+                            conv_push(&conv, crate::core::ConvEntry::Step {
+                                command: cmd.clone(),
+                                success: code == 0,
+                                message: if code == 0 { String::new() } else { format!("退出码 {}", code) },
+                                output: truncate_text(&out, 2000),
+                            })
+                            .await;
+                        }
+                        current_input = format!("[命令输出]\n{outputs}\n请根据以上命令输出继续回答。");
+                        current_term_ctx = None; // 命令输出比旧屏幕快照更新鲜
                     }
                 }
             }
+            if cancelled {
+                return;
+            }
+            // 收尾：问答对入库（a 为剥掉 RUN 行的可见回答）+ 对话记录 + Done
+            recorder.log_async(serde_json::json!({
+                "type": "qa", "session": session,
+                "q": crate::agent::truncate_text(input, 2000),
+                "a": crate::agent::truncate_text(&visible_reply, 4000),
+            })).await;
+            conv_push(&conv, crate::core::ConvEntry::Qa {
+                q: crate::agent::truncate_text(input, 2000),
+                a: crate::agent::truncate_text(&visible_reply, 4000),
+            })
+            .await;
+            let _ = app.emit("ai", AiPayload::Done {
+                name: session.to_string(),
+                message: visible_reply,
+            });
         }
         AgentMode::Agent => {
             let ctx = match ctx {

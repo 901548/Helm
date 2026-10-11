@@ -1030,6 +1030,9 @@ pub fn default_system_prompt_qa() -> String {
         "用简洁的中文直接回答用户的问题：先给结论，再给要点；需要时用短代码块展示命令或配置示例供参考。\n",
         "不要用一条 shell 命令代替回答，也不要输出 DONE；用户没有让你执行时不要假设命令会被自动执行。\n",
         "如果提供了[终端最近输出]，请结合其中的内容回答（报错分析、接着刚才的操作等都以此为准）。\n",
+        "如需查看服务器实时状态来支撑回答，可单独一行输出 `RUN: <只读命令>`（例如 `RUN: df -h`、`RUN: systemctl status sshd`），系统会自动执行该命令并把输出回给你，然后你继续回答。\n",
+        "只允许只读命令（查看/检索类）：写入、安装、删除、重启等一切修改类命令都会被系统拒绝并返回原因。\n",
+        "每个 RUN: 一行只放一条命令；最多 4 轮；最终必须给出文字结论，不要用命令代替回答；命令里用绝对路径。\n",
     )
     .to_string()
 }
@@ -1053,6 +1056,41 @@ fn system_prompt_for(mode: AgentMode, qa: &str, agent: &str) -> String {
         AgentMode::Agent => agent.to_string(),
         AgentMode::QA => qa.to_string(),
     }
+}
+
+// ============================================================================
+// P110 QA 只读命令协议：模型可输出 `RUN: <只读命令>` 行请求执行查看类命令，
+// 由 ai_job 的 QA 循环经 safety::is_readonly_command 门禁后自动执行并回喂输出。
+// ============================================================================
+
+/// 是否为 RUN 请求行（行首 `RUN:` 或全角冒号 `RUN：`；两侧冒号都认，防模型用全角）
+pub fn is_run_line(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with("RUN:") || t.starts_with("RUN：")
+}
+
+/// 从完整回复提取全部 RUN 命令（保持出现顺序）
+pub fn extract_run_commands(reply: &str) -> Vec<String> {
+    reply
+        .lines()
+        .filter(|l| is_run_line(l))
+        .map(|l| {
+            let t = l.trim();
+            t.strip_prefix("RUN:")
+                .or_else(|| t.strip_prefix("RUN："))
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
+/// 剥掉回复里的 RUN 行——问答记录与完成摘要只保留给用户看的回答文本
+/// （执行情况由步骤卡呈现，不混进答案正文）
+pub fn strip_run_lines(reply: &str) -> String {
+    let filtered: Vec<&str> = reply.lines().filter(|l| !is_run_line(l)).collect();
+    filtered.join("\n")
 }
 
 /// P106：请求级重试判定——只重试瞬时失败。
@@ -1715,6 +1753,28 @@ mod tests {
         // attempt 越界防御（不应发生）：各自落在自己表的最后一项
         assert_eq!(retry_backoff_ms("API 请求失败（HTTP 429）: x", 99), 30_000);
         assert_eq!(retry_backoff_ms("operation timed out", 99), 3_000);
+    }
+
+    /// P110：RUN 协议行的识别、提取与剥离
+    #[test]
+    fn run_line_extract_and_strip() {
+        assert!(is_run_line("RUN: df -h"));
+        assert!(is_run_line("RUN:df -h"));
+        assert!(is_run_line("RUN：df -h")); // 全角冒号
+        assert!(is_run_line("  RUN:  free -m  ")); // 缩进
+        assert!(!is_run_line("RUNNING fire"));
+        assert!(!is_run_line("运行 RUN: 的说明")); // 非行首
+        assert!(!is_run_line("df -h"));
+
+        let reply = "磁盘情况如下：\nRUN: df -h\nRUN: free -m\n总占用 9%。\n";
+        assert_eq!(extract_run_commands(reply), vec!["df -h", "free -m"]);
+        // 注：结尾换行会被归一化去掉（join 语义），对卡片/记录无影响
+        assert_eq!(strip_run_lines(reply), "磁盘情况如下：\n总占用 9%。");
+        // 无 RUN 行的普通回复原样保留
+        assert_eq!(extract_run_commands("普通回答"), Vec::<String>::new());
+        assert_eq!(strip_run_lines("普通回答"), "普通回答");
+        // 空 RUN 行被提取阶段丢弃
+        assert_eq!(extract_run_commands("RUN:\nRUN: ls\n"), vec!["ls"]);
     }
 
     /// P106：QA 内置提示词与 Agent 互不回落（QA 产出"回答"，Agent 产出"命令"）

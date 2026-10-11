@@ -906,8 +906,9 @@ pub async fn ai_submit(
         return Ok(());
     }
 
-    // Agent 模式锁定该会话为任务执行目标（命令发去 name 会话，防切标签误发去别的机器）
-    let ctx = if mode == AgentMode::Agent {
+    // 该会话锁定为 AI 执行目标（Agent 命令发去 name 会话，防切标签误发去别的机器）。
+    // P110：QA 也构建 ctx——QA 只读命令协议（RUN:）需要会话名/目录才能执行。
+    let ctx = {
         let sessions = state.config.lock().await.sessions.clone();
         let info = sessions.iter().find(|s| s.name == name).cloned();
         let (host, user, persist_container) = match info {
@@ -923,8 +924,6 @@ pub async fn ai_submit(
             pwd: pwd.unwrap_or_default().trim().to_string(),
             container,
         })
-    } else {
-        None
     };
 
     let _ = app.emit("ai", AiPayload::Busy { name: name.clone(), busy: true });

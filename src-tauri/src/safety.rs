@@ -439,6 +439,99 @@ fn check_danger_inner(cmd: &str, depth: u8) -> (DangerLevel, String) {
     (DangerLevel::Safe, "命令安全".to_string())
 }
 
+// ============================================================================
+// P110 QA 只读命令门禁：问答模式允许模型执行「查看/检索」类命令辅助回答，
+// 一切修改类命令一律拒绝。与 check_danger 的"危险分级"互补——
+// check_danger 只识别破坏性命令，touch/mkdir/yum install 等修改类命令是 Safe，
+// 不能仅靠它保证"只读"，故用白名单 + 逃逸通道封堵双保险。
+// ============================================================================
+
+/// 只读命令白名单（按 basename 匹配首个 token）。刻意从紧：
+/// 拿不准的命令一律不在表内（拒绝），宁可少执行不能误放行。
+/// find/sed/awk/git/docker/systemctl/ip/env 在表内但带守卫（readonly_with_guard）。
+const READONLY_COMMANDS: [&str; 70] = [
+    "df", "free", "ps", "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "du", "wc", "sort",
+    "uniq", "cut", "tr", "column", "comm", "nl", "tac", "rev", "stat", "file", "which", "whereis",
+    "lscpu", "lsblk", "findmnt", "blkid", "uname", "uptime", "hostname", "hostnamectl", "date",
+    "cal", "who", "w", "whoami", "id", "groups", "env", "printenv", "lsof", "vmstat", "iostat",
+    "mpstat", "pidof", "pgrep", "top", "last", "lastlog", "ping", "journalctl", "dmesg", "md5sum",
+    "sha1sum", "sha256sum", "cksum", "base64", "printf", "echo", "bc", "seq", "systemctl", "ip",
+    "find", "sed", "awk", "git", "docker",
+];
+
+/// 允许但带"逃逸口"的命令：整段还得通过各自的子命令/旗标守卫
+fn readonly_with_guard(cmd: &str, tokens: &[String], seg: &str) -> bool {
+    match cmd {
+        // find 的删除/执行旗标
+        "find" => !tokens
+            .iter()
+            .any(|t| matches!(t.as_str(), "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fprintf" | "-fprint" | "-fls")),
+        // sed 的就地修改
+        "sed" => !tokens.iter().any(|t| t == "-i" || t.starts_with("--in-place")),
+        // awk 的 system()/管道协程/文件重定向
+        "awk" => !(seg.contains("system(") || seg.contains("|&") || seg.contains("getline")),
+        // git 只放行纯读子命令（branch/tag/remote 带参数会写）
+        "git" => tokens.get(1).map(|s| s.as_str()).is_some_and(|sub| matches!(sub, "status" | "log" | "diff" | "show")),
+        // docker 只放行纯读子命令（rm/run/exec/kill 全拒）
+        "docker" => tokens.get(1).map(|s| s.as_str()).is_some_and(|sub| {
+            matches!(sub, "ps" | "images" | "logs" | "inspect" | "version" | "info" | "top" | "stats" | "port")
+        }),
+        // systemctl 用修改子命令黑名单（status 前可插 --no-pager 等全局旗标，白名单查 tokens[1] 会漏）
+        "systemctl" => !tokens.iter().any(|t| {
+            matches!(
+                t.as_str(),
+                "start" | "stop" | "restart" | "reload" | "try-reload" | "try-restart" | "enable" | "disable"
+                    | "mask" | "unmask" | "kill" | "isolate" | "set-default" | "link" | "revert" | "freeze" | "thaw"
+            )
+        }),
+        // ip 用修改子命令黑名单（addr/route/link/neigh 的查看形态放行）
+        "ip" => !tokens.iter().any(|t| {
+            matches!(t.as_str(), "add" | "del" | "delete" | "flush" | "set" | "change" | "replace" | "append")
+        }),
+        // env 无参数才是读环境变量，env CMD 会执行 CMD
+        "env" => tokens.len() == 1,
+        _ => true,
+    }
+}
+
+/// QA 模式只读判定：true = 允许自动执行。
+/// 规则：整条命令重定向/命令替换/后台与逃逸通道全禁 + 每个管道段首命令在白名单内
+/// + 白名单内的可编程命令再过各自的逃逸守卫。
+pub fn is_readonly_command(cmd: &str) -> bool {
+    let c = cmd.trim();
+    if c.is_empty() {
+        return false;
+    }
+    // 先剥掉无害的 "2>&1"/"1>&2"（fd 复制不是写文件），再看是否还有重定向
+    let stripped = c.replace("2>&1", "").replace("1>&2", "");
+    if stripped.contains('>') || stripped.contains('<') {
+        return false; // 写文件/输入重定向
+    }
+    if stripped.contains("$(") || stripped.contains('`') {
+        return false; // 命令替换藏命令
+    }
+    for seg in split_commands(&stripped) {
+        let seg = seg.trim();
+        if seg.is_empty() {
+            return false;
+        }
+        // 段内残留 '&'：split_commands 只切 &&/|/;/换行，剩下的单个 & 是后台执行或 &>
+        if seg.contains('&') {
+            return false;
+        }
+        let tokens = tokenize_segment(seg);
+        let Some(first) = tokens.first() else { return false };
+        let base = basename(first);
+        if !READONLY_COMMANDS.contains(&base) {
+            return false;
+        }
+        if !readonly_with_guard(base, &tokens, seg) {
+            return false;
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,5 +710,89 @@ mod tests {
         is(DangerLevel::Safe, "cp -rf src /tmp/rm");
         is(DangerLevel::Safe, "ls /bin/dd");
         is(DangerLevel::Safe, "echo /sbin/shutdown");
+    }
+
+    /// P110 QA 只读门禁：白名单内 + 无逃逸通道 → 允许
+    #[test]
+    fn readonly_allows_inspection_commands() {
+        for ok in [
+            "df -h",
+            "free -m",
+            "ps aux | grep nginx",
+            "systemctl status sshd",
+            "systemctl --no-pager status sshd",
+            "journalctl -n 50 --no-pager",
+            "cat /etc/hosts",
+            "tail -n 100 /var/log/messages 2>&1",
+            "find /var/log -name '*.log' -mtime -7",
+            "docker ps --format '{{.Names}}'",
+            "docker logs --tail 50 helm-container",
+            "git status",
+            "git log --oneline -10",
+            "ip addr",
+            "ip route show",
+            "awk '{print $1}' /etc/passwd",
+            "sed -n '1,10p' /etc/hosts",
+            "env",
+            "uname -r && uptime",
+            "df -h; free -m; ps aux",
+        ] {
+            assert!(is_readonly_command(ok), "应放行: {ok}");
+        }
+    }
+
+    /// P110：修改类命令与逃逸通道全拒
+    #[test]
+    fn readonly_rejects_mutation_and_escapes() {
+        for bad in [
+            // 白名单外
+            "rm -rf /tmp/x",
+            "touch /tmp/x",
+            "mkdir /tmp/x",
+            "yum install -y nginx",
+            "apt-get update",
+            "pip install requests",
+            "tar -xzf a.tar.gz",
+            "pkill nginx",
+            "kill 1234",
+            "chmod +x f",
+            "chown root f",
+            "curl http://x",
+            "wget http://x",
+            "python3 -c 'print(1)'",
+            // 修改子命令守卫
+            "systemctl restart sshd",
+            "systemctl stop nginx",
+            "systemctl enable sshd",
+            "git push origin main",
+            "git commit -m x",
+            "docker rm x",
+            "docker run busybox",
+            "ip link set eth0 down",
+            "ip route add default via 1.2.3.4",
+            // 旗标逃逸
+            "find / -name x -delete",
+            "find /var -name x -exec rm {} \\;",
+            "sed -i 's/a/b/' /etc/hosts",
+            "awk 'BEGIN{system(\"rm -rf /tmp\")}'",
+            // env 带参 = 执行
+            "env rm -rf /tmp",
+            // 重定向写文件
+            "echo hi > /tmp/x",
+            "echo hi >> /tmp/x",
+            "df -h > /tmp/out",
+            // 命令替换藏命令
+            "echo $(rm -rf /tmp)",
+            "cat `ls`",
+            // 后台执行
+            "df -h & rm -rf /tmp",
+            // 管道逃逸
+            "cat /etc/passwd | tee /tmp/x",
+            "find / | xargs rm -rf",
+            // 空命令
+            "   ",
+        ] {
+            assert!(!is_readonly_command(bad), "应拒绝: {bad}");
+        }
     }
 }

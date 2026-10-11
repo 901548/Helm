@@ -20,8 +20,8 @@ use crate::crypto;
 /// 请求体内由本模块按配置组装的核心字段，`extra_body` 合并时跳过，防误覆盖
 const RESERVED_BODY_KEYS: [&str; 5] = ["model", "messages", "stream", "temperature", "max_tokens"];
 
-/// P106：AI 请求失败自动重试——共尝试 3 次，退避 1s / 3s。
-/// 只对瞬时失败（限流/超时/网络/5xx）重试，鉴权与参数错误立即报错（见 is_retryable_api_error）。
+/// P106：AI 请求失败自动重试——共尝试 3 次。
+/// 退避按错误类别选（`retry_backoff_ms`）：普通瞬时失败 1s/3s；429/配额类限流 15s/30s。
 const API_RETRY_ATTEMPTS: usize = 3;
 const API_RETRY_BACKOFF_MS: [u64; API_RETRY_ATTEMPTS - 1] = [1000, 3000];
 
@@ -689,25 +689,28 @@ impl Agent {
             Ok((content, value))
         };
 
-        // P106：瞬时失败自动重试（共 3 次，退避 1s/3s）；鉴权/参数错误立即报错
-        let schedule = std::iter::once(0u64).chain(API_RETRY_BACKOFF_MS);
-        for (attempt, backoff_ms) in schedule.enumerate() {
-            if backoff_ms > 0 {
-                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-            }
+        // P106：瞬时失败自动重试（共 3 次）；鉴权/参数错误立即报错；
+        // 退避按错误类别选（P109：限流类长退避，见 retry_backoff_ms）
+        let mut attempt = 0usize;
+        loop {
             match request_once().await {
                 Ok(reply) => return Ok(reply),
                 Err(e) => {
-                    if attempt + 1 >= API_RETRY_ATTEMPTS || !is_retryable_api_error(&e.to_string()) {
-                        if attempt > 0 {
-                            return Err(anyhow!("AI API 调用失败（已重试{}次）: {}", attempt, e));
+                    let msg = e.to_string();
+                    attempt += 1;
+                    if attempt >= API_RETRY_ATTEMPTS || !is_retryable_api_error(&msg) {
+                        if attempt > 1 {
+                            return Err(anyhow!("AI API 调用失败（已重试{}次）: {}", attempt - 1, msg));
                         }
                         return Err(e);
+                    }
+                    let ms = retry_backoff_ms(&msg, attempt - 1);
+                    if ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
                     }
                 }
             }
         }
-        unreachable!("重试循环在固定尝试次数内必然返回")
     }
 
     /// 流式请求：读取 SSE 增量，逐个回调 sink，返回完整文本。
@@ -721,26 +724,26 @@ impl Agent {
         started: &mut bool,
     ) -> Result<String> {
         let mut emitted = false;
-        // 尝试序列 = 首次(不等待) + 退避表逐项重试（P106）
-        let schedule = std::iter::once(0u64).chain(API_RETRY_BACKOFF_MS);
-        for (attempt, backoff_ms) in schedule.enumerate() {
-            if backoff_ms > 0 {
-                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-            }
+        let mut attempt = 0usize;
+        loop {
             match self.call_api_stream_once(sink, started, &mut emitted).await {
                 Ok(full) => return Ok(full),
                 Err(e) => {
                     let msg = e.to_string();
-                    if emitted || attempt + 1 >= API_RETRY_ATTEMPTS || !is_retryable_api_error(&msg) {
-                        if attempt > 0 {
-                            return Err(anyhow!("AI API 调用失败（已重试{}次）: {}", attempt, msg));
+                    attempt += 1;
+                    if emitted || attempt >= API_RETRY_ATTEMPTS || !is_retryable_api_error(&msg) {
+                        if attempt > 1 {
+                            return Err(anyhow!("AI API 调用失败（已重试{}次）: {}", attempt - 1, msg));
                         }
                         return Err(e);
+                    }
+                    let ms = retry_backoff_ms(&msg, attempt - 1);
+                    if ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
                     }
                 }
             }
         }
-        unreachable!("重试循环在固定尝试次数内必然返回")
     }
 
     async fn call_api_stream_once(
@@ -1071,6 +1074,22 @@ fn is_retryable_api_error(err: &str) -> bool {
     }
     // 其余（连接失败/超时/429/408/5xx/响应解析失败）视为瞬时，可重试
     true
+}
+
+/// P109：按错误类别选重试退避时长（attempt 从 0 计：第几次重试）。
+///
+/// 429/配额类限流（如上游的 "rpm exhausted"）按**分钟窗口**计数——真机实测 1s/3s 的
+/// 短退避三次全落在同一窗口内必然连败；改用 15s/30s 跨过窗口再试。
+/// 其余瞬时错误（超时/网络/5xx）维持短退避快重试。
+fn retry_backoff_ms(err: &str, attempt: usize) -> u64 {
+    const SLOW: [u64; 2] = [15_000, 30_000];
+    const FAST: [u64; 2] = [API_RETRY_BACKOFF_MS[0], API_RETRY_BACKOFF_MS[1]];
+    let limited = err.contains("HTTP 429")
+        || err.contains("quota")
+        || err.contains("rate limit")
+        || err.contains("rate_limit");
+    let table = if limited { &SLOW } else { &FAST };
+    table[attempt.min(table.len() - 1)]
 }
 
 /// SSE 单行事件
@@ -1680,6 +1699,22 @@ mod tests {
         assert!(!is_retryable_api_error("API 请求失败（HTTP 400）: bad request"));
         // 流内业务错误（200 后中途报错）：重试同样无意义
         assert!(!is_retryable_api_error("API 流式错误: content policy"));
+    }
+
+    /// P109：429/配额类限流走长退避（跨分钟窗口），其余瞬时错误走短退避
+    #[test]
+    fn backoff_is_slow_for_rate_limits() {
+        assert_eq!(retry_backoff_ms("API 请求失败（HTTP 429 Too Many Requests）: rpm exhausted", 0), 15_000);
+        // 真机 429 报文形态（quota_exceeded）
+        assert_eq!(
+            retry_backoff_ms("API 请求失败（HTTP 429）: {\"error\":{\"message\":\"rpm exhausted\",\"type\":\"quota_exceeded_error\"}}", 1),
+            30_000
+        );
+        assert_eq!(retry_backoff_ms("error sending request: operation timed out", 0), 1_000);
+        assert_eq!(retry_backoff_ms("API 请求失败（HTTP 500）: oops", 1), 3_000);
+        // attempt 越界防御（不应发生）：各自落在自己表的最后一项
+        assert_eq!(retry_backoff_ms("API 请求失败（HTTP 429）: x", 99), 30_000);
+        assert_eq!(retry_backoff_ms("operation timed out", 99), 3_000);
     }
 
     /// P106：QA 内置提示词与 Agent 互不回落（QA 产出"回答"，Agent 产出"命令"）

@@ -23,6 +23,8 @@
     theme: "light" | "dark";
     kinds?: Record<string, SessionKind>;
     status?: SessionStatus;
+    /** P115：会话栏是否折叠——空状态据此给不同引导（折叠时左侧只有「会话」胶囊） */
+    sessionsCollapsed?: boolean;
     onReconnect: () => void;
     onSelect: (name: string) => void;
     onClose: (name: string) => void;
@@ -59,6 +61,7 @@
     theme,
     kinds = {},
     status = "Disconnected",
+    sessionsCollapsed = false,
     onReconnect,
     onSelect,
     onClose,
@@ -896,8 +899,10 @@
           />
         {/each}
       </svg>
-      <p class="term-empty-main">在左侧选择会话并连接</p>
-      <p class="term-empty-sub">Alt+I 聚焦 AI 输入 · Alt+L 查看 AI 日志</p>
+      <p class="term-empty-main">{sessionsCollapsed ? "点左上角「会话」展开会话列表" : "在左侧选择会话并连接"}</p>
+      <p class="term-empty-sub">
+        {sessionsCollapsed ? "展开后可选会话或点 ＋ 新建 · Alt+I 聚焦 AI 输入" : "Alt+I 聚焦 AI 输入 · Alt+L 查看 AI 日志"}
+      </p>
     </div>
   {/if}
 

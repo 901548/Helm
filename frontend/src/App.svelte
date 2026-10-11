@@ -50,6 +50,9 @@
 
   let sessionsPanelPct = $state(22);
   let dockSessions = $state(true);
+  // P115：会话栏折叠态提升到 App——终端空状态要据此给不同引导
+  // （折叠时左侧只有 44px 的「会话」胶囊，旧文案「在左侧选择会话」会让人找不到入口）
+  let sessionsCollapsed = $state(false);
   let theme = $state<Theme>("dark");
   let systemDark = $state(false);
   let cdReq = $state<{ name: string; target: string; seq: number } | null>(null);
@@ -757,6 +760,7 @@
         {sessions}
         {statuses}
         {tabs}
+        bind:collapsed={sessionsCollapsed}
         onSelect={selectSession}
         onConnect={connectSession}
         onDisconnect={disconnectSession}
@@ -773,6 +777,7 @@
         <TerminalTabs
           {tabs}
           {activeTab}
+          {sessionsCollapsed}
           theme={resolvedTheme}
           {kinds}
           status={statuses[activeTab ?? ""] ?? "Disconnected"}

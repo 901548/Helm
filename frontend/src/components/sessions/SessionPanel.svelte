@@ -9,6 +9,8 @@
     sessions: SessionInfo[];
     statuses: Record<string, SessionStatus>;
     tabs: string[];
+    /** P115：折叠态由 App 持有（bindable）——终端空状态要据此给不同引导 */
+    collapsed?: boolean;
     onSelect: (name: string) => void;
     onConnect: (name: string) => void;
     onDisconnect: (name: string) => void;
@@ -19,12 +21,23 @@
     onForgetKey: (name: string) => void;
   }
 
-  let { sessions, statuses, tabs, onSelect, onConnect, onDisconnect, onRdp, onNew, onEdit, onDelete, onForgetKey } =
-    $props<Props>();
+  let {
+    sessions,
+    statuses,
+    tabs,
+    collapsed = $bindable(false),
+    onSelect,
+    onConnect,
+    onDisconnect,
+    onRdp,
+    onNew,
+    onEdit,
+    onDelete,
+    onForgetKey,
+  } = $props<Props>();
 
   let ctxSession = $state<string | null>(null);
   let ctxPos = $state<{ x: number; y: number } | null>(null);
-  let collapsed = $state(false);
 
   function openContext(e: MouseEvent, name: string) {
     e.preventDefault();

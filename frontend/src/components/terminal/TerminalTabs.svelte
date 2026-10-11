@@ -899,7 +899,7 @@
           />
         {/each}
       </svg>
-      <p class="term-empty-main">{sessionsCollapsed ? "点左上角「会话」展开会话列表" : "在左侧选择会话并连接"}</p>
+      <p class="term-empty-main">{sessionsCollapsed ? "点左下角「会话」展开会话列表" : "在左侧选择会话并连接"}</p>
       <p class="term-empty-sub">
         {sessionsCollapsed ? "展开后可选会话或点 ＋ 新建 · Alt+I 聚焦 AI 输入" : "Alt+I 聚焦 AI 输入 · Alt+L 查看 AI 日志"}
       </p>

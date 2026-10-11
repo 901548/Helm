@@ -824,8 +824,10 @@
   <StatusBar
     {sessions}
     {statuses}
+    sessionsCollapsed={sessionsCollapsed}
+    onToggleSessions={() => (sessionsCollapsed = !sessionsCollapsed)}
     onOpenSettings={openSettings}
-          onOpenHistory={() => (showHistory = true)}
+    onOpenHistory={() => (showHistory = true)}
   />
 </main>
 

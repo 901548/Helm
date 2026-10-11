@@ -72,26 +72,7 @@
 </script>
 
 <aside class="panel" class:collapsed>
-  {#if collapsed}
-    <button
-      class="reopen"
-      title="展开会话栏"
-      onclick={() => (collapsed = false)}
-    >
-      <svg
-        width="20"
-        height="20"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        aria-hidden="true"
-      ><path d="M9 6l6 6-6 6" /></svg>
-      <span class="reopen-label">会话</span>
-    </button>
-  {:else}
+  {#if !collapsed}
   <header class="panel-header">
       <span class="title">会话</span>
       <div class="head-actions">
@@ -199,44 +180,12 @@
     overflow: hidden;
     transition: width 0.15s ease;
   }
-  /* P117：折叠态保留一条**真实宽度的轨道**——旧实现 `width: 0` + 胶囊 `position: fixed`
-     让它脱离布局浮在终端标签栏之上（视觉上"悬空"、与任何东西都不对齐） */
+  /* P119：折叠开关移到状态栏（用户定案），折叠态不再留空轨道——终端拿全宽 */
   .panel.collapsed {
-    width: 44px;
+    width: 0;
+    border-right: none;
   }
-  /* 折叠后：轨道顶部的竖向展开柄（图标在上、文字在下），在布局内、不再悬浮 */
-  .reopen {
-    align-self: center;
-    width: 36px;
-    margin-top: 8px;
-    padding: 0.45rem 0 0.4rem;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.15rem;
-    border: 1px solid var(--accent);
-    border-radius: var(--radius);
-    background: var(--bg-panel);
-    color: var(--accent);
-    cursor: pointer;
-    transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
-  }
-  .reopen:hover {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
-  }
-  .reopen svg {
-    display: block;
-    flex-shrink: 0;
-  }
-  .reopen-label {
-    font-size: 0.68rem;
-    font-weight: 600;
-    color: inherit;
-    white-space: nowrap;
-  }
-
+  /* 折叠开关已移至状态栏（P119），轨道内的展开柄与「会话」胶囊随之移除 */
   .panel-header {
     display: flex;
     align-items: center;

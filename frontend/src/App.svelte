@@ -258,14 +258,25 @@
           }
           break;
         case "goalStarted":
-          // P57 L2 子目标开始：镜像到所属会话终端（轻量提示，不新增卡片类型）
+          // P57 L2 子目标开始：活动流插入组头卡（L2-beta），并镜像到所属会话终端
           if (p.name) {
+            updateCards(p.name, (cards) => [
+              ...cards,
+              { id: ++cardId, kind: "goal", index: p.goalIndex, total: p.total, title: p.title, status: "active" },
+            ]);
             pushEcho(p.name, `\r\n\x1b[36m┌─ [AI] 子目标 ${p.goalIndex + 1}: ${p.title}\x1b[0m\r\n`);
           }
           break;
         case "goalDone":
-          // P57 L2 子目标结局：成功/失败（失败将停留供重规划）
+          // P57 L2 子目标结局：收口最近的同下标组头卡（失败将停留供重规划）
           if (p.name) {
+            updateCards(p.name, (cards) => {
+              const idx = [...cards].reverse().findIndex((c) => c.kind === "goal" && c.index === p.goalIndex);
+              if (idx < 0) return cards;
+              const i = cards.length - 1 - idx;
+              const c = cards[i] as (typeof cards)[number] & { kind: "goal" };
+              return [...cards.slice(0, i), { ...c, status: p.status }, ...cards.slice(i + 1)];
+            });
             const ok = p.status === "ok";
             pushEcho(
               p.name,
@@ -500,6 +511,18 @@
         commands: (e.commands as any) ?? [],
         status: "plan",
         needConfirm: Boolean(e.need_confirm),
+      };
+    }
+    // P104-4 L2-beta：子目标组头（后端 ConvEntry::Goal，status active/ok/failed）
+    if (kind === "goal") {
+      const st = String(e.status ?? "active");
+      return {
+        id,
+        kind: "goal",
+        index: Number(e.index ?? 0),
+        total: Number(e.total ?? 0),
+        title: String(e.title ?? ""),
+        status: st === "ok" || st === "failed" ? st : "active",
       };
     }
     return {

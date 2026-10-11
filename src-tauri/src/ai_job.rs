@@ -118,6 +118,18 @@ fn apply_goal_outcome(
 }
 
 /// 把子目标列表渲染成喂给模型的目标进度（✔ 完成 / ✘ 失败 / … 进行中）
+/// P104-4 L2-beta：把最近的同下标子目标条目收口（原地改 status，保持 append-only 顺序）。
+/// 找不到对应条目时静默跳过——GoalDone 只会在 GoalStarted 之后出现，防御式容忍乱序。
+fn mark_conv_goal(entries: &mut [crate::core::ConvEntry], index: u32, status: &str) {
+    if let Some(crate::core::ConvEntry::Goal { status: s, .. }) = entries
+        .iter_mut()
+        .rev()
+        .find(|e| matches!(e, crate::core::ConvEntry::Goal { index: i, .. } if *i == index))
+    {
+        *s = status.to_string();
+    }
+}
+
 fn build_goal_summary(goals: &[String], states: &[GoalStatus]) -> String {
     if goals.is_empty() {
         return String::new();
@@ -200,6 +212,28 @@ pub(crate) async fn run_ai_job(
         e: crate::core::ConvEntry,
     ) {
         conv.lock().await.push(e);
+    }
+    // P104-4 L2-beta：子目标组头入对话记录（切标签回看时分组不丢）
+    async fn conv_goal_start(
+        conv: &tokio::sync::Mutex<Vec<crate::core::ConvEntry>>,
+        index: u32,
+        total: u32,
+        title: String,
+    ) {
+        conv.lock().await.push(crate::core::ConvEntry::Goal {
+            index,
+            total,
+            title,
+            status: "active".to_string(),
+        });
+    }
+    async fn conv_goal_done(
+        conv: &tokio::sync::Mutex<Vec<crate::core::ConvEntry>>,
+        index: u32,
+        ok: bool,
+    ) {
+        let mut guard = conv.lock().await;
+        mark_conv_goal(&mut guard, index, if ok { "ok" } else { "failed" });
     }
 
     match mode {
@@ -617,9 +651,12 @@ pub(crate) async fn run_ai_job(
                                     AiPayload::GoalStarted {
                                         name: session.to_string(),
                                         goal_index: idx as u32,
+                                        total: goals.len() as u32,
                                         title: goals[idx].clone(),
                                     },
                                 );
+                                // L2-beta：组头同步进权威对话记录
+                                conv_goal_start(&conv, idx as u32, goals.len() as u32, goals[idx].clone()).await;
                             }
                         }
                         step_active = active_idx;
@@ -671,9 +708,11 @@ pub(crate) async fn run_ai_job(
                                     AiPayload::GoalDone {
                                         name: session.to_string(),
                                         goal_index: idx as u32,
+                                        total: goals.len() as u32,
                                         status: if final_ok { "ok".to_string() } else { "failed".to_string() },
                                     },
                                 );
+                                conv_goal_done(&conv, idx as u32, final_ok).await;
                                 if final_ok {
                                     last_output = if skipped {
                                         format!("子目标「{}」多次失败已放弃跳过。请继续下一个子目标,或全部完成则只输出 DONE。", goals[idx])
@@ -775,9 +814,12 @@ pub(crate) async fn run_ai_job(
                                     AiPayload::GoalStarted {
                                         name: session.to_string(),
                                         goal_index: idx as u32,
+                                        total: goals.len() as u32,
                                         title: goals[idx].clone(),
                                     },
                                 );
+                                // L2-beta：组头同步进权威对话记录
+                                conv_goal_start(&conv, idx as u32, goals.len() as u32, goals[idx].clone()).await;
                             }
                         }
                         step_active = next_active_goal(&go_states);
@@ -811,9 +853,11 @@ pub(crate) async fn run_ai_job(
                             AiPayload::GoalDone {
                                 name: session.to_string(),
                                 goal_index: idx as u32,
+                                total: goals.len() as u32,
                                 status: if final_ok { "ok".to_string() } else { "failed".to_string() },
                             },
                         );
+                        conv_goal_done(&conv, idx as u32, final_ok).await;
                     }
                 }
 
@@ -1024,9 +1068,11 @@ pub(crate) async fn run_ai_job(
                             AiPayload::GoalDone {
                                 name: session.to_string(),
                                 goal_index: idx as u32,
+                                total: goals.len() as u32,
                                 status: if final_ok { "ok".to_string() } else { "failed".to_string() },
                             },
                         );
+                        conv_goal_done(&conv, idx as u32, final_ok).await;
                         if skipped {
                             last_output = format!(
                                 "子目标「{}」已多次失败,按重试上限放弃跳过,请勿再重试该子目标,直接继续下一个;全部完成则只输出 DONE。\n{}",
@@ -1137,7 +1183,7 @@ async fn task_exec(
 mod tests {
     use super::{
         apply_goal_outcome, build_goal_summary, build_progress_summary, drive_step, is_bare_goal_marker,
-        next_active_goal, Driven, GoalStatus,
+        mark_conv_goal, next_active_goal, Driven, GoalStatus,
     };
     use crate::core::AiControl;
 
@@ -1277,5 +1323,34 @@ mod tests {
         assert!(!is_bare_goal_marker("uname -r", None));
         // 普通散文/空回复仍走原"未给出命令"路径（需要计数与回喂）
         assert!(!is_bare_goal_marker("我觉得已经完成了", None));
+    }
+
+    /// P104-4 L2-beta：对话记录子目标收口——同下标最近条目原地改状态，其余不动
+    #[test]
+    fn mark_conv_goal_updates_latest_matching_entry_only() {
+        use crate::core::ConvEntry;
+        let mut conv = vec![
+            ConvEntry::Goal { index: 0, total: 3, title: "预检".into(), status: "active".into() },
+            ConvEntry::Step { command: "ls".into(), success: true, message: String::new(), output: String::new() },
+            ConvEntry::Goal { index: 1, total: 3, title: "安装".into(), status: "active".into() },
+        ];
+        mark_conv_goal(&mut conv, 1, "ok");
+        mark_conv_goal(&mut conv, 0, "failed");
+        let statuses: Vec<(u32, &str)> = conv
+            .iter()
+            .filter_map(|e| match e {
+                ConvEntry::Goal { index, status, .. } => Some((*index, status.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(statuses, vec![(0, "failed"), (1, "ok")]);
+        // Step 条目未被误改
+        assert!(matches!(&conv[1], ConvEntry::Step { success: true, .. }));
+        // 不存在的下标：静默跳过（防御式容忍乱序）
+        mark_conv_goal(&mut conv, 9, "ok");
+        assert_eq!(
+            conv.iter().filter(|e| matches!(e, ConvEntry::Goal { .. })).count(),
+            2
+        );
     }
 }

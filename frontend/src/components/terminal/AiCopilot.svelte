@@ -1,6 +1,6 @@
 <script lang="ts">
   import { dockerPs } from "../../lib/api";
-  import type { AiCard, AiState, DangerLevel, SessionStatus } from "../../lib/api";
+  import type { AiCard, AiGoalCard, AiState, DangerLevel, SessionStatus } from "../../lib/api";
 
   // AI 常驻命令条 + 活动流(P39):所有 AI 触点收敛于此——
   // 模式切换、任务输入、步骤卡片、危险确认、停止/日志,终端保持纯净。
@@ -87,6 +87,27 @@
   };
 
   const hasContent = $derived(cards.length > 0 || !!summary || !!taskText);
+
+  // P104-4 L2-beta：子目标分组浏览。步骤卡归属于"向前最近的一个 goal 卡"，
+  // 渲染层缩进表达层级；流头部展示整体进度（ok/total）。
+  function inGoalGroup(list: AiCard[], ci: number): boolean {
+    for (let i = ci - 1; i >= 0; i--) {
+      const k = list[i].kind;
+      if (k === "goal") return true;
+      if (k === "qa") return false; // QA 回答不属于任何子目标
+    }
+    return false;
+  }
+  const goalStats = $derived.by(() => {
+    const goals = cards.filter((c): c is AiGoalCard => c.kind === "goal");
+    if (goals.length === 0) return null;
+    const last = goals[goals.length - 1];
+    return {
+      total: last.total || goals.length,
+      ok: goals.filter((g) => g.status === "ok").length,
+      failed: goals.filter((g) => g.status === "failed").length,
+    };
+  });
 
   function submit() {
     const t = text.trim();
@@ -207,6 +228,13 @@
         {:else if busy}
           <span class="ai-summary running">执行中…</span>
         {/if}
+        {#if goalStats}
+          <!-- L2-beta：子目标整体进度（ok 数 / 声明总数） -->
+          <span class="goal-progress" title="子目标进度（✓ 完成 / 声明总数）">
+            <span class="gp-bar" aria-hidden="true"><span class="gp-fill" class:has-fail={goalStats.failed > 0} style:width={`${goalStats.total ? Math.min(100, (goalStats.ok / goalStats.total) * 100) : 0}%`}></span></span>
+            <span class="gp-text" class:has-fail={goalStats.failed > 0}>子目标 {goalStats.ok}/{goalStats.total}{goalStats.failed > 0 ? ` · ✗${goalStats.failed}` : ""}</span>
+          </span>
+        {/if}
         <span class="spacer"></span>
         <button class="mini" onclick={onClear} title="清空活动流">清空</button>
         <button class="mini" onclick={onToggleStream} title="收起">▾</button>
@@ -220,9 +248,20 @@
         {/if}
         {#each cards as c, ci (c.id)}
           {@const planDone = c.kind === "plan" && cards.slice(ci + 1).some((x) => x.kind === "step")}
+          {@const inGoal = inGoalGroup(cards, ci)}
           {#if c.kind === "qa"}
             <div class="card qa" class:done={c.done}>
               <div class="qa-text">{c.text}{#if !c.done}<span class="cursor">▋</span>{/if}</div>
+            </div>
+          {:else if c.kind === "goal"}
+            <!-- L2-beta：子目标组头卡——其后步骤卡缩进归属该组，直至下一个组头 -->
+            <div class="card goal {c.status}">
+              <div class="card-head goal-head">
+                <span class="st" aria-hidden="true">{c.status === "ok" ? "✓" : c.status === "failed" ? "✗" : "…"}</span>
+                <span class="goal-title">子目标 {c.index + 1}{c.total ? `/${c.total}` : ""} · {c.title}</span>
+                {#if c.status === "active"}<span class="goal-running">推进中</span>{/if}
+                {#if c.status === "failed"}<span class="goal-fail-hint">重规划中</span>{/if}
+              </div>
             </div>
           {:else if c.kind === "plan"}
             {#if planDone}
@@ -280,7 +319,7 @@
             </div>
             {/if}
           {:else}
-            <div class="card step {c.status}">
+            <div class="card step {c.status}" class:in-goal={inGoal}>
               <div class="card-head">
                 <span class="st" aria-hidden="true">{statusIcon(c.status)}</span>
                 <code class="cmd">$ {c.command}</code>
@@ -539,6 +578,90 @@
   }
   .card.plan.compact .plan-cmds {
     margin-top: 0.3rem;
+  }
+  /* P104-4 L2-beta：子目标组头卡与组内步骤缩进 */
+  .card.goal {
+    padding: 0.3rem 0.55rem;
+    border-left: 2px solid var(--accent);
+    background: var(--bubble-bg);
+    font-weight: 600;
+  }
+  .card.goal.ok {
+    border-left-color: var(--ok);
+  }
+  .card.goal.failed {
+    border-left-color: var(--danger);
+  }
+  .goal-head {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+  .goal-title {
+    font-size: 0.8rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .card.goal .st {
+    flex: 0 0 auto;
+  }
+  .card.goal.ok .st {
+    color: var(--ok);
+  }
+  .card.goal.failed .st {
+    color: var(--danger);
+  }
+  .goal-running,
+  .goal-fail-hint {
+    flex: 0 0 auto;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--fg-muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.05rem 0.4rem;
+  }
+  .goal-fail-hint {
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+  .card.step.in-goal {
+    margin-left: 1.1rem;
+    border-left: 2px solid var(--accent-dim);
+  }
+  /* 流头部：子目标整体进度（细条 + 数字） */
+  .goal-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex: 0 0 auto;
+  }
+  .gp-bar {
+    width: 64px;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--track-bg);
+    overflow: hidden;
+  }
+  .gp-fill {
+    display: block;
+    height: 100%;
+    background: var(--ok);
+    transition: width 0.3s ease;
+  }
+  .gp-fill.has-fail {
+    background: var(--warning);
+  }
+  .gp-text {
+    font-size: 0.72rem;
+    color: var(--fg-muted);
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .gp-text.has-fail {
+    color: var(--warning);
   }
   .thinking-live {
     border-color: var(--warning);

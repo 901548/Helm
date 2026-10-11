@@ -85,6 +85,8 @@ pub enum ConvEntry {
     Plan { commands: Vec<PlanCommand>, need_confirm: bool },
     /// 单条命令执行步骤
     Step { command: String, success: bool, message: String, output: String },
+    /// P104-4 L2-beta：子目标组头（GoalStarted 推入 status="active"，GoalDone 原地收口）
+    Goal { index: u32, total: u32, title: String, status: String },
 }
 
 impl AiSlot {
@@ -211,12 +213,12 @@ pub enum AiPayload {
     /// need_confirm=true 需整份批准/编辑/放弃；false 为纯安全计划，只读展示并自动执行。
     #[serde(rename_all = "camelCase")]
     Planning { name: String, commands: Vec<PlanCommand>, need_confirm: bool },
-    /// P57 L2：子目标开始推进（title 为模型起的短标题）
+    /// P57 L2：子目标开始推进（title 为模型起的短标题；total 为本任务子目标总数，L2-beta 前端进度条用）
     #[serde(rename_all = "camelCase")]
-    GoalStarted { name: String, goal_index: u32, title: String },
+    GoalStarted { name: String, goal_index: u32, total: u32, title: String },
     /// P57 L2：子目标终结（status: "ok"/"failed"）
     #[serde(rename_all = "camelCase")]
-    GoalDone { name: String, goal_index: u32, status: String },
+    GoalDone { name: String, goal_index: u32, total: u32, status: String },
     Busy { name: String, busy: bool },
 }
 

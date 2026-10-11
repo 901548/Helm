@@ -92,9 +92,9 @@ export type AiPayload =
   | { kind: "pendingCommand"; name: string; command: string; level: DangerLevel; reason: string }
   | { kind: "state"; name: string; state: AiState }
   | { kind: "planning"; name: string; commands: PlanCommandUi[]; needConfirm: boolean }
-  // P57 L2 子目标事件
-  | { kind: "goalStarted"; name: string; goalIndex: number; title: string }
-  | { kind: "goalDone"; name: string; goalIndex: number; status: "ok" | "failed" }
+  // P57 L2 子目标事件（L2-beta 起 total = 本任务子目标总数）
+  | { kind: "goalStarted"; name: string; goalIndex: number; total: number; title: string }
+  | { kind: "goalDone"; name: string; goalIndex: number; total: number; status: "ok" | "failed" }
   | { kind: "busy"; name: string; busy: boolean };
 
 export interface TerminalOutputPayload {
@@ -170,5 +170,15 @@ export interface AiPlanCard {
   needConfirm: boolean;
 }
 
-export type AiCard = AiQaCard | AiStepCard | AiPlanCard;
+/** P104-4 L2-beta：子目标组头卡（其后直至下一个 goal 卡的 step 卡都归属该组） */
+export interface AiGoalCard {
+  id: number;
+  kind: "goal";
+  index: number;
+  total: number;
+  title: string;
+  status: "active" | "ok" | "failed";
+}
+
+export type AiCard = AiQaCard | AiStepCard | AiPlanCard | AiGoalCard;
 

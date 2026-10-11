@@ -611,21 +611,15 @@ pub fn rdp_connect(state: State<'_, CoreState>, name: String) -> Result<(), Stri
     if info.kind != crate::config::SessionKind::Rdp {
         return Err(format!("会话 {} 不是远程桌面(RDP)会话", name));
     }
-    let port = if info.port == 0 { 3389 } else { info.port };
-    let user = info.user.trim();
-    // 生成 mstsc 可读的临时 .rdp 文件（系统提示输入凭据）
-    let mut rdp = String::new();
-    rdp.push_str(&format!("full address:s:{}\n", info.host));
-    rdp.push_str(&format!("server port:i:{}\n", port));
-    rdp.push_str("prompt for credentials:i:1\n");
-    rdp.push_str("enablecredsspsupport:i:1\n");
-    rdp.push_str("authentication level:i:2\n");
-    rdp.push_str("screen mode id:i:1\n");
-    rdp.push_str("session bpp:i:32\n");
-    rdp.push_str("bitmapcachepersistenable:i:1\n");
-    if !user.is_empty() {
-        rdp.push_str(&format!("username:s:{}\n", user));
-    }
+    // 窗口尺寸跟随 Helm 当前配置（UiConfig 与界面同源；无 ui 配置用默认 1200x800）
+    let (width, height) = state
+        .config
+        .blocking_lock()
+        .ui
+        .as_ref()
+        .map(|ui| (ui.window_width, ui.window_height))
+        .unwrap_or((1200, 800));
+    let rdp = build_rdp_file(&info, width, height);
     let dir = std::env::temp_dir();
     let path = dir.join(format!("helm-rdp-{}.rdp", std::process::id()));
     std::fs::write(&path, rdp).map_err(|e| format!("写入 .rdp 文件失败: {e}"))?;
@@ -640,6 +634,35 @@ pub fn rdp_connect(state: State<'_, CoreState>, name: String) -> Result<(), Stri
         let _ = std::fs::remove_file(del_path);
     });
     Ok(())
+}
+
+/// 生成 mstsc 可读的 .rdp 文件文本（纯函数供单测；密码不写入——mstsc 交互式提示输入）。
+///
+/// P114 增强：本地驱动器重定向（drivestoredirect，远程会话里直接访问本机磁盘——
+/// RDP 会话的"文件面板"替代）+ 剪贴板双向 + smart sizing + 窗口尺寸与 Helm 界面同源。
+pub fn build_rdp_file(info: &crate::config::SessionInfo, width: u32, height: u32) -> String {
+    let port = if info.port == 0 { 3389 } else { info.port };
+    let user = info.user.trim();
+    let mut rdp = String::new();
+    rdp.push_str(&format!("full address:s:{}\n", info.host));
+    rdp.push_str(&format!("server port:i:{}\n", port));
+    rdp.push_str("prompt for credentials:i:1\n");
+    rdp.push_str("enablecredsspsupport:i:1\n");
+    rdp.push_str("authentication level:i:2\n");
+    rdp.push_str("screen mode id:i:1\n");
+    rdp.push_str(&format!("desktopwidth:i:{width}\n"));
+    rdp.push_str(&format!("desktopheight:i:{height}\n"));
+    rdp.push_str("smart sizing:i:1\n");
+    rdp.push_str("session bpp:i:32\n");
+    rdp.push_str("bitmapcachepersistenable:i:1\n");
+    // 文件与剪贴板交互：本地驱动器全量重定向 + 剪贴板双向（RDP 会话无 SFTP，文件经此通道）
+    rdp.push_str("drivestoredirect:s:*\n");
+    rdp.push_str("redirectclipboard:i:1\n");
+    rdp.push_str("redirectprinters:i:0\n");
+    if !user.is_empty() {
+        rdp.push_str(&format!("username:s:{user}\n"));
+    }
+    rdp
 }
 
 // ---------- 终端 commands ----------
@@ -1376,6 +1399,40 @@ pub async fn host_key_fingerprint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P114：.rdp 文本含驱动器重定向/剪贴板/尺寸适配，且密码绝不落盘
+    #[test]
+    fn rdp_file_contains_redirection_and_size() {
+        let info = crate::config::SessionInfo {
+            name: "win".into(),
+            kind: crate::config::SessionKind::Rdp,
+            host: "192.168.1.100".into(),
+            port: 3389,
+            user: "admin".into(),
+            key_file: None,
+            password: None,
+            container: None,
+        };
+        let rdp = build_rdp_file(&info, 1280, 860);
+        for field in [
+            "full address:s:192.168.1.100",
+            "server port:i:3389",
+            "username:s:admin",
+            "drivestoredirect:s:*",
+            "redirectclipboard:i:1",
+            "smart sizing:i:1",
+            "desktopwidth:i:1280",
+            "desktopheight:i:860",
+        ] {
+            assert!(rdp.contains(field), "缺字段 {field}: {rdp}");
+        }
+        // 密码绝不写入 .rdp（mstsc 交互式提示）
+        assert!(!rdp.to_lowercase().contains("password"));
+        // 匿名用户时不带 username 行
+        let mut anon = info.clone();
+        anon.user = "  ".into();
+        assert!(!build_rdp_file(&anon, 1200, 800).contains("username"));
+    }
 
     /// P100-3：save 失败时**不得**提交内存（旧实现先改内存再 save，失败后内存已生效）
     #[test]

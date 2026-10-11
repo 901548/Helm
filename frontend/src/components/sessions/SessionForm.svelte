@@ -157,7 +157,7 @@
         <div class="sec-title"><span class="sec-ico"></span>认证</div>
 
         {#if kind === "rdp"}
-          <p class="hint">远程桌面连接时由 Windows 系统提示输入密码，无需在此填写。</p>
+          <p class="hint">远程桌面连接时由 Windows 系统提示输入密码，无需在此填写。启动后已启用本地驱动器重定向与剪贴板双向——在远程会话中可直接访问本机磁盘。</p>
         {:else}
           <label class="f-label" for="f-password">密码</label>
           <input

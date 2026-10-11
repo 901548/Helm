@@ -37,7 +37,8 @@
 
   const kind = $derived(activeTab ? kinds[activeTab] ?? "linux" : "linux");
   const isWindows = $derived(kind === "windows");
-  const isBlocked = $derived(kind !== "linux" && kind !== "windows");
+  // P114：仅 RDP 阻断（无 SSH 通道）——docker 会话走宿主机 SFTP + 消歧条
+  const isBlocked = $derived(kind === "rdp");
   const sep = $derived(isWindows ? "\\" : "/");
 
   const joinPath = (base: string, name: string) => joinPathLib(base, name, sep);
@@ -404,9 +405,23 @@
 
   {#if !collapsed}
     {#if isBlocked}
-      <div class="fs-hint">RDP 会话暂不支持文件面板</div>
+      <!-- P114：RDP 说明卡——文件交互经 mstsc 驱动器重定向完成 -->
+      <div class="fs-note">
+        <p class="fs-note-text">
+          远程桌面会话不提供文件面板。启动远程桌面时已启用<strong>本地驱动器重定向</strong>与<strong>剪贴板双向</strong>——在远程会话的资源管理器中可直接访问本机磁盘，文件可复制粘贴。
+        </p>
+        <button class="fs-note-btn" onclick={() => activeTab && api.rdpConnect(activeTab).catch(() => {})}>
+          重新启动远程桌面
+        </button>
+      </div>
     {:else}
 
+    {#if kind === "docker"}
+      <!-- P114：docker 消歧——面板是宿主机 fs，终端/AI 命令在容器内执行 -->
+      <div class="fs-note slim">
+        <span class="fs-note-text">当前为<strong>宿主机</strong>文件系统；终端与 AI 命令经 docker exec 在容器 <code>{activeTab}</code> 内执行。</span>
+      </div>
+    {/if}
     {#if pendingName}
       <div class="name-dialog">
         {#if pendingName.type === "delete"}
@@ -659,6 +674,44 @@
     text-align: center;
     color: var(--fg-muted);
     font-size: 0.8rem;
+  }
+  /* P114：RDP 说明卡 / docker 消歧条 */
+  .fs-note {
+    margin: 0.5rem 0.6rem;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--panel);
+    font-size: 0.76rem;
+    color: var(--fg-muted);
+    line-height: 1.55;
+  }
+  .fs-note.slim {
+    padding: 0.35rem 0.6rem;
+  }
+  .fs-note-text {
+    margin: 0;
+  }
+  .fs-note-text strong {
+    color: var(--fg);
+  }
+  .fs-note-text code {
+    color: var(--accent);
+  }
+  .fs-note-btn {
+    margin-top: 0.45rem;
+    padding: 0.3rem 0.7rem;
+    font-size: 0.76rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--panel);
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .fs-note-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
   }
   .fs-error {
     padding: 0.4rem 0.7rem;

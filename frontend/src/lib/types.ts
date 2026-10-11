@@ -32,6 +32,8 @@ export interface AiConfig {
   agent_confirm: boolean;
   command_timeout_secs: number | null;
   system_prompt_agent: string | null;
+  /** P106：QA 模式专用提示词（null = 用内置"直接回答"提示词，不再沿用运维提示词） */
+  system_prompt_qa: string | null;
   agent_fc: boolean;
   ai_echo_terminal: boolean;
   mode: string;

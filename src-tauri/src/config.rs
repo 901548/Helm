@@ -111,6 +111,10 @@ pub struct AiConfig {
     /// Agent 模式专用系统提示词（None 时回退 system_prompt）
     #[serde(default)]
     pub system_prompt_agent: Option<String>,
+    /// QA 模式专用系统提示词（P106：None 时用内置"直接回答"提示词——
+    /// QA 与 Agent 的产出物不同，旧版 QA 沿用运维提示词会导致答案变成 shell 命令）
+    #[serde(default)]
+    pub system_prompt_qa: Option<String>,
     /// 结构化工具调用（P83：Agent 循环用 function calling 替代文本协议；默认关）
     #[serde(default)]
     pub agent_fc: bool,
@@ -145,6 +149,7 @@ impl Default for AiConfig {
             mode: default_mode(),
             command_timeout_secs: None,
             system_prompt_agent: None,
+            system_prompt_qa: None,
             agent_fc: false,
             ai_echo_terminal: false,
             extra_headers: HashMap::new(),

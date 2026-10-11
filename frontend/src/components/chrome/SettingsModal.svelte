@@ -44,7 +44,9 @@
   let apiKey = $state("");
   let apiKeySaved = $state(aiConfig?.api_key != null);
   let apiBaseUrl = $state(aiConfig?.api_base_url ?? "");
-  let systemPrompt = $state(aiConfig?.system_prompt ?? "");
+  // P106：QA 提示词独立于 Agent（旧"自定义提示词"沿用运维提示词导致答案变成命令，已弃用）。
+  // system_prompt 字段原样透传不丢（老配置的值保留在 config.yaml，仅不再被 QA 使用）。
+  let systemPromptQa = $state(aiConfig?.system_prompt_qa ?? "");
   let systemPromptAgent = $state(aiConfig?.system_prompt_agent ?? "");
   let temperature = $state(String(aiConfig?.temperature ?? 0.3));
   let maxTokens = $state(aiConfig?.max_tokens ? String(aiConfig.max_tokens) : "");
@@ -182,7 +184,8 @@
       api_key_env: DEFAULT_API_KEY_ENV,
       api_key: apiKey.trim() || null,
       api_base_url: apiBaseUrl.trim() || null,
-      system_prompt: systemPrompt,
+      system_prompt: aiConfig?.system_prompt ?? null, // 原样透传（P106 起 QA 不再使用，留作历史字段）
+      system_prompt_qa: systemPromptQa.trim() || null,
       temperature: num(temperature, 0.3, "温度"),
       max_tokens: maxTokens ? (num(maxTokens, 0, "max_tokens") as number) : null,
       stream,
@@ -402,8 +405,8 @@
           </section>
 
           <div class="row col">
-            <div class="lbl-wrap"><span class="lbl">自定义提示词</span><span class="desc">问答模式使用</span></div>
-            <textarea class="inp ta" bind:value={systemPrompt} rows="3" aria-label="自定义提示词"></textarea>
+            <div class="lbl-wrap"><span class="lbl">QA 提示词</span><span class="desc">问答模式使用；留空用内置「直接回答」提示词</span></div>
+            <textarea class="inp ta" bind:value={systemPromptQa} rows="3" placeholder="留空使用内置 QA 提示词（直接回答，不输出命令）" aria-label="QA 提示词"></textarea>
           </div>
 
           <div class="row col">

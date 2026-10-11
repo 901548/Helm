@@ -23,6 +23,7 @@ ai:
     如果任务完成，只输出 DONE。
     不要输出解释、不要使用代码围栏。
   system_prompt_agent: null   # Agent 模式专用提示词(空则用内置默认)
+  system_prompt_qa: null      # QA 模式专用提示词(空则用内置"直接回答"提示词;不沿用 system_prompt)
   temperature: 0.3
   max_tokens: null
   stream: true

@@ -20,6 +20,11 @@ use crate::crypto;
 /// 请求体内由本模块按配置组装的核心字段，`extra_body` 合并时跳过，防误覆盖
 const RESERVED_BODY_KEYS: [&str; 5] = ["model", "messages", "stream", "temperature", "max_tokens"];
 
+/// P106：AI 请求失败自动重试——共尝试 3 次，退避 1s / 3s。
+/// 只对瞬时失败（限流/超时/网络/5xx）重试，鉴权与参数错误立即报错（见 is_retryable_api_error）。
+const API_RETRY_ATTEMPTS: usize = 3;
+const API_RETRY_BACKOFF_MS: [u64; API_RETRY_ATTEMPTS - 1] = [1000, 3000];
+
 /// 单条聊天消息
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
@@ -181,9 +186,9 @@ pub struct Agent {
     mode: AgentMode,
     /// 当前任务名（Agent 模式下记录）
     current_task: Option<String>,
-    /// QA 模式 system prompt（原 system_prompt）
-    system_prompt_default: String,
-    /// Agent 模式 system prompt（回退 system_prompt_default）
+    /// QA 模式 system prompt（config.system_prompt_qa，缺省用内置 QA 提示词）
+    system_prompt_qa: String,
+    /// Agent 模式 system prompt（config.system_prompt_agent，缺省用内置 Agent 提示词）
     system_prompt_agent: String,
     /// 结构化工具调用开关（P83：配置 agent_fc；仅 Agent 循环使用）
     fc_enabled: bool,
@@ -233,7 +238,13 @@ impl Agent {
         }
         let api_key = Self::resolve_api_key(config)?;
         let mut history = Vec::new();
-        let system_prompt_default = config.system_prompt.clone();
+        // P106：QA 与 Agent 提示词彻底分离——旧版 QA 沿用"只输出 shell 命令"的运维提示词，
+        // 模型把答案写成 `echo 2` 甚至只回 DONE，用户拿不到真正的回答（真机实测）。
+        let system_prompt_qa = config
+            .system_prompt_qa
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(default_system_prompt_qa);
         let system_prompt_agent = config
             .system_prompt_agent
             .clone()
@@ -245,7 +256,7 @@ impl Agent {
         };
         history.push(ChatMessage {
             role: "system".into(),
-            content: system_prompt_for(mode, &system_prompt_default, &system_prompt_agent),
+            content: system_prompt_for(mode, &system_prompt_qa, &system_prompt_agent),
             tool_calls: None,
             tool_call_id: None,
         });
@@ -257,7 +268,7 @@ impl Agent {
             history,
             mode,
             current_task: None,
-            system_prompt_default,
+            system_prompt_qa,
             system_prompt_agent,
             fc_enabled: config.agent_fc,
             fc_disabled: false,
@@ -562,7 +573,7 @@ impl Agent {
         self.history.clear();
         self.history.push(ChatMessage {
             role: "system".into(),
-            content: system_prompt_for(self.mode, &self.system_prompt_default, &self.system_prompt_agent),
+            content: system_prompt_for(self.mode, &self.system_prompt_qa, &self.system_prompt_agent),
             tool_calls: None,
             tool_call_id: None,
         });
@@ -578,7 +589,7 @@ impl Agent {
         self.mode = mode;
         // 模式切换后重建 system prompt，使 QA/Agent 用各自的提示词
         if let Some(system) = self.history.first_mut() {
-            system.content = system_prompt_for(mode, &self.system_prompt_default, &self.system_prompt_agent);
+            system.content = system_prompt_for(mode, &self.system_prompt_qa, &self.system_prompt_agent);
         }
     }
 
@@ -681,23 +692,59 @@ impl Agent {
         match request_once().await {
             Ok(reply) => Ok(reply),
             Err(first) => {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                request_once().await.map_err(|second| {
-                    anyhow!("AI API 调用失败（已重试1次）: {}；{}", first, second)
-                })
+                // P106：瞬时失败自动重试（共 3 次，退避 1s/3s）；鉴权/参数错误立即报错
+                let mut last_err = first.to_string();
+                for attempt in 1..API_RETRY_ATTEMPTS {
+                    if !is_retryable_api_error(&last_err) {
+                        return Err(first);
+                    }
+                    tokio::time::sleep(Duration::from_millis(API_RETRY_BACKOFF_MS[attempt - 1])).await;
+                    match request_once().await {
+                        Ok(reply) => return Ok(reply),
+                        Err(e) => last_err = e.to_string(),
+                    }
+                }
+                Err(anyhow!("AI API 调用失败（已重试{}次）: {}", API_RETRY_ATTEMPTS - 1, last_err))
             }
         }
     }
 
-    /// 流式请求：读取 SSE 增量，逐个回调 sink，返回完整文本
+    /// 流式请求：读取 SSE 增量，逐个回调 sink，返回完整文本。
     ///
-    /// `started` 标记是否已发出至少一段内容（用于判断能否安全回退非流式）。
-    /// 流内 `{"error":{...}}` 数据行（200 后中途错误）会被识别为流式错误并返回 Err，
-    /// 由调用方按 started 语义决定回退非流式或直接报错。
+    /// 首段内容发出之前的失败（连接/超时/限流/5xx）自动重试（P106）；
+    /// 已向 UI 发出过任何增量（含思考过程）后失败则不重试（避免内容重复），
+    /// 交调用方按 started 语义处理。
     async fn call_api_stream(
         &self,
         sink: &mut (dyn FnMut(AiStreamEvent) + Send),
         started: &mut bool,
+    ) -> Result<String> {
+        let mut emitted = false;
+        let mut last_err = String::new();
+        for attempt in 0..API_RETRY_ATTEMPTS {
+            match self.call_api_stream_once(sink, started, &mut emitted).await {
+                Ok(full) => return Ok(full),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if emitted || attempt + 1 >= API_RETRY_ATTEMPTS || !is_retryable_api_error(&msg) {
+                        if attempt > 0 {
+                            return Err(anyhow!("AI API 调用失败（已重试{}次）: {}", attempt, msg));
+                        }
+                        return Err(e);
+                    }
+                    last_err = msg;
+                    tokio::time::sleep(Duration::from_millis(API_RETRY_BACKOFF_MS[attempt])).await;
+                }
+            }
+        }
+        Err(anyhow!("AI API 调用失败（已重试{}次）: {}", API_RETRY_ATTEMPTS - 1, last_err))
+    }
+
+    async fn call_api_stream_once(
+        &self,
+        sink: &mut (dyn FnMut(AiStreamEvent) + Send),
+        started: &mut bool,
+        emitted: &mut bool,
     ) -> Result<String> {
         let client = self.client.clone();
         let url = self.request_url();
@@ -732,11 +779,13 @@ impl Agent {
                 match parse_sse_line(&line) {
                     SseEvent::Content(delta) => {
                         *started = true;
+                        *emitted = true;
                         sink(AiStreamEvent::Content(delta.clone()));
                         full.push_str(&delta);
                     }
                     SseEvent::Reasoning(delta) => {
                         // 思考过程只推给 UI，不写入 full（防污染命令解析/答案）
+                        *emitted = true;
                         sink(AiStreamEvent::Reasoning(delta));
                     }
                     SseEvent::Done => return Ok(full),
@@ -954,7 +1003,7 @@ impl Default for Agent {
             }],
             mode: AgentMode::QA,
             current_task: None,
-            system_prompt_default: String::new(),
+            system_prompt_qa: String::new(),
             system_prompt_agent: String::new(),
             fc_enabled: false,
             fc_disabled: false,
@@ -964,6 +1013,21 @@ impl Default for Agent {
 
 /// Agent 模式专用的默认系统提示词（config 未提供 system_prompt_agent 时使用）。
 /// 针对弱本地模型：要求单行命令、禁止回显提示词/思考/结论，显著减少把指令当命令的死循环。
+/// QA（问答）模式的内置系统提示词：直接回答问题，而不是输出命令。
+///
+/// 历史教训（P106 真机实测）：QA 与 Agent 共用"只输出 shell 命令"的运维提示词时，
+/// 模型会把答案写成 `echo 2` 甚至只回 DONE——用户拿到的是命令而非回答，
+/// 追问还可能得到空回复。QA 的产出物是"回答"，Agent 的产出物才是"命令"。
+pub fn default_system_prompt_qa() -> String {
+    concat!(
+        "你是一个专业的运维 AI 助手，运行在 SSH 终端工具中，服务对象是服务器管理员。\n",
+        "用简洁的中文直接回答用户的问题：先给结论，再给要点；需要时用短代码块展示命令或配置示例供参考。\n",
+        "不要用一条 shell 命令代替回答，也不要输出 DONE；用户没有让你执行时不要假设命令会被自动执行。\n",
+        "如果提供了[终端最近输出]，请结合其中的内容回答（报错分析、接着刚才的操作等都以此为准）。\n",
+    )
+    .to_string()
+}
+
 pub fn default_system_prompt_agent() -> String {
     concat!(
         "你现在是一个在远程Linux服务器上逐步执行任务的运维Agent，目标是安全且准确地完成任务。\n",
@@ -977,12 +1041,33 @@ pub fn default_system_prompt_agent() -> String {
     .to_string()
 }
 
-/// 按模式选择 system prompt
-fn system_prompt_for(mode: AgentMode, default_: &str, agent: &str) -> String {
+/// 按模式选择 system prompt（qa/agent 各用各的，互不回落——见 default_system_prompt_qa 的教训）
+fn system_prompt_for(mode: AgentMode, qa: &str, agent: &str) -> String {
     match mode {
         AgentMode::Agent => agent.to_string(),
-        AgentMode::QA => default_.to_string(),
+        AgentMode::QA => qa.to_string(),
     }
+}
+
+/// P106：请求级重试判定——只重试瞬时失败。
+///
+/// 判定对象是错误文案（HTTP 状态码已被格式化进文案），按内容甄别：
+/// 鉴权/参数/权限类错误重试没有意义，还会把"Key 无效"这类报错拖慢好几秒才浮出。
+fn is_retryable_api_error(err: &str) -> bool {
+    // 不可重试：4xx 中除 408/429 外基本都是调用方的问题
+    for marker in [
+        "HTTP 400", "HTTP 401", "HTTP 402", "HTTP 403", "HTTP 404", "HTTP 405", "HTTP 422",
+    ] {
+        if err.contains(marker) {
+            return false;
+        }
+    }
+    // 流内业务错误（服务端 200 后中途报的错，如内容策略拦截/模型异常）不重试
+    if err.starts_with("API 流式错误:") {
+        return false;
+    }
+    // 其余（连接失败/超时/429/408/5xx/响应解析失败）视为瞬时，可重试
+    true
 }
 
 /// SSE 单行事件
@@ -1577,6 +1662,46 @@ mod tests {
         // Ollama 升级后思考流整体失效——真机实测思考阶段 UI 上只有光标）
         let ollama = r#"data: {"choices":[{"delta":{"reasoning":"Hmm, let me think"}}]}"#;
         assert_eq!(parse_sse_line(ollama), SseEvent::Reasoning("Hmm, let me think".into()));
+    }
+
+    /// P106：瞬时失败重试、鉴权/参数/流内业务错误不重试
+    #[test]
+    fn retryable_error_classification() {
+        assert!(is_retryable_api_error("API 请求失败（HTTP 429 Too Many Requests）: ..."));
+        assert!(is_retryable_api_error("API 请求失败（HTTP 500）: ..."));
+        assert!(is_retryable_api_error("error sending request: operation timed out"));
+        assert!(is_retryable_api_error("API 响应解析失败: expected value"));
+        // 鉴权/参数：重试无意义
+        assert!(!is_retryable_api_error("API 请求失败（HTTP 401 Unauthorized）: invalid key"));
+        assert!(!is_retryable_api_error("API 请求失败（HTTP 403）: forbidden"));
+        assert!(!is_retryable_api_error("API 请求失败（HTTP 400）: bad request"));
+        // 流内业务错误（200 后中途报错）：重试同样无意义
+        assert!(!is_retryable_api_error("API 流式错误: content policy"));
+    }
+
+    /// P106：QA 内置提示词与 Agent 互不回落（QA 产出"回答"，Agent 产出"命令"）
+    #[test]
+    fn qa_and_agent_prompts_are_independent() {
+        let qa = default_system_prompt_qa();
+        let agent = default_system_prompt_agent();
+        assert!(qa.contains("直接回答"), "QA 提示词应要求直接回答: {qa}");
+        assert!(!qa.contains("只输出 DONE"));
+        assert!(agent.contains("DONE"));
+        // 模式选择互不串
+        assert_eq!(system_prompt_for(AgentMode::QA, "QA词", "Agent词"), "QA词");
+        assert_eq!(system_prompt_for(AgentMode::Agent, "QA词", "Agent词"), "Agent词");
+        // config 字段缺省走内置（None → default_system_prompt_qa）
+        let cfg = AiConfig {
+            model: "m".into(),
+            ..Default::default()
+        };
+        assert!(cfg.system_prompt_qa.is_none());
+        let built = cfg
+            .system_prompt_qa
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(default_system_prompt_qa);
+        assert!(built.contains("直接回答"));
     }
 
     #[test]

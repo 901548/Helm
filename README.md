@@ -28,14 +28,18 @@ Windows 桌面应用：多标签 SSH 终端、SFTP 文件管理、系统监控�
 - Linux（/proc）与 Windows（PowerShell CIM）双模式采集
 
 ### AI 副驾驶（终端内嵌）
-- **QA 模式**：流式问答，回答回显在终端；推理型模型（deepseek-r1 等）的思考过程单独实时显示
+- **QA 模式**：流式问答，推理型模型（deepseek-r1 等）的思考过程单独实时显示
 - **Agent 模式**：自然语言任务 → AI 逐步生成命令 → 自动在活动会话执行 → 读输出与退出码回喂 → 直到输出 DONE
   - **长任务子目标化 + 失败恢复**：模型输出 `GOAL` 子目标与 `REFLEXION` 反思，按真实退出码判成败，失败自动重规划（不无意义重试）
+  - **Function Calling 与文本协议双路径**：开 `agent_fc` 走结构化工具调用，模型不支持时自动粘性降级回文本协议
+  - **内置技能短路**：磁盘/内存/日志/端口/sshd/用户/CPU/大文件 8 个常见运维意图命中即确定性执行（毫秒级，完全绕过 LLM 现场发挥）
+  - **终端上下文感知**：提交时自动携带终端屏幕最近输出，"这是什么错误"类问题无需人工复述
   - cwd 随执行结果权威跟踪（`###HELM_PWD###` 标记回传）
   - Linux 走 bash，Windows 走 PowerShell EncodedCommand，Docker 会话走 `docker exec`
 - **计划卡**：执行前展示整份命令清单 + 风险标记，可「查看命令 / 修改 / 执行 / 放弃」；纯安全计划自动执行免打扰
-- **危险命令确认**：shell 分词 + 语义判级（Critical / Warning / Safe），覆盖 `rm -rf /`、`mkfs`、fork 炸弹、`$(...)` 命令替换、`xargs` 二次执行等绕过变体；Critical 强制确认，安全命令免打扰
-- **多提供商**：任意 OpenAI 兼容服务（DeepSeek、Ollama、LM Studio 等），10 项预设快速填入 + 「测试连接」即时验证 + 「获取列表」拉取真实模型下拉选择；本地推理服务免 API Key
+- **危险命令确认**：shell 分词 + 语义判级（Critical / Warning / Safe），覆盖 `rm -rf /`、`mkfs`、fork 炸弹、`$(...)` 命令替换、`xargs` 二次执行、执行器包装（`sh -c`/`python -c`）与绝对路径等绕过变体；Critical 强制确认，安全命令免打扰
+- **多提供商**：任意 OpenAI 兼容服务（DeepSeek、Ollama、LM Studio 等），10 项预设 + 一等「自定义」快速填入 + 「测试连接」即时验证 + 「获取列表」拉取真实模型下拉选择；本地推理服务免 API Key
+- **操作历史面板**：训练数据（用户输入 / AI 轨迹 / 技能金标）可视化审核，按类型/会话筛选、逐条展开、一键导出
 - 支持自定义 `api_base_url` / `extra_headers` / `extra_body`，Agent 模式可用专属提示词
 
 ### 界面与安全
@@ -50,7 +54,7 @@ Windows 桌面应用：多标签 SSH 终端、SFTP 文件管理、系统监控�
 
 | 快捷键 | 功能 |
 |---|---|
-| `Alt + I` | 终端底部弹出 AI 任务输入行 |
+| `Alt + I` | 聚焦终端内 AI dock 的输入框 |
 | `Alt + L` | 开关 AI 全屏日志面板 |
 | `Ctrl + F` | 终端内搜索 |
 | `Ctrl + C` | 有选区时复制（无选区发送 SIGINT） |
@@ -77,9 +81,10 @@ cargo tauri build    # 打包 release:helm.exe + msi + nsis 安装包
 运行测试：
 
 ```bash
-cd src-tauri && cargo test    # 121 项(含 SSH/SFTP live 测试,服务器离线自动跳过)
-npm run build                 # 前端构建
-npm test                     # 前端单元测试(Vitest)
+cd src-tauri && cargo test                          # 138 项(含 SSH/SFTP live 测试,无 src-tauri/config.yaml 时自动跳过)
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings   # 静态检查(零告警)
+npm run build                                       # 前端构建
+npm test                                            # 前端单元测试(Vitest 35 项)
 ```
 
 > 项目使用 MinGW GNU 工具链开发（见 `.cargo/config.toml` 的 linker 配置），MSVC 工具链同样可行。
@@ -115,6 +120,8 @@ ai:
   timeout_secs: 60                # 单次 API 请求超时
   command_timeout_secs: null      # Agent 单命令超时(默认 60s)
   agent_confirm: false            # true = 所有命令都确认;false = 仅危险命令确认
+  agent_fc: false                 # true = Agent 走 Function Calling(模型不支持时自动降级)
+  ai_echo_terminal: false         # true = AI 命令/输出回显进终端
   system_prompt: |
     你是一个专业的运维AI助手……
   system_prompt_agent: null       # Agent 模式专用提示词(不填则用内置默认)
@@ -125,6 +132,8 @@ ui:
   theme: dark            # light | dark | system
   window_width: 1200
   window_height: 800
+  # window_x / window_y   # 窗口位置(物理像素,自动记忆,无需手填)
+  sessions_panel_pct: 22 # 会话面板宽度%(遗留字段,仍生效)
   term_font_size: 14     # 终端字号(逻辑像素)
   term_scrollback: 5000  # 终端滚动缓冲行数
   recording_enabled: true  # 操作记录器开关
@@ -140,23 +149,27 @@ frontend/src/
 │   ├── terminal/    # TerminalTabs / SysMonitor / AiCopilot
 │   ├── sessions/    # SessionPanel / SessionForm
 │   ├── files/       # FileBrowser
-│   └── chrome/      # StatusBar / SettingsModal
+│   ├── chrome/      # StatusBar / SettingsModal / HistoryModal
+│   └── ui/          # ModalShell(弹窗外壳:dialog 语义 + Esc + 遮罩关闭)
 └── lib/
     ├── api.ts       # 桶导出
     ├── types.ts     # 全部 TS 类型
     ├── commands.ts  # invoke 封装
     ├── events.ts    # 事件订阅
+    ├── constants.ts # 跨层契约常量(密文哨兵等)
     ├── osc.ts       # OSC7 PWD 提取(含单测)
-    └── paths.ts     # 路径规范化(含单测)
+    ├── paths.ts     # 路径规范化(含单测)
+    └── echo.ts      # AI 回显按会话重放(含单测)
 
 src-tauri/src/
 ├── main.rs         # Tauri 入口 + 窗口尺寸/位置持久化
 ├── core.rs         # CoreState + commands + 事件负载 + 输出 poller
-├── ai_job.rs       # AI 任务编排:run_ai_job 状态机 + TaskCtx
+├── ai_job.rs       # AI 任务编排:run_ai_job 状态机 + 子目标/账本
 ├── task_exec.rs    # Agent 命令组装/解析/执行(Linux/Windows/Docker)
 ├── ssh.rs          # SshManager:连接/PTY/exec/SFTP 通道
-├── agent.rs        # AI 客户端(QA 流式 + Agent 单步 + 测试连接/模型列表)
+├── agent.rs        # AI 客户端(QA 流式 + Agent 单步 + FC + 测试连接/模型列表)
 ├── safety.rs       # 危险命令判级(shell 分词 + 语义)
+├── skills.rs       # 内置技能(意图匹配 + 确定性命令序列)
 ├── fs.rs           # SFTP 文件命令
 ├── monitor.rs      # 系统监控采集(Linux/Windows)
 ├── recorder.rs     # 操作记录器(输入 + AI 轨迹落 JSONL)

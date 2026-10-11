@@ -1,3 +1,10 @@
-# 使用 MinGW 的 gcc 作为链接器（本机未安装 MSVC Build Tools）
+# 仅对本机的 GNU 工具链生效：本机未安装 MSVC Build Tools，用 MinGW 的 gcc 作为链接器。
+#
+# 可移植性说明：
+# - 该配置只对 `target.x86_64-pc-windows-gnu` 生效；用 MSVC 工具链（Tauri 官方支持路径）
+#   构建的用户完全不受影响，cargo 会忽略这段配置。
+# - 本机由 rustup 的目录 override 把 F:\Helm 固定到 gnu target（该 override 不在仓库里，
+#   见 `rustup override list`）；换机器若无此 override，cargo 会用默认的 msvc，无需改本文件。
+# - 路径是绝对路径（本机 MinGW 位置），故不写进 README 的通用步骤，只作为本机事实记录。
 [target.x86_64-pc-windows-gnu]
 linker = "F:/mingw-20.0/MinGW/bin/gcc.exe"

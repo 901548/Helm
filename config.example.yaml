@@ -1,39 +1,52 @@
+# Helm 配置样例。复制为 config.yaml 后按需修改(真实 config.yaml 已 gitignore,不入库)。
+# API Key 与会话密码建议经界面填写,落盘自动 DPAPI 加密(enc: 前缀密文);此处一律 null。
+# 未写出的字段用后端默认值;带 [遗留] 标注的字段仅作兼容透传,界面已不提供入口。
+
 sessions:
 - name: '1'
-  kind: linux
+  kind: linux            # linux(默认) | windows | rdp | docker(需 container)
   host: 192.168.1.100
-  port: 22
+  port: 22               # rdp 会话为 3389
   user: root
-  key_file: null
-  password: null
+  key_file: null         # 私钥路径(~ 展开);密码优先于私钥
+  password: null         # 界面保存后为 DPAPI 密文
+  container: null        # 仅 kind=docker:容器名/ID
+
 ai:
   model: deepseek-chat
-  api_key_env: DEEPSEEK_API_KEY
-  api_key: null
-  api_base_url: null
+  api_key_env: API_KEY   # 环境变量回退名(界面固定写此值)
+  api_key: null          # DPAPI 密文,优先于环境变量
+  api_base_url: null     # 自定义 OpenAI 兼容端点;本地 Ollama 等免 Key
   system_prompt: |
     你是一个专业的运维AI助手，负责在远程Linux服务器上执行任务。
     你只能输出需要执行的shell命令，命令之间用换行分隔。
     如果任务完成，只输出 DONE。
     不要输出解释、不要使用代码围栏。
+  system_prompt_agent: null   # Agent 模式专用提示词(空则用内置默认)
   temperature: 0.3
   max_tokens: null
   stream: true
-  max_history: 30
-  max_steps: 50
-  max_output_chars: 6000
-  timeout_secs: 60
-  agent_confirm: false
-  mode: qa
-  command_timeout_secs: null
-  system_prompt_agent: null
+  max_history: 30        # 对话历史条数
+  max_steps: 50          # Agent 单任务最大步数
+  max_output_chars: 6000 # 命令输出回喂模型上限
+  timeout_secs: 60       # 单次 API 请求超时
+  command_timeout_secs: null  # Agent 单命令超时(null/0 → 60s)
+  agent_confirm: false   # true = 所有命令都确认;false = 仅危险命令确认
+  agent_fc: false        # true = Agent 走 Function Calling(模型不支持时粘性降级文本协议)
+  ai_echo_terminal: false # true = AI 命令/输出回显进终端(默认只在活动流卡片展示)
+  mode: qa               # 初始模式 qa | agent
   extra_headers: {}
   extra_body: null
+
 ui:
   window_width: 1200
   window_height: 800
-  dock_sessions: true
-  dock_chat: true
-  sessions_panel_pct: 22
-  chat_panel_pct: 28
-  theme: dark
+  # window_x / window_y   # 窗口位置(物理像素,应用自动记忆,无需手填)
+  dock_sessions: true    # [遗留] 会话栏显示开关
+  dock_chat: true        # [遗留] 旧 dock 布局字段,仅透传不再使用
+  sessions_panel_pct: 22 # [遗留] 会话面板宽度%,当前布局仍读取
+  chat_panel_pct: 28     # [遗留] 旧聊天面板高度,仅透传不再使用
+  theme: dark            # light | dark | system
+  term_font_size: 14     # 终端字号(钳 8-28)
+  term_scrollback: 5000  # 终端滚动缓冲行数(钳 500-100000)
+  recording_enabled: true # 操作记录器开关(终端输入 + AI 轨迹落 logs/*.jsonl)

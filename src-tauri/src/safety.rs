@@ -585,7 +585,23 @@ fn guard_ok(guard: RoGuard, tokens: &[String], seg: &str) -> bool {
                 "-delete" | "-exec" | "-execdir" | "-ok" | "-okdir" | "-fprintf" | "-fprint" | "-fls"
             )
         }),
-        RoGuard::Sed => !has_prefix("-i") && !has("--in-place"),
+        // 修复(审查发现)：只拦 -i/--in-place 不够——GNU sed 的 `w file` / `s/x/y/w file` 命令
+        // 同样写文件(不经 -i)，`e` 命令还会执行 shell。改按**命令形态**匹配：
+        //   `w file`(脚本开头)、` w file`(空格后)、`/w file`(s 命令分隔符后)
+        // 注意不能用裸 `contains("w ")`——`s/new /x/` 里的 "new " 会误判(fails closed 但噪音大)。
+        RoGuard::Sed => {
+            let writes = |s: &str| {
+                let t = s.trim();
+                t.starts_with("w ")      // 脚本就是 w file
+                    || t.starts_with("W ")
+                    || s.contains(" w ") // 前有空格:... w file
+                    || s.contains("/w ") // s///w file
+                    || s.contains("/W ")
+                    || s.ends_with("/e") // s///e 执行命令
+                    || s.contains("/e ") // s///e cmd
+            };
+            !has_prefix("-i") && !has("--in-place") && !tokens.iter().any(|t| writes(t.as_str()))
+        }
         RoGuard::Awk => {
             // 比较运算符 `> 100` 合法；重定向形态是 `> "file"` / `>>`，协程是 `| "cmd"`
             !(seg.contains("system(")
@@ -605,14 +621,22 @@ fn guard_ok(guard: RoGuard, tokens: &[String], seg: &str) -> bool {
                 "ps" | "images" | "logs" | "inspect" | "version" | "info" | "top" | "stats" | "port"
             )
         }),
-        RoGuard::Systemctl => !tokens.iter().any(|t| {
-            matches!(
-                t.as_str(),
-                "start" | "stop" | "restart" | "reload" | "try-reload" | "try-restart" | "enable"
-                    | "disable" | "mask" | "unmask" | "kill" | "isolate" | "set-default" | "link"
-                    | "revert" | "freeze" | "thaw"
-            )
-        }),
+        // 修复(审查发现)：黑名单漏了 daemon-reexec/--user 等高权限子命令，且未来新增子命令会
+        // 默认放行。改**白名单**：只允许纯查看类子命令，其余一律拒绝(fail closed)。
+        RoGuard::Systemctl => {
+            let readonly_subs = [
+                "status", "list-units", "list-unit-files", "list-sockets", "list-timers",
+                "list-dependencies", "is-active", "is-enabled", "is-failed", "show", "cat",
+                "get-default", "help", "--version",
+            ];
+            // 取第一个非选项 token 作为子命令(systemctl 允许 `systemctl --user status x`)
+            tokens
+                .iter()
+                .skip(1)
+                .map(|t| t.as_str())
+                .find(|t| !t.starts_with('-'))
+                .is_some_and(|sub| readonly_subs.contains(&sub))
+        }
         RoGuard::Ip => !tokens.iter().any(|t| {
             matches!(
                 t.as_str(),
@@ -989,6 +1013,56 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for (name, _) in READONLY_SPECS {
             assert!(seen.insert(*name), "规格表重复命令: {name}");
+        }
+    }
+
+    /// 审查修复(2026-10-12)：sed 的写文件形态不止 -i —— `w file` / `s///w file` / `e` 命令
+    /// 同样落盘或执行 shell，必须拒绝；同时不能误伤含 "new " 的正常替换脚本。
+    #[test]
+    fn readonly_rejects_sed_write_commands() {
+        for bad in [
+            "sed -n 'w /tmp/out' /etc/passwd",
+            "sed 's/root/x/w /tmp/out' /etc/passwd",
+            "sed -e 's/a/b/' -e 'w /tmp/o' /etc/passwd",
+            "sed 's/x/y/e' /etc/passwd",
+            "sed -i 's/a/b/' /etc/passwd",
+            "sed --in-place 's/a/b/' /etc/passwd",
+        ] {
+            assert!(!is_readonly_command(bad), "应拒绝(sed 写形态): {bad}");
+        }
+        // 反例：纯替换脚本(含 "new " 字样)应放行，不得误伤
+        for ok in [
+            "sed -n 's/old/new /p' /etc/passwd",
+            "sed 's/foo/bar/' /etc/hosts",
+            "sed -n '1,10p' /etc/passwd",
+        ] {
+            assert!(is_readonly_command(ok), "应放行(纯替换): {ok}");
+        }
+    }
+
+    /// 审查修复(2026-10-12)：systemctl 由黑名单改白名单 —— 未列名的子命令(daemon-reexec/
+    /// set-property/--user 等)与未来新增子命令默认拒绝；查看类仍放行。
+    #[test]
+    fn readonly_systemctl_whitelist() {
+        for ok in [
+            "systemctl status sshd",
+            "systemctl is-active sshd",
+            "systemctl list-units --type=service",
+            "systemctl --user status foo",
+            "systemctl cat sshd",
+        ] {
+            assert!(is_readonly_command(ok), "应放行(systemctl 查看): {ok}");
+        }
+        for bad in [
+            "systemctl daemon-reexec",
+            "systemctl daemon-reload",
+            "systemctl set-property sshd CPUQuota=50%",
+            "systemctl edit sshd",
+            "systemctl start sshd",
+            "systemctl restart sshd",
+            "systemctl enable sshd",
+        ] {
+            assert!(!is_readonly_command(bad), "应拒绝(systemctl 非查看): {bad}");
         }
     }
 }

@@ -474,10 +474,21 @@ pub async fn read_file(
         Ok(f) => f,
         Err(e) => return Ok(FsResult::err(format!("打开失败: {}", e))),
     };
-    let mut buf = vec![0u8; (cap as usize).saturating_add(1)];
-    // SFTP 分包到达时单次 read 可能短读,循环读满 cap+1 或 EOF
+    // 修复(审查发现)：旧实现无条件 `vec![0u8; cap + 1]`——预览 10 字节小文件也吃满 16MiB。
+    // 改为按 SFTP metadata 的实际大小分配(以 cap+1 封顶，多出的 1 字节用于探测"被截断")；
+    // 若读取过程中文件变大，按倍增扩容至多 cap+1。cap 至少为 1，故 hard_cap ≥ 2。
+    let hard_cap = cap.saturating_add(1);
+    let initial = match file.metadata().await {
+        Ok(meta) => meta.len().saturating_add(1).clamp(1, hard_cap),
+        Err(_) => hard_cap, // 拿不到 metadata 时退回原行为
+    };
+    let mut buf = vec![0u8; initial as usize];
     let mut total = 0usize;
-    loop {
+    while (total as u64) < hard_cap {
+        if total >= buf.len() {
+            let grown = (buf.len() as u64).saturating_mul(2).clamp(4096, hard_cap);
+            buf.resize(grown.max(total as u64 + 1) as usize, 0);
+        }
         let n = match file.read(&mut buf[total..]).await {
             Ok(n) => n,
             Err(e) => return Ok(FsResult::err(format!("读取失败: {}", e))),
@@ -486,9 +497,6 @@ pub async fn read_file(
             break;
         }
         total += n;
-        if total as u64 > cap {
-            break;
-        }
     }
     buf.truncate(total);
     if buf.contains(&0) {

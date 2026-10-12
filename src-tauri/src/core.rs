@@ -621,7 +621,16 @@ pub fn rdp_connect(state: State<'_, CoreState>, name: String) -> Result<(), Stri
         .unwrap_or((1200, 800));
     let rdp = build_rdp_file(&info, width, height);
     let dir = std::env::temp_dir();
-    let path = dir.join(format!("helm-rdp-{}.rdp", std::process::id()));
+    // 修复(审查发现)：文件名只含 PID 时，同进程内连续/并发 rdp_connect 会复用同一路径——
+    // 后一次写入覆盖前一次，且 30s 清理线程可能删掉后一次连接正在用的文件。
+    // 加进程内自增序号 + 纳秒时间戳，保证每次连接独占一个文件。
+    static RDP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = RDP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = dir.join(format!("helm-rdp-{}-{}-{}.rdp", std::process::id(), seq, nanos));
     std::fs::write(&path, rdp).map_err(|e| format!("写入 .rdp 文件失败: {e}"))?;
     let _ = std::process::Command::new("mstsc")
         .arg(&path)

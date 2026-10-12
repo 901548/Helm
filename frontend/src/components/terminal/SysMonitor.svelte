@@ -38,8 +38,10 @@
   });
 
   onMount(() => {
-    // onSysMon 返回 Promise<UnlistenFn>,须暂存后异步注销,直接 return Promise 会被忽略泄漏
+    // onSysMon 返回 Promise<UnlistenFn>,须暂存后异步注销,直接 return Promise 会被忽略泄漏。
+    // 修复(审查发现)：卸载早于 Promise resolve 时 un 仍为 null，回调里判空注销防泄漏。
     let un: (() => void) | null = null;
+    let disposed = false;
     api.onSysMon((p) => {
       if (p.name !== activeTab) return;
       sys = {
@@ -54,8 +56,14 @@
         ok: p.ok,
         error: p.error,
       };
-    }).then((fn) => (un = fn));
-    return () => un?.();
+    }).then((fn) => {
+      if (disposed) fn();
+      else un = fn;
+    });
+    return () => {
+      disposed = true;
+      un?.();
+    };
   });
 </script>
 

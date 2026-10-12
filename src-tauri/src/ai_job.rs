@@ -242,9 +242,14 @@ pub(crate) async fn run_ai_job(
             // 循环：chat(流式回答) → 提取 RUN 行 → 经 safety::is_readonly_command 门禁 →
             // 自动执行（无确认；CommandStep 步骤卡呈现，不进训练日志）→ 输出回喂 → 继续回答。
             const QA_TOOL_ROUNDS: usize = 4;
-            let mut ag = agent.lock().await;
-            let timeout_secs = ag.command_timeout_secs();
-            let max_out = ag.max_output_chars();
+            // 修复(审查发现)：agent 锁**只在每轮 chat 期间短暂持有**，不跨 RUN 命令执行。
+            // 旧实现 `let mut ag = agent.lock().await;` 贯穿整个 QA 分支（含 RUN 命令的 SSH
+            // 网络 I/O，单条最长 60s），期间 ai_stop / ai_set_mode / ai_clear_history 全部阻塞在
+            // slot.agent.lock() —— Agent 分支早已用块作用域规避，QA 此处对齐。
+            let (timeout_secs, max_out) = {
+                let ag = agent.lock().await;
+                (ag.command_timeout_secs(), ag.max_output_chars())
+            };
             // P113：流式答案过滤器——RUN 行不进答案流（执行情况由步骤卡呈现）。
             // Arc<Mutex> 因为 sink 跨工具轮次存活，回合结束要经它 finish 冲刷末行。
             let line_filter = std::sync::Arc::new(std::sync::Mutex::new(crate::agent::QaLineFilter::new()));
@@ -293,6 +298,9 @@ pub(crate) async fn run_ai_job(
                 // chat_fut 借用 current_input/term_ctx——整轮 chat+select 收在块内，
                 // 块结束即归还借用，之后才能改写下一轮输入（E0506）。
                 let end = {
+                    // 每轮 chat 独立取锁：块结束（drop chat_fut）即释放，
+                    // 后续 RUN 命令执行与下一轮准备都不持锁（见上方修复说明）。
+                    let mut ag = agent.lock().await;
                     let chat_fut = ag.chat(&current_input, current_term_ctx.as_deref(), sink.as_mut().map(|f| f as _));
                     tokio::pin!(chat_fut);
                     tokio::select! {
@@ -741,7 +749,11 @@ pub(crate) async fn run_ai_job(
                 // P83：显式 goal_ok 标记（FC）——在命令执行前结算当前子目标
                 let mut fc_goal_ok = false;
                 let mut cmd_ids: Vec<String> = Vec::new();
-                let mut fc_outputs: Vec<String> = Vec::new();
+                // 修复(审查发现)：FC 工具结果按 (命令 id, 输出) 成对存储，回填时不再依赖下标对齐
+                // ——旧实现按下标配对，少 push 一条（Edit 滞留/Cancel）即让后续 id 全部串位。
+                let mut fc_outputs: Vec<(String, String)> = Vec::new();
+                // 本轮 FC 命令游标：与 cmd_ids 一一推进，保证 fc_slot 取到正确 id
+                let mut fc_idx: usize = 0;
                 let is_fc = matches!(outcome, TurnOutcome::Calls(_));
 
                 match outcome {
@@ -1056,6 +1068,19 @@ pub(crate) async fn run_ai_job(
                         finished = true;
                         break;
                     }
+                    // 修复(审查发现)：FC 工具结果必须**按命令 id 绑定**，不能靠下标对齐。
+                    // 旧实现 `cmd_ids[i]` 配 `fc_outputs.get(i)`，而 fc_outputs 只在"执行成功/被跳过"
+                    // 两条路径 push——计划级 Edit 滞留(下方 continue)或循环头 Cancel(break)会少 push，
+                    // 后续 cmd_ids 全部错位，模型拿到**别的命令的输出**。
+                    // 现改为：进入本轮即占位 (id, "（未执行）")，执行成功再原地覆盖，保证一一对应。
+                    let fc_slot = if is_fc {
+                        let id = cmd_ids.get(fc_idx).cloned().unwrap_or_default();
+                        fc_idx += 1;
+                        fc_outputs.push((id, "（未执行）".to_string()));
+                        Some(fc_outputs.len() - 1)
+                    } else {
+                        None
+                    };
                     let (level, reason) = check_danger(&command);
                     // 危险命令授权判定：
                     // - confirm_all(严格确认模式)恒置真 → 每条命令无论是否为已批准计划仍在逐条确认，绝不裸执行；
@@ -1110,8 +1135,8 @@ pub(crate) async fn run_ai_job(
                                         output: String::new(),
                                     },
                                 );
-                                if is_fc {
-                                    fc_outputs.push("用户跳过".to_string());
+                                if let Some(i) = fc_slot {
+                                    fc_outputs[i].1 = "用户跳过".to_string();
                                 }
                                 last_output = "命令已由用户跳过".to_string();
                                 continue;
@@ -1136,9 +1161,9 @@ pub(crate) async fn run_ai_job(
                     if !new_pwd.is_empty() {
                         cwd = new_pwd;
                     }
-                    if is_fc {
-                        // P83：FC 回合捕获每条命令输出，供工具结果回填
-                        fc_outputs.push(truncate_text(&output, max_output_chars));
+                    if let Some(i) = fc_slot {
+                        // P83：FC 回合捕获每条命令输出，供工具结果回填（按 id 绑定，见上方注释）
+                        fc_outputs[i].1 = truncate_text(&output, max_output_chars);
                     }
                     // P70 训练核心三元组：(任务上下文, 动作命令, 结果输出+退出码+目录)
                     recorder.log_async(serde_json::json!({
@@ -1203,8 +1228,8 @@ pub(crate) async fn run_ai_job(
                         for (id, out) in &fc_results {
                             ag.push_tool_result(id, out);
                         }
-                        for (i, id) in cmd_ids.iter().enumerate() {
-                            let out = fc_outputs.get(i).map(String::as_str).unwrap_or("（未执行）");
+                        for (id, out) in &fc_outputs {
+                            // 修复后按 id 绑定回填：未执行的命令拿到占位文案，绝不串到别的 id
                             ag.push_tool_result(id, out);
                         }
                     }

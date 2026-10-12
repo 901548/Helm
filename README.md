@@ -29,6 +29,7 @@ Windows 桌面应用：多标签 SSH 终端、SFTP 文件管理、系统监控�
 
 ### AI 副驾驶（终端内嵌）
 - **QA 模式**：流式问答，推理型模型（deepseek-r1 等）的思考过程单独实时显示
+  - **只读命令协议**：模型可输出 `RUN: <命令>` 请求执行查看类命令（df / ss / journalctl 等 77 个白名单命令）辅助回答，自动执行且无确认；任何修改类命令被门禁拒绝并如实告知，**服务器零修改**（`RUN:` 行不进答案流，执行情况由步骤卡呈现）
 - **Agent 模式**：自然语言任务 → AI 逐步生成命令 → 自动在活动会话执行 → 读输出与退出码回喂 → 直到输出 DONE
   - **长任务子目标化 + 失败恢复**：模型输出 `GOAL` 子目标与 `REFLEXION` 反思，按真实退出码判成败，失败自动重规划（不无意义重试）
   - **Function Calling 与文本协议双路径**：开 `agent_fc` 走结构化工具调用，模型不支持时自动粘性降级回文本协议
@@ -65,6 +66,7 @@ Windows 桌面应用：多标签 SSH 终端、SFTP 文件管理、系统监控�
 | `F11` | 全屏切换 |
 | 鼠标中键 | 关闭标签页 |
 | 会话行右键 | 连接 / 断开 / 编辑 / 删除 / 忘记主机密钥 |
+| 状态栏「会话 N/M」 | 收起 / 展开会话栏（箭头指示方向） |
 
 ## 从源码构建
 
@@ -81,7 +83,7 @@ cargo tauri build    # 打包 release:helm.exe + msi + nsis 安装包
 运行测试：
 
 ```bash
-cd src-tauri && cargo test                          # 147 项(含 SSH/SFTP live 测试,无 src-tauri/config.yaml 时自动跳过)
+cd src-tauri && cargo test                          # 148 项(含 SSH/SFTP live 测试,无 src-tauri/config.yaml 时自动跳过)
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings   # 静态检查(零告警)
 npm run build                                       # 前端构建
 npm test                                            # 前端单元测试(Vitest 35 项)
@@ -107,7 +109,7 @@ sessions:
 
 ai:
   model: deepseek-chat
-  api_key_env: DEEPSEEK_API_KEY   # 环境变量回退
+  api_key_env: API_KEY            # 环境变量回退名(界面固定写此值)
   api_key: null                   # 界面直填后存 DPAPI 密文,优先于环境变量
   api_base_url: null              # 自定义 OpenAI 兼容端点;本地 Ollama 等免 Key
   mode: qa                        # qa | agent
@@ -124,6 +126,7 @@ ai:
   ai_echo_terminal: false         # true = AI 命令/输出回显进终端
   system_prompt: |
     你是一个专业的运维AI助手……
+  system_prompt_qa: null          # QA 模式专用提示词(空则用内置"直接回答"提示词,不沿用 system_prompt)
   system_prompt_agent: null       # Agent 模式专用提示词(不填则用内置默认)
   extra_headers: {}               # 附加请求头
   extra_body: null                # 附加请求体字段
@@ -168,7 +171,7 @@ src-tauri/src/
 ├── task_exec.rs    # Agent 命令组装/解析/执行(Linux/Windows/Docker)
 ├── ssh.rs          # SshManager:连接/PTY/exec/SFTP 通道
 ├── agent.rs        # AI 客户端(QA 流式 + Agent 单步 + FC + 测试连接/模型列表)
-├── safety.rs       # 危险命令判级(shell 分词 + 语义)
+├── safety.rs       # 危险命令判级 + QA 只读命令门禁
 ├── skills.rs       # 内置技能(意图匹配 + 确定性命令序列)
 ├── fs.rs           # SFTP 文件命令
 ├── monitor.rs      # 系统监控采集(Linux/Windows)
@@ -177,6 +180,9 @@ src-tauri/src/
 ├── known_hosts.rs  # 主机密钥 TOFU
 └── config.rs       # 配置加载/原子保存
 
+scripts/            # 零依赖工具:bench/(评测) dataset/(SFT 导出) verify-ui.mjs(UI 冒烟) shot.mjs gen-icon.mjs
+docs/               # 设计方案与审查记录 + screenshots/(UI 验证归档)
+.github/workflows/  # CI:Vitest + build + cargo build + clippy(-D warnings) + cargo test
 config.yaml          # 运行时配置(不提交)
 ```
 
@@ -185,6 +191,20 @@ config.yaml          # 运行时配置(不提交)
 - **后端**：Rust + Tauri v2、russh / russh-keys / russh-sftp（SSH/SFTP 协议）、tokio、reqwest（AI HTTP 流式）、serde_yaml
 - **前端**：Svelte 5（runes）+ Vite 6 + xterm.js 5（fit / search / webgl / web-links 插件）+ TypeScript + zmodem.js
 - **安全**：Windows DPAPI（密文存储）、TOFU known_hosts、危险命令语义判级
+
+## 训练数据与评测（可选）
+
+操作记录器把终端输入与 AI 轨迹按天写入 `logs/terminal-YYYYMMDD.jsonl`（设置里可开关），配套三个零依赖脚本：
+
+```bash
+node scripts/dataset/export.mjs      # logs → SFT 数据集(dataset/sft-samples.jsonl + stats.json)
+node scripts/bench/run.mjs           # Agent 评测:8 个真实运维任务,原生事件流判定 + 危险确认自动批准
+node scripts/verify-ui.mjs           # UI 冒烟(需 CDP 调试端口 9229 + vite),退出码即结果
+```
+
+- **SFT 导出**：按 `ai_task` 分窗，只收 `exit_code == 0` 的成功步，剔除协议标记与重复；system 提示词运行时从 `agent.rs` 提取（改提示词无需同步脚本）。产物 `dataset/` 已 gitignore（含内网数据）
+- **评测基准**：`scripts/bench/tasks.json` 定义 8 个任务（磁盘/内存/日志/服务/文件/用户/端口/清理），支持 `verify` 后置校验（file-exists / file-absent）与 `no-op` 判定
+- 训练在训练机上进行（本机不训练）：`dataset/sft-samples.jsonl` → QLoRA 小模型 → GGUF → Ollama 导入 → 用同一套 bench 对比基线
 
 ## License
 

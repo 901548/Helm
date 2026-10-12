@@ -332,12 +332,18 @@
   }
 
   onMount(() => {
-    // onConnection 返回 Promise<UnlistenFn>,须暂存后异步注销
+    // onConnection 返回 Promise<UnlistenFn>,须暂存后异步注销。
+    // 修复(审查发现)：卸载早于 Promise resolve 时 unConn 仍为 null，回调里判空注销防泄漏。
     let unConn: (() => void) | null = null;
+    let disposed = false;
     api.onConnection((p) => {
       if (p.status === "connected") refresh();
-    }).then((fn) => (unConn = fn));
+    }).then((fn) => {
+      if (disposed) fn();
+      else unConn = fn;
+    });
     return () => {
+      disposed = true;
       unConn?.();
     };
   });
@@ -682,7 +688,7 @@
     border: 1px solid var(--border);
     border-left: 2px solid var(--accent);
     border-radius: var(--radius-sm, 6px);
-    background: var(--panel);
+    background: var(--bg-panel);
     font-size: 0.76rem;
     color: var(--fg-muted);
     line-height: 1.55;
@@ -705,7 +711,7 @@
     font-size: 0.76rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm, 6px);
-    background: var(--panel);
+    background: var(--bg-panel);
     color: var(--fg);
     cursor: pointer;
   }

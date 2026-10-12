@@ -987,9 +987,15 @@ impl Agent {
                 headers.insert(name, value);
             }
         }
+        // 修复(审查发现)：`.timeout()` 是**含响应体读取的总超时**——流式长回答(推理型模型
+        // 思考流 + 长答案)会被整体掐断报错，而配置项文案是"单次 API 请求超时"。
+        // 改用 `.read_timeout()`：语义是**两次读取之间的空闲上限**(连接卡住/无数据才超时)，
+        // 长回答只要持续有数据就不会被误杀；再配 connect_timeout 防握手挂死。
+        let secs = config.timeout_secs.max(1);
         Ok(reqwest::Client::builder()
             .default_headers(headers)
-            .timeout(Duration::from_secs(config.timeout_secs.max(1)))
+            .connect_timeout(Duration::from_secs(secs.min(30)))
+            .read_timeout(Duration::from_secs(secs))
             .build()?)
     }
 }

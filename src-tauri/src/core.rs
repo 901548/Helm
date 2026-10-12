@@ -139,13 +139,34 @@ impl AiManager {
     /// 运行中任务 abort 并复位 busy——任务闭包捕获的旧会话名已失效（事件会发到旧名），
     /// 继续跑会导致前端收不到 busy/事件，故必须停止。
     pub async fn rename(&self, old: &str, new: &str) {
-        let slot = self.slots.lock().await.remove(old);
-        let Some(slot) = slot else { return };
-        if let Some(handle) = slot.task.lock().await.take() {
-            handle.abort();
+        // 修复(审查发现)：旧实现 `remove` 与 `insert` 之间释放了 slots 锁——并发调用
+        // slot_locked(new)(改名后立刻发任务)先建的新槽会被随后的 insert 覆盖，
+        // 丢失其 Agent 与任务句柄。改为**全程持锁**，且目标名已有槽时保留目标槽
+        // (覆盖会孤儿化它正在跑的任务：仍发事件到 new 却无人引用，busy 永久卡住)。
+        let (slot, reused_target) = {
+            let mut m = self.slots.lock().await;
+            let slot = m.remove(old);
+            match m.get(new).cloned() {
+                // 目标槽已存在：保留它，旧槽仅用于 abort 其任务
+                Some(existing) => (slot, Some(existing)),
+                // 目标槽不存在：把旧槽迁到新名下（保留对话历史/Agent 状态）
+                None => {
+                    if let Some(s) = &slot {
+                        m.insert(new.to_string(), s.clone());
+                    }
+                    (slot, None)
+                }
+            }
+        };
+        let _ = reused_target; // 语义说明用；目标槽原样保留，无需额外操作
+        // 无论是否复用目标槽，被 remove 的旧槽任务都必须 abort——任务闭包捕获的旧会话名
+        // 已失效（事件会发到旧名），继续跑会导致前端收不到 busy/事件。
+        if let Some(s) = slot {
+            if let Some(handle) = s.task.lock().await.take() {
+                handle.abort();
+            }
+            s.busy.store(false, Ordering::SeqCst);
         }
-        slot.busy.store(false, Ordering::SeqCst);
-        self.slots.lock().await.insert(new.to_string(), slot);
     }
 
     /// 用最新 AI 配置重建所有空闲会话槽（运行中的跳过，避免与进行中请求互踩）

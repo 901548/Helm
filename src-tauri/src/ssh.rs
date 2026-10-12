@@ -457,13 +457,20 @@ impl SshManager {
         let mut session = session.lock().await;
         let shell = session.shell.as_mut()?;
         let mut out = Vec::new();
+        let mut overflowed = false;
         while let Ok(bytes) = shell.rx.try_recv() {
             out.extend_from_slice(&bytes);
-            // 累积超限：只保留最新尾部，防内存膨胀（丢弃的只是最旧刷屏内容）
+            // 累积超限：先只做标记，**循环内不裁剪**。
+            // 修复(审查发现)：旧实现在循环内 `out.drain(..excess)`——远端刷屏时每收一块
+            // 就把整个 8MiB 缓冲前移一次，整体是 O(n²) 拷贝。改为循环结束只裁剪一次。
             if out.len() > Self::MAX_SHELL_DRAIN_BYTES {
-                let excess = out.len() - Self::MAX_SHELL_DRAIN_BYTES;
-                out.drain(..excess);
+                overflowed = true;
             }
+        }
+        if overflowed {
+            // 保留最新尾部（等价终端滚动缓冲淘汰旧内容），一次性搬移
+            let excess = out.len() - Self::MAX_SHELL_DRAIN_BYTES;
+            out.drain(..excess);
         }
         if out.is_empty() {
             None
@@ -538,6 +545,13 @@ impl SshManager {
                 return;
             };
             let mut session = session.lock().await;
+            // 修复(审查发现)：先置 dead 再 take handle。旧实现在 handle.take() 与
+            // `handle.disconnect().await`(网络操作)之间存在窗口期，此时 get_status 落到
+            // `None => Connecting`，前端圆点会短暂显示"连接中"而不是断开。
+            // dead 是 P72 的权威断开信号，get_status 优先读它。
+            session.dead.store(true, std::sync::atomic::Ordering::SeqCst);
+            session.shell = None;
+            session.sftp = None;
             session.handle.take()
         };
         if let Some(handle) = handle {

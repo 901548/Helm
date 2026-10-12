@@ -14,6 +14,8 @@
   import type { AiCard, AiLogEntry, AiState, SessionKind, SessionStatus } from "../../lib/api";
   import { normalizePwd, parseOscPwd, stripAnsi as stripAnsiLib } from "../../lib/osc";
   import { replayEcho } from "../../lib/echo";
+  // P124：非 bash 会话的 cd 回退推断（纯函数模块，带单测）
+  import { initialCdState, trackCdFallback, type CdFallbackState } from "../../lib/cdtrack";
   import SysMonitor from "./SysMonitor.svelte";
   import AiCopilot from "./AiCopilot.svelte";
 
@@ -93,10 +95,10 @@
     onDockSubmit,
   } = $props<Props>();
 
-  const echoBuffs = new Map<string, string>();
+  // P124：非 bash 会话的 cd 回退状态（buf + pending），推断逻辑在 lib/cdtrack
+  const cdStates = new Map<string, CdFallbackState>();
   const decoders = new Map<string, TextDecoder>();
   const lastCdFire = new Map<string, { target: string; t: number }>();
-  const pendingCd = new Map<string, { target: string; t: number }>();
   // P24:OSC7 权威 PWD 标记(`ESC]7;helm:PWD ESC\`)状态
   const markerBufs = new Map<string, string>();
   const hasMarker = new Map<string, boolean>();
@@ -145,43 +147,12 @@
     const oscPwd = extractOscPwd(name, rawText);
     if (oscPwd) syncOscPwd(name, oscPwd);
     if (hasMarker.get(name)) return;
+    // P124:非 bash 会话的 cd 回退推断抽到 lib/cdtrack(纯函数 + 15 条单测),
+    // 组件只负责按会话保存状态并把 fire 转成回调。
     const text = stripAnsi(rawText);
-    let tail = (echoBuffs.get(name) ?? "") + text;
-    if (tail.length > 16384) tail = tail.slice(-16384);
-    const lines = tail.split(/\r\n|\n|\r/);
-    let keep = "";
-    if (!/[\r\n]$/.test(tail)) {
-      keep = lines.pop() ?? "";
-    }
-    for (const rawLine of [...lines, keep]) {
-      const line = rawLine.trim();
-      if (!line) continue;
-      const now = Date.now();
-      const pend = pendingCd.get(name);
-      // 回显行匹配 `]# cd <target>` / `$ cd <target>` 时登记候选(读迭渐进段后以最终组成为准)
-      const echoM = line.match(/\]\s*[#$]\s*cd(?:[ \t]+([^\s;&|]+))?[ \t]*$/);
-      if (echoM) {
-        const tgt = echoM[1] ?? "~";
-        pendingCd.set(name, { target: tgt === "-" ? "" : tgt.replace(/^['"]|['"]$/g, ""), t: now });
-        continue;
-      }
-      if (!pend) continue;
-      // 失败:报错行(如 `-bash: cd: /op: No such file…`)→ 作废
-      if (/: cd(:| )|\bNo such file\b|\bnot found\b/.test(line)) {
-        pendingCd.delete(name);
-        continue;
-      }
-      // 成功:紧随其后的新提示符(`…]# ` / `…]$ `)确认 cd 已生效
-      const confirmOk = /\]\s*[#$]\s*$/.test(line) || (/^\S+@\S+[: ].*[#$]\s*$/.test(line) && now - pend.t < 3000);
-      if (confirmOk) {
-        if (pend.target) fireCd(name, pend.target);
-        pendingCd.delete(name);
-        continue;
-      }
-      // 其他输出 → 非简单 cd,作废,避免误触发
-      pendingCd.delete(name);
-    }
-    echoBuffs.set(name, keep);
+    const r = trackCdFallback(cdStates.get(name) ?? initialCdState(), text, Date.now());
+    cdStates.set(name, r.state);
+    for (const target of r.fires) fireCd(name, target);
   }
 
   const XTERM_THEMES: Record<"light" | "dark", ITheme> = {
@@ -316,10 +287,9 @@
         e.term.dispose();
         terminals.delete(name);
         dropZTransfer(name);
-        echoBuffs.delete(name);
+        cdStates.delete(name);
         decoders.delete(name);
         lastCdFire.delete(name);
-        pendingCd.delete(name);
         markerBufs.delete(name);
         hasMarker.delete(name);
         lastPwd.delete(name);

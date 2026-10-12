@@ -9,6 +9,8 @@
   import StatusBar from "./components/chrome/StatusBar.svelte";
   import * as api from "./lib/api";
   import type { AiCard, AiLogEntry, AiQaCard, AiConfig, AiState, SessionInfo, SessionKind, SessionStatus, Theme, UiConfig } from "./lib/api";
+  // P124：后端对话记录 → 卡片的映射抽为纯函数模块（带单测）
+  import { convToCards, convTaskText, type ConvEntry } from "./lib/conv";
 
   let sessions = $state<SessionInfo[]>([]);
   let statuses = $state<Record<string, SessionStatus>>({});
@@ -518,41 +520,6 @@
   }
 
   // P89：切换标签时从后端拉取该会话的权威对话记录（后台会话的积累也在）
-  function convToCard(e: Record<string, unknown>, id: number): AiCard {
-    const kind = String(e.kind ?? "");
-    if (kind === "qa") {
-      return { id, kind: "qa", text: String(e.a ?? ""), done: true };
-    }
-    if (kind === "plan") {
-      return {
-        id,
-        kind: "plan",
-        commands: (e.commands as any) ?? [],
-        status: "plan",
-        needConfirm: Boolean(e.need_confirm),
-      };
-    }
-    // P104-4 L2-beta：子目标组头（后端 ConvEntry::Goal，status active/ok/failed）
-    if (kind === "goal") {
-      const st = String(e.status ?? "active");
-      return {
-        id,
-        kind: "goal",
-        index: Number(e.index ?? 0),
-        total: Number(e.total ?? 0),
-        title: String(e.title ?? ""),
-        status: st === "ok" || st === "failed" ? st : "active",
-      };
-    }
-    return {
-      id,
-      kind: "step",
-      command: String(e.command ?? ""),
-      status: e.success ? "ok" : "fail",
-      message: String(e.message ?? ""),
-      output: String(e.output ?? "") || undefined,
-    };
-  }
   $effect(() => {
     const n = activeTab;
     if (!n) return;
@@ -565,14 +532,10 @@
         // 全量覆盖会清掉前端正在流的 QA 卡/待确认命令卡；busy 期间跳过覆盖，
         // 任务结束(done/error)后前端卡片已由事件更新，下次切标签再读 conv 重建即可
         if (aiBusy[n]) return;
-        // Task 条目回填任务文本（非卡片）；Qa/Plan/Step 映射为卡片
-        const taskEntry = conv.find((e) => String(e.kind ?? "") === "task");
-        const taskText = taskEntry ? String((taskEntry as Record<string, unknown>).task ?? "") : "";
-        const cards = conv
-          .filter((e) => String(e.kind ?? "") !== "task")
-          .map((e) => convToCard(e, ++cardId));
-        aiTaskText = { ...aiTaskText, [n]: taskText };
-        aiCards = { ...aiCards, [n]: cards };
+        // P124：映射逻辑抽到 lib/conv（纯函数 + 单测覆盖），此处只做状态写入
+        const entries = conv as ConvEntry[];
+        aiTaskText = { ...aiTaskText, [n]: convTaskText(entries) };
+        aiCards = { ...aiCards, [n]: convToCards(entries, () => ++cardId) };
       })
       .catch(() => {});
   });

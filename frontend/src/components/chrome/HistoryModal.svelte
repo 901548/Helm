@@ -18,6 +18,12 @@
   let typeFilter = $state("");
   let expanded = $state<string | null>(null);
   let exportNote = $state("");
+  // P124：筛选走后端（history_read 已支持 session/type 参数）。
+  // 旧实现固定拉 500 条再在前端过滤 —— 按会话筛选时，若该会话记录不在最近 500 条内
+  // 就一条都看不到（结果不完整）。现在筛选条件直接下推，后端全量扫描后再截断。
+  let limit = $state(500);
+  // 会话下拉的候选：单独拉一次不限类型的轻量列表（避免"选了会话后下拉只剩自己"）
+  let knownSessions = $state<string[]>([]);
 
   const TYPE_META: Record<string, { label: string; color: string }> = {
     input: { label: "输入", color: "var(--accent)" },
@@ -30,7 +36,8 @@
     loading = true;
     error = "";
     try {
-      records = await historyRead(500);
+      // 筛选条件下推后端（session/type 为空表示不过滤）
+      records = await historyRead(limit, sessionFilter || undefined, typeFilter || undefined);
     } catch (e) {
       error = String(e);
     } finally {
@@ -38,23 +45,28 @@
     }
   }
 
-  onMount(load);
+  // 会话候选：用一次"不限会话/类型"的读取建立（只取 session 字段）
+  async function loadSessions() {
+    try {
+      const all = await historyRead(2000);
+      knownSessions = [...new Set(all.map((r) => String(r.session)))].filter(Boolean).sort();
+    } catch {
+      // 候选拉取失败不影响主列表（下拉退化为空）
+    }
+  }
 
-  const filtered = $derived(
-    records.filter((r) => {
-      if (sessionFilter && r.session !== sessionFilter) return false;
-      if (typeFilter && r.type !== typeFilter) return false;
-      return true;
-    }),
-  );
+  onMount(() => {
+    loadSessions();
+    return load();
+  });
 
-  const sessions = $derived([...new Set(records.map((r) => String(r.session)))].sort());
-  const stats = $derived(
-    (() => {
-      const c: Record<string, number> = {};
-      for (const r of filtered) c[r.type] = (c[r.type] ?? 0) + 1;
-      return c;
-    })(),
+  // 后端已过滤，这里直接展示（保留 length 供统计与空态判断）
+  const filtered = $derived(records);
+  // 页脚提示：说明当前是否处于筛选态（筛选在后端生效，条数即真实命中数）
+  const filterNote = $derived(
+    [sessionFilter && `会话 ${sessionFilter}`, typeFilter && `类型 ${typeLabel(typeFilter)}`]
+      .filter(Boolean)
+      .join(" · "),
   );
 
   function preview(r: Rec): string {
@@ -103,18 +115,43 @@
   </header>
 
     <div class="toolbar">
-      <select bind:value={typeFilter} onchange={() => (expanded = null)}>
+      <select
+        bind:value={typeFilter}
+        onchange={() => {
+          expanded = null;
+          load();
+        }}
+      >
         <option value="">全部类型</option>
         <option value="input">输入</option>
         <option value="ai_task">AI 任务</option>
         <option value="ai_step">AI 步骤</option>
         <option value="qa">问答</option>
       </select>
-      <select bind:value={sessionFilter} onchange={() => (expanded = null)}>
+      <select
+        bind:value={sessionFilter}
+        onchange={() => {
+          expanded = null;
+          load();
+        }}
+      >
         <option value="">全部会话</option>
-        {#each sessions as s}
+        {#each knownSessions as s}
           <option value={s}>{s}</option>
         {/each}
+      </select>
+      <select
+        bind:value={limit}
+        title="最多读取多少条（筛选在后端全量扫描后截断）"
+        onchange={() => {
+          expanded = null;
+          load();
+        }}
+      >
+        <option value={200}>最近 200</option>
+        <option value={500}>最近 500</option>
+        <option value={2000}>最近 2000</option>
+        <option value={5000}>最近 5000</option>
       </select>
       <button class="export" onclick={doExport} title="合并全部 JSONL 导出到 Downloads/helm-exports/">导出</button>
     </div>
@@ -145,7 +182,7 @@
     </div>
 
     <footer class="modal-foot">
-      <span class="stats">{filtered.length} 条记录（新→旧）</span>
+      <span class="stats">{filtered.length} 条记录（新→旧）{filterNote ? ` · 筛选：${filterNote}` : ""}</span>
       <button class="primary" onclick={onClose}>关闭</button>
     </footer>
 </ModalShell>

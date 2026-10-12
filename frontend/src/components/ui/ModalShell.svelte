@@ -22,13 +22,61 @@
 
   let dialogEl = $state<HTMLElement | null>(null);
 
-  // 焦点进入弹窗：Esc 与 Tab 起点都在弹窗内，且读屏能播报对话框标题
-  onMount(() => dialogEl?.focus());
+  // 焦点陷阱（P124）：记录打开前的焦点元素，关闭时归还，
+  // 否则键盘用户关掉弹窗后焦点会掉到 <body>，后续 Tab 从页首重新开始。
+  let previouslyFocused: HTMLElement | null = null;
+
+  const FOCUSABLE =
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  function focusables(): HTMLElement[] {
+    if (!dialogEl) return [];
+    return Array.from(dialogEl.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
+      // 排除不可见元素（display:none / visibility:hidden 的按钮不该被 Tab 到）
+      (el) => el.offsetParent !== null || el === document.activeElement,
+    );
+  }
+
+  onMount(() => {
+    previouslyFocused = document.activeElement as HTMLElement | null;
+    // 焦点进入弹窗：Esc 与 Tab 起点都在弹窗内，且读屏能播报对话框标题
+    dialogEl?.focus();
+    return () => {
+      // 归还焦点（元素可能已随弹窗一起卸载，故判 isConnected）
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  });
 
   function onKey(e: KeyboardEvent) {
     if (e.key === "Escape") {
       e.stopPropagation();
       onClose();
+      return;
+    }
+    // 焦点陷阱：Tab 在弹窗内循环，不逃逸到背后的页面（aria-modal 的语义要求）
+    if (e.key === "Tab") {
+      const items = focusables();
+      if (items.length === 0) {
+        e.preventDefault();
+        dialogEl?.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      // 焦点在弹窗容器本身（刚打开）或已在最后一个元素上 → 回到首个
+      if (!active || active === dialogEl || !dialogEl?.contains(active)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+        return;
+      }
+      if (e.shiftKey && active === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault();
+        first.focus();
+      }
     }
   }
 </script>

@@ -82,7 +82,13 @@
     {#if loading}
       <div class="pv-body pv-hint">加载中…</div>
     {:else if data}
-      <textarea class="pv-body" bind:value={data.content} spellcheck="false"></textarea>
+      <!-- 可拖右下角调高(原生 resize:vertical);上限见 CSS 的 max-height -->
+      <textarea
+        class="pv-body"
+        bind:value={data.content}
+        spellcheck="false"
+        title="拖动右下角可调整高度"
+      ></textarea>
     {/if}
     <footer class="pv-foot">
       {#if data?.truncated}
@@ -152,9 +158,15 @@
     background: var(--hover);
   }
   .pv-body {
-    flex: 1;
-    min-height: 240px;
-    max-height: 60vh;
+    /* 高度由用户拖拽决定(resize:vertical),不再用 flex:1 被弹窗锁死。
+       初始 46vh,最小 200px;上限取 min(68vh, 90vh-头尾)——
+       后者防止窗口很矮时 min-height 顶破 dialog 的 90vh 上限把弹窗裁掉。 */
+    height: 46vh;
+    min-height: min(200px, calc(90vh - 96px));
+    max-height: min(68vh, calc(90vh - 96px));
+    /* 不许被弹窗的 flex 压缩,否则用户拖出来的高度会被缩回去 */
+    flex-shrink: 0;
+    box-sizing: border-box;
     margin: 0;
     padding: 0.6rem 0.8rem;
     border: none;
@@ -163,17 +175,19 @@
     font-family: "JetBrains Mono", "Cascadia Mono", monospace;
     font-size: 0.78rem;
     line-height: 1.5;
-    resize: none;
+    resize: vertical;
     outline: none;
     white-space: pre;
     overflow: auto;
   }
+  /* 加载态不是 textarea,撑满即可 */
   .pv-hint {
     display: flex;
     align-items: center;
     justify-content: center;
     color: var(--fg-muted);
     font-family: inherit;
+    resize: none;
   }
   .pv-foot {
     display: flex;

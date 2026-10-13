@@ -3,7 +3,9 @@
   import * as api from "../../lib/api";
   import type { FileEntry, SessionKind } from "../../lib/api";
   import { fmtSize as fmtSizeLib, isValidEntryName, joinPath as joinPathLib, parentPathWindows, resolvePath as resolvePathLib, shq } from "../../lib/paths";
-  import ModalShell from "../ui/ModalShell.svelte";
+  // P126：预览/编辑弹窗抽为独立组件（自带加载态/保存态/保存/下载）
+  import FilePreviewModal from "./FilePreviewModal.svelte";
+  import { base64ToBytes, bytesToBase64 } from "../../lib/b64";
 
   interface Props {
     activeTab: string | null;
@@ -29,7 +31,6 @@
   let lastFile = $state<FileEntry | null>(null);
   let preview = $state<{ name: string; path: string; content: string; truncated: boolean; session: string } | null>(null);
   let previewLoading = $state(false);
-  let saved = $state(false);
 
   const fmtSize = fmtSizeLib;
 
@@ -124,7 +125,6 @@
     lastFile = e;
     previewLoading = true;
     error = "";
-    saved = false;
     const sess = activeTab;
     const path = joinPath(cwd, e.name);
     try {
@@ -134,6 +134,7 @@
         return;
       }
       // 绑定打开时的会话:预览期间切换标签,保存/下载仍作用于原会话,避免写错机器
+      // （P126：预览弹窗已抽为 FilePreviewModal，保存/下载逻辑随之搬入）
       preview = { name: e.name, path, content: r.message, truncated: r.truncated, session: sess };
     } catch (err) {
       error = String(err);
@@ -144,26 +145,6 @@
 
   function resolvePath(raw: string): string {
     return resolvePathLib(raw, cwd, sep);
-  }
-
-  async function savePreview() {
-    if (!preview || preview.truncated) return;
-    // 用预览绑定的会话,而非当前活动标签(防切换会话后写错机器)
-    const bytes = new TextEncoder().encode(preview.content);
-    let bin = "";
-    for (const b of bytes) bin += String.fromCharCode(b);
-    const b64 = btoa(bin);
-    try {
-      const r = await api.fsUpload(preview.session, preview.path, b64, false);
-      if (!r.ok) {
-        error = r.message;
-        return;
-      }
-      saved = true;
-      refresh();
-    } catch (e) {
-      error = String(e);
-    }
   }
 
   function goUp() {
@@ -248,17 +229,14 @@
   }
 
   // 下载到浏览器（base64 解码 → Blob → a.click 保存），按传入会话/路径取文件
+  // P126：base64 解码走 lib/b64 的纯函数（带单测）
   async function downloadToBrowser(session: string, path: string, filename: string) {
     const r = await api.fsDownload(session, path);
     if (!r.ok) {
       error = r.message;
       return;
     }
-    const binary = atob(r.message);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes]);
-    const url = URL.createObjectURL(blob);
+    const url = URL.createObjectURL(new Blob([base64ToBytes(r.message)]));
     const a = document.createElement("a");
     a.href = url;
     a.download = filename;
@@ -276,15 +254,7 @@
     }
   }
 
-  // P91：预览弹窗「下载」用预览绑定的会话/路径（与保存一致），切标签不会下错文件
-  async function downloadPreview() {
-    if (!preview) return;
-    try {
-      await downloadToBrowser(preview.session, preview.path, preview.name);
-    } catch (e) {
-      error = String(e);
-    }
-  }
+  // P91/P126：预览弹窗的「下载」已随预览组件抽走（仍用预览绑定的会话/路径，切标签不会下错文件）
 
   let uploading = $state(false);
 
@@ -311,10 +281,7 @@
         // 64KB 分块，避免单条命令过长
         for (let off = 0; off < bytes.length; off += 65536) {
           const chunk = bytes.slice(off, off + 65536);
-          let bin = "";
-          for (let i = 0; i < chunk.length; i++) bin += String.fromCharCode(chunk[i]);
-          const b64 = btoa(bin);
-          const r = await api.fsUpload(sess, path, b64, append);
+          const r = await api.fsUpload(sess, path, bytesToBase64(chunk), append);
           if (!r.ok) {
             error = r.message;
             return;
@@ -517,42 +484,14 @@
       <div class="ctx-veil" onclick={() => (ctxPos = null, ctxEntry = null)}></div>
     {/if}
 
-    {#if preview || previewLoading}
-      <!-- 遮罩/对话框语义由 ModalShell 提供（Esc 关闭 + 点击空白关闭 + 挂载聚焦） -->
-      <ModalShell labelledBy="pv-title" width="720px" onClose={() => (preview = null)}>
-        <header class="pv-head">
-          <svg class="pv-glyph" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3.5 2h5.5l3.5 3.5V13a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 2.5 13V3.5A1.5 1.5 0 0 1 3.5 2Z" stroke="currentColor" stroke-width="1.4"/><path d="M9 2v4h3.5" stroke="currentColor" stroke-width="1.4"/></svg>
-          <div class="pv-titles">
-            <span class="pv-title" id="pv-title">{preview?.name ?? "读取中…"}</span>
-            {#if preview}
-              <span class="pv-sub">{preview.path}{preview.truncated ? " · 已截断" : ""}</span>
-            {/if}
-          </div>
-          <button class="pv-close" title="关闭 (Esc)" onclick={() => (preview = null)}>×</button>
-        </header>
-        {#if previewLoading}
-          <div class="pv-body pv-hint">加载中…</div>
-        {:else if preview}
-          <textarea class="pv-body" bind:value={preview.content} spellcheck="false"></textarea>
-        {/if}
-        <footer class="pv-foot">
-          {#if preview?.truncated}
-            <span class="pv-note">文件较大，仅预览前 60KB，保存已禁用。</span>
-          {:else if saved}
-            <span class="pv-saved">✓ 已保存</span>
-          {:else}
-            <span></span>
-          {/if}
-          <button class="pv-btn" onclick={downloadPreview} disabled={!preview}>下载</button>
-          <button
-            class="pv-btn primary"
-            onclick={savePreview}
-            disabled={!preview || preview.truncated}
-            title={preview?.truncated ? "文件过大，编辑会截断内容，已禁用" : "保存并写回远端"}
-          >保存</button>
-        </footer>
-      </ModalShell>
-    {/if}
+    <!-- P126：预览/编辑弹窗抽为 FilePreviewModal（自带加载态/保存态/保存/下载） -->
+    <FilePreviewModal
+      data={preview}
+      loading={previewLoading}
+      onClose={() => (preview = null)}
+      onSaved={refresh}
+    />
+
     {/if}
   {/if}
 
@@ -861,121 +800,12 @@
     color: #fff;
     border-color: var(--danger);
   }
-  .pv-head {
-    display: flex;
-    align-items: center;
-    gap: 0.55rem;
-    padding: 0.55rem 0.8rem;
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-  .pv-glyph {
-    width: 18px;
-    height: 18px;
-    color: var(--accent);
-    flex-shrink: 0;
-  }
-  .pv-titles {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .pv-title {
-    font-weight: 600;
-    font-size: 0.88rem;
-    color: var(--fg);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .pv-sub {
-    font-size: 0.7rem;
-    color: var(--fg-muted);
-    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .pv-close {
-    border: none;
-    background: transparent;
-    color: var(--fg-muted);
-    font-size: 1.1rem;
-    cursor: pointer;
-    padding: 0 0.3rem;
-    border-radius: var(--radius-sm);
-    flex-shrink: 0;
-  }
-  .pv-close:hover {
-    color: var(--fg);
-    background: var(--hover);
-  }
-  .pv-foot {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.8rem;
-    border-top: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-  .pv-note {
-    flex: 1;
-    color: var(--warning);
-    font-size: 0.75rem;
-  }
-  .pv-saved {
-    flex: 1;
-    font-size: 0.78rem;
-    color: var(--ok);
-  }
-  .pv-btn {
-    border: 1px solid var(--border);
-    background: var(--bg-panel);
-    color: var(--fg);
-    border-radius: var(--radius-sm);
-    padding: 0.28rem 0.95rem;
-    font-size: 0.8rem;
-    cursor: pointer;
-  }
-  .pv-btn:hover:not(:disabled) {
-    background: var(--hover);
-  }
-  .pv-btn.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
-    font-weight: 600;
-  }
-  .pv-btn.primary:hover:not(:disabled) {
-    background: var(--accent-hover);
-  }
-  .pv-btn:disabled {
-    opacity: 0.4;
-    cursor: default;
-  }
-  .pv-body {
-    flex: 1;
-    overflow: auto;
-    padding: 0.8rem;
-    margin: 0;
-    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
-    font-size: 0.8rem;
-    color: var(--fg);
-    white-space: pre-wrap;
-    word-break: break-all;
-  }
   textarea.pv-body {
     border: none;
     border-radius: 0;
     resize: none;
     background: var(--modal-bg);
     outline: none;
-  }
-  .pv-hint {
-    text-align: center;
-    color: var(--fg-muted);
   }
   .fs-resize {
     position: absolute;

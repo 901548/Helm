@@ -16,6 +16,9 @@
   import { replayEcho } from "../../lib/echo";
   // P124：非 bash 会话的 cd 回退推断（纯函数模块，带单测）
   import { initialCdState, trackCdFallback, type CdFallbackState } from "../../lib/cdtrack";
+  // P126：终端区浮层（搜索条/右键菜单/重连横幅/ZMODEM/空状态）抽为子组件
+  import TerminalOverlays from "./TerminalOverlays.svelte";
+  import { bytesToBase64 } from "../../lib/b64";
   import SysMonitor from "./SysMonitor.svelte";
   import AiCopilot from "./AiCopilot.svelte";
 
@@ -399,14 +402,8 @@
     setZTransfer(name, null);
   }
 
-  function b64Of(bytes: Uint8Array): string {
-    let bin = "";
-    const CH = 0x8000;
-    for (let i = 0; i < bytes.length; i += CH) {
-      bin += String.fromCharCode(...bytes.subarray(i, i + CH));
-    }
-    return btoa(bin);
-  }
+  // P126：base64 编码走 lib/b64（分块 + 带单测），删掉本地重复实现
+  const b64Of = bytesToBase64;
 
   function onZmodemDetect(name: string, d: any) {
     const role = d.get_session_role(); // 'receive'=远端 sz；'send'=远端 rz
@@ -784,97 +781,29 @@
 <!-- 右键菜单捕获层:容器级 contextmenu 拦截终端区右键,无独立语义,与 ctx-veil 同类 -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="term-area" bind:this={termArea} oncontextmenu={openTermCtx}>
-  {#if showSearch}
-    <div class="search-bar">
-      <span class="search-glyph" aria-hidden="true">
-        <svg viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.6"/><path d="m10.5 10.5 3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-      </span>
-      <input
-        bind:this={searchBar}
-        bind:value={searchQuery}
-        aria-label="搜索终端内容"
-        placeholder="搜索终端内容 (Esc 关闭)"
-        onkeydown={onSearchKeydown}
-      />
-      <button class="s-btn" title="上一个 (↑)" onclick={() => doSearch("prev")}>↑</button>
-      <button class="s-btn" title="下一个 (↓)" onclick={() => doSearch("next")}>↓</button>
-      <button class="s-btn close" title="关闭" onclick={closeSearch}>×</button>
-    </div>
-  {/if}
   {#each tabs as t (t)}
     <div class="term-container" class:active={t === activeTab} data-term={t}></div>
   {/each}
 
-  {#if tctx}
-    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-    <div class="term-ctx-veil" onclick={() => (tctx = null)} oncontextmenu={(e) => { e.preventDefault(); tctx = null; }}></div>
-    <div class="term-ctx" style:left={tctx.x + "px"} style:top={tctx.y + "px"}>
-      <button onclick={() => termCtx("copy")}>复制</button>
-      <button onclick={() => termCtx("paste")}>粘贴</button>
-      <button onclick={() => termCtx("search")}>搜索 (Ctrl+F)</button>
-      <button onclick={() => termCtx("clear")}>清屏</button>
-    </div>
-  {/if}
-
-  {#if tabs.length > 0 && status === "Disconnected"}
-    <!-- P72 断线重连横幅:活动会话断开时浮于终端顶部,一键重连 -->
-    <div class="reconnect-bar">
-      <span class="reconnect-text">连接已断开</span>
-      <button onclick={onReconnect} title="重新连接当前会话">重新连接</button>
-    </div>
-  {/if}
-
-  {#if activeTab && ztransfers[activeTab]}
-    <!-- P73 ZMODEM 传输浮层 -->
-    {@const zt = ztransfers[activeTab]}
-    <div class="zm-bar">
-      <span class="zm-icon" aria-hidden="true">⇅</span>
-      <div class="zm-info">
-        <div class="zm-title">
-          {zt.dir === "down" ? "下载" : zt.name ? "上传" : "服务器请求发送文件（rz）"}：{zt.name || "请选择本地文件"}
-        </div>
-        {#if zt.size > 0}
-          <div class="zm-progress">
-            <div class="zm-progress-fill" style:width={`${zt.size ? Math.min(100, (zt.done / zt.size) * 100) : 0}%`}></div>
-          </div>
-          <div class="zm-nums">{zt.done} / {zt.size} 字节</div>
-        {/if}
-        {#if zt.note}<div class="zm-note">{zt.note}</div>{/if}
-      </div>
-      {#if zt.dir === "up" && !zt.name}
-        <label class="zm-pick">
-          选择文件
-          <input type="file" onchange={(e) => zmodemPick(activeTab, e.currentTarget.files)} />
-        </label>
-      {/if}
-      <button class="zm-cancel" onclick={() => zmodemAbort(activeTab)} title="中止传输">取消</button>
-    </div>
-  {/if}
-
-  {#if tabs.length === 0}
-    <!-- 空状态提示:无会话标签时占据终端区,纯展示不拦事件 -->
-    <div class="term-empty">
-      <svg class="term-empty-glyph" viewBox="0 0 48 48" fill="none" aria-hidden="true">
-        <circle cx="24" cy="24" r="13" stroke="currentColor" stroke-width="3.5"/>
-        <circle cx="24" cy="24" r="4" fill="currentColor"/>
-        {#each [0, 45, 90, 135, 180, 225, 270, 315] as a}
-          <line
-            x1={24 + 8 * Math.cos((a * Math.PI) / 180)}
-            y1={24 + 8 * Math.sin((a * Math.PI) / 180)}
-            x2={24 + 19 * Math.cos((a * Math.PI) / 180)}
-            y2={24 + 19 * Math.sin((a * Math.PI) / 180)}
-            stroke="currentColor"
-            stroke-width="3.5"
-            stroke-linecap="round"
-          />
-        {/each}
-      </svg>
-      <p class="term-empty-main">{sessionsCollapsed ? "点左下角「会话」展开会话列表" : "在左侧选择会话并连接"}</p>
-      <p class="term-empty-sub">
-        {sessionsCollapsed ? "展开后可选会话或点 ＋ 新建 · Alt+I 聚焦 AI 输入" : "Alt+I 聚焦 AI 输入 · Alt+L 查看 AI 日志"}
-      </p>
-    </div>
-  {/if}
+  <!-- P126：搜索条/右键菜单/重连横幅/ZMODEM 浮层/空状态抽到 TerminalOverlays（纯展示 + 回调） -->
+  <TerminalOverlays
+    {showSearch}
+    bind:searchQuery
+    bind:searchInput={searchBar}
+    {onSearchKeydown}
+    onSearch={doSearch}
+    onCloseSearch={closeSearch}
+    ctxPos={tctx}
+    onCtxAction={termCtx}
+    onCloseCtx={() => (tctx = null)}
+    showReconnect={tabs.length > 0 && status === "Disconnected"}
+    {onReconnect}
+    ztransfer={activeTab ? (ztransfers[activeTab] ?? null) : null}
+    onZmodemPick={(files) => activeTab && zmodemPick(activeTab, files)}
+    onZmodemAbort={() => activeTab && zmodemAbort(activeTab)}
+    showEmpty={tabs.length === 0}
+    {sessionsCollapsed}
+  />
 
   {#if logOpen}
     <div class="ai-log-wrap">
@@ -1016,73 +945,6 @@
     color: var(--accent);
     background: var(--hover);
   }
-  .term-empty {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 0.4rem;
-    color: var(--fg-muted);
-    pointer-events: none;
-    user-select: none;
-  }
-  .term-empty-glyph {
-    width: 52px;
-    height: 52px;
-    opacity: 0.45;
-    margin-bottom: 0.4rem;
-  }
-  .term-empty-main {
-    margin: 0;
-    font-size: 0.95rem;
-  }
-  .term-empty-sub {
-    margin: 0;
-    font-size: 0.78rem;
-    opacity: 0.7;
-  }
-  .search-bar {
-    position: absolute;
-    top: 10px;
-    right: 12px;
-    z-index: 8;
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.3rem 0.4rem;
-    background: var(--modal-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    width: 340px;
-    max-width: calc(100% - 24px);
-  }
-  .search-glyph {
-    width: 14px;
-    height: 14px;
-    color: var(--fg-muted);
-    flex-shrink: 0;
-    display: inline-flex;
-    margin-left: 0.3rem;
-  }
-  .search-glyph svg {
-    width: 100%;
-    height: 100%;
-  }
-  .search-bar input {
-    flex: 1;
-    min-width: 0;
-    background: transparent;
-    border: none;
-    color: var(--fg);
-    padding: 0.25rem 0.3rem;
-    font-size: 0.85rem;
-  }
-  .search-bar input:focus {
-    outline: none;
-  }
   .s-btn {
     border: none;
     background: transparent;
@@ -1106,152 +968,8 @@
     position: relative;
   }
   /* P68 终端区右键菜单（样式对齐 SessionPanel ctx-menu） */
-  .term-ctx {
-    position: fixed;
-    z-index: 100;
-    background: var(--modal-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    display: flex;
-    flex-direction: column;
-    padding: 0.25rem;
-    min-width: 130px;
-  }
-  .term-ctx button {
-    border: none;
-    background: transparent;
-    text-align: left;
-    padding: 0.45rem 0.7rem;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: 0.9rem;
-    color: var(--fg);
-  }
-  .term-ctx button:hover {
-    background: var(--hover);
-  }
-  .term-ctx-veil {
-    position: fixed;
-    inset: 0;
-    z-index: 99;
-  }
   /* P72 断线重连横幅:终端区顶部居中浮层 */
-  .reconnect-bar {
-    position: absolute;
-    top: 0.5rem;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 6;
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 0.3rem 0.4rem 0.3rem 0.8rem;
-    background: var(--modal-bg);
-    border: 1px solid var(--warning);
-    border-radius: 999px;
-    box-shadow: var(--shadow);
-  }
-  .reconnect-text {
-    font-size: 0.78rem;
-    color: var(--warning);
-    white-space: nowrap;
-  }
-  .reconnect-bar button {
-    padding: 0.22rem 0.8rem;
-    font-size: 0.78rem;
-    font-weight: 600;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: 999px;
-    cursor: pointer;
-  }
-  .reconnect-bar button:hover {
-    background: var(--accent-hover);
-  }
   /* P73 ZMODEM 传输浮层 */
-  .zm-bar {
-    position: absolute;
-    top: 0.5rem;
-    right: 0.6rem;
-    z-index: 7;
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    padding: 0.4rem 0.6rem;
-    background: var(--modal-bg);
-    border: 1px solid var(--accent);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    max-width: 440px;
-  }
-  .zm-icon {
-    color: var(--accent);
-    font-size: 1rem;
-  }
-  .zm-info {
-    min-width: 0;
-    flex: 1;
-  }
-  .zm-title {
-    font-size: 0.78rem;
-    color: var(--fg);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .zm-progress {
-    margin-top: 0.25rem;
-    height: 4px;
-    border-radius: 2px;
-    background: var(--track-bg);
-    overflow: hidden;
-  }
-  .zm-progress-fill {
-    height: 100%;
-    background: var(--accent);
-    transition: width 0.2s ease;
-  }
-  .zm-nums {
-    margin-top: 0.15rem;
-    font-size: 0.68rem;
-    color: var(--fg-muted);
-    font-variant-numeric: tabular-nums;
-  }
-  .zm-note {
-    margin-top: 0.15rem;
-    font-size: 0.7rem;
-    color: var(--ok);
-    word-break: break-all;
-  }
-  .zm-pick {
-    flex-shrink: 0;
-    padding: 0.25rem 0.8rem;
-    font-size: 0.78rem;
-    font-weight: 600;
-    background: var(--accent);
-    color: #fff;
-    border-radius: 999px;
-    cursor: pointer;
-  }
-  .zm-pick input {
-    display: none;
-  }
-  .zm-cancel {
-    flex-shrink: 0;
-    padding: 0.25rem 0.7rem;
-    font-size: 0.75rem;
-    background: transparent;
-    color: var(--fg-muted);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    cursor: pointer;
-  }
-  .zm-cancel:hover {
-    color: var(--fg);
-    background: var(--hover);
-  }
   .term-container {
     position: absolute;
     inset: 0;

@@ -16,11 +16,92 @@
     onClose: () => void;
     /** 各弹窗尺寸不同（会话表单 480px / 历史与预览 720px） */
     width?: string;
+    /**
+     * 初始高度。不传 = 高度自适应内容（旧行为）。
+     * 内容里有 `flex:1` 的子元素时**必须给初始高度** —— 否则容器高度由内容决定、
+     * 而内容又要撑满容器，会塌成最小高度（P130 实测踩到：弹窗只剩 160px）。
+     */
+    height?: string;
+    /**
+     * P130：允许**拖动弹窗边框**调整大小（默认关，避免影响既有弹窗布局）。
+     * 可拖右边 / 下边 / 右下角；拖的是"窗口"而非内容，故内容随之重排。
+     */
+    resizable?: boolean;
+    minWidth?: number;
+    minHeight?: number;
+    /**
+     * 供子内容调用的缩放接口（`bind:api`）。用于给拖拽提供**键盘等价操作**——
+     * 纯拖拽手柄对键盘用户不可达。
+     */
+    api?: { nudge: (dw: number, dh: number) => void } | null;
     children: Snippet;
   }
-  let { labelledBy, onClose, width = "520px", children }: Props = $props();
+  let {
+    labelledBy,
+    onClose,
+    width = "520px",
+    height = undefined,
+    resizable = false,
+    minWidth = 380,
+    minHeight = 200,
+    api = $bindable(null),
+    children,
+  }: Props = $props();
 
   let dialogEl = $state<HTMLElement | null>(null);
+
+  // P130：拖拽进行中标志。**必须**用它挡住遮罩的 onclick——
+  // 否则鼠标在弹窗边缘按下、拖到遮罩上松开时，click 冒泡到 veil 会把弹窗关掉
+  // （实测：拖完边框弹窗直接消失）。
+  let resizing = $state(false);
+
+  // 拖拽后的显式尺寸；null = 用默认（宽度取 width prop / 高度自适应内容）
+  let dragW = $state<number | null>(null);
+  let dragH = $state<number | null>(null);
+
+  const initialW = Number.parseFloat(width) || 520;
+  // 留 32px 边距，避免拖到把遮罩外的区域也占满
+  const clampW = (v: number) => Math.max(minWidth, Math.min(window.innerWidth - 32, v));
+  const clampH = (v: number) => Math.max(minHeight, Math.min(window.innerHeight - 32, v));
+
+  // 暴露给子内容的缩放接口（键盘/按钮路径）
+  $effect(() => {
+    api = {
+      nudge: (dw, dh) => {
+        const w = dragW ?? dialogEl?.offsetWidth ?? initialW;
+        const h = dragH ?? dialogEl?.offsetHeight ?? minHeight;
+        if (dw) dragW = clampW(w + dw);
+        if (dh) dragH = clampH(h + dh);
+      },
+    };
+    return () => {
+      api = null;
+    };
+  });
+
+  type Edge = "r" | "b" | "br";
+
+  function startResize(e: MouseEvent, edge: Edge) {
+    e.preventDefault();
+    e.stopPropagation();
+    resizing = true;
+    const sx = e.clientX;
+    const sy = e.clientY;
+    const sw = dialogEl?.offsetWidth ?? initialW;
+    const sh = dialogEl?.offsetHeight ?? minHeight;
+    const onMove = (ev: MouseEvent) => {
+      if (edge === "r" || edge === "br") dragW = clampW(sw + (ev.clientX - sx));
+      if (edge === "b" || edge === "br") dragH = clampH(sh + (ev.clientY - sy));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      // 延后清除：让紧随 mouseup 的 click 也被挡住（同一轮事件循环内）
+      setTimeout(() => (resizing = false), 0);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
 
   // 焦点陷阱（P124）：记录打开前的焦点元素，关闭时归还，
   // 否则键盘用户关掉弹窗后焦点会掉到 <body>，后续 Tab 从页首重新开始。
@@ -85,19 +166,33 @@
 
 <!-- 遮罩：点击空白关闭；dialog 容器 stopPropagation 防误关 -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="veil" onclick={onClose}>
+<!-- 拖拽中不响应遮罩点击(否则拖完边框会误关弹窗) -->
+<div class="veil" onclick={() => { if (!resizing) onClose(); }}>
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div
     class="dialog"
+    class:resizable
     role="dialog"
     aria-modal="true"
     aria-labelledby={labelledBy}
     tabindex="-1"
     bind:this={dialogEl}
-    style:width
+    style:width={dragW !== null ? `${dragW}px` : width}
+    style:height={dragH !== null ? `${dragH}px` : height}
     onclick={(e) => e.stopPropagation()}
   >
     {@render children()}
+
+    {#if resizable}
+      <!-- 边框拖拽手柄：拖的是弹窗本身（内容随之重排）。
+           三条边各自独立，命中区比边框略宽，便于抓取。 -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_static_element_interactions -->
+      <div class="rz rz-r" role="separator" aria-label="拖动调整宽度" onmousedown={(e) => startResize(e, "r")}></div>
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_static_element_interactions -->
+      <div class="rz rz-b" role="separator" aria-label="拖动调整高度" onmousedown={(e) => startResize(e, "b")}></div>
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_static_element_interactions -->
+      <div class="rz rz-br" role="separator" aria-label="拖动调整大小" onmousedown={(e) => startResize(e, "br")}></div>
+    {/if}
   </div>
 </div>
 
@@ -124,5 +219,56 @@
     flex-direction: column;
     overflow: hidden;
     outline: none;
+    position: relative;
+  }
+  /* 可拖拽时放宽上限：用户拖多大就多大（clampW/clampH 已保证不超出视口） */
+  .dialog.resizable {
+    max-width: none;
+    max-height: none;
+  }
+
+  /* ---------- P130 边框拖拽手柄 ---------- */
+  .rz {
+    position: absolute;
+    z-index: 2;
+  }
+  .rz-r {
+    top: 0;
+    right: 0;
+    width: 6px;
+    height: 100%;
+    cursor: ew-resize;
+  }
+  .rz-b {
+    left: 0;
+    bottom: 0;
+    width: 100%;
+    height: 6px;
+    cursor: ns-resize;
+  }
+  .rz-br {
+    right: 0;
+    bottom: 0;
+    width: 16px;
+    height: 16px;
+    cursor: nwse-resize;
+  }
+  /* 悬停时给边框一点视觉提示（手柄本身透明，不遮挡内容） */
+  .rz-r:hover,
+  .rz-b:hover,
+  .rz-br:hover {
+    background: var(--accent);
+    opacity: 0.5;
+  }
+  .rz-br::after {
+    content: "";
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    width: 7px;
+    height: 7px;
+    border-right: 2px solid var(--fg-muted);
+    border-bottom: 2px solid var(--fg-muted);
+    opacity: 0.7;
   }
 </style>

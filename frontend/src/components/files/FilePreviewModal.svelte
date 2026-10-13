@@ -30,6 +30,58 @@
 
   let saved = $state(false);
 
+  // P128：可调高度。原生 `resize:vertical` 手柄只有右下角 16px 且几乎看不见，
+  // 实测用户"还是没办法调节"—— 故改为**可见的拖拽条**（与 FileBrowser 的 .fs-resize 同范式）。
+  //
+  // 关键教训：初始值**不能写死**。上一版把初始值写死 420px、上限却按视口算，
+  // 视口只有 550px 时上限算出 345px —— 用户一拖就被钳到比初始值还小，看起来"越拖越小"。
+  // 现在初始值与上限都由同一函数推导，保证 初始 <= 上限。
+  const MIN_BODY = 140;
+  const CHROME = 130; // 头部 + 页脚 + 拖拽条 + 弹窗边距的估算占位
+  /** 编辑区可用高度上限（随视口变化） */
+  function maxBody(): number {
+    return Math.max(MIN_BODY, Math.floor(window.innerHeight * 0.9 - CHROME));
+  }
+  /** 初始高度 = 上限的 85%，留一点余量让用户能往上/往下都拖得动 */
+  function initialBody(): number {
+    return Math.max(MIN_BODY, Math.floor(maxBody() * 0.85));
+  }
+  let bodyHeight = $state(initialBody());
+  let textareaEl = $state<HTMLTextAreaElement | null>(null);
+  let gutterEl = $state<HTMLDivElement | null>(null);
+
+  /** 行号栏跟随 textarea 滚动（两个独立滚动容器必须手动同步） */
+  function syncGutter() {
+    if (gutterEl && textareaEl) gutterEl.scrollTop = textareaEl.scrollTop;
+  }
+
+  function startResize(e: MouseEvent) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = bodyHeight;
+    const onMove = (ev: MouseEvent) => {
+      // 向下拖变大
+      const next = startH + (ev.clientY - startY);
+      bodyHeight = Math.min(maxBody(), Math.max(MIN_BODY, next));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  /** 行号：与内容行数一致；末尾换行不额外多算一行 */
+  const lineCount = $derived(
+    (() => {
+      const c = data?.content ?? "";
+      if (c === "") return 1;
+      const n = c.split("\n").length;
+      return c.endsWith("\n") ? n - 1 : n;
+    })(),
+  );
+
   // 每次打开新文件复位"已保存"提示（父组件换 data 引用即触发）
   $effect(() => {
     void data?.path;
@@ -80,15 +132,34 @@
       <button class="pv-close" title="关闭 (Esc)" onclick={onClose}>×</button>
     </header>
     {#if loading}
-      <div class="pv-body pv-hint">加载中…</div>
+      <div class="pv-body pv-hint" style:height={`${bodyHeight}px`}>加载中…</div>
     {:else if data}
-      <!-- 可拖右下角调高(原生 resize:vertical);上限见 CSS 的 max-height -->
-      <textarea
-        class="pv-body"
-        bind:value={data.content}
-        spellcheck="false"
-        title="拖动右下角可调整高度"
-      ></textarea>
+      <!-- 行号 + 编辑区。行号栏与 textarea 同步滚动（见 onscroll） -->
+      <div class="pv-editor" style:height={`${bodyHeight}px`}>
+        <div class="pv-gutter" bind:this={gutterEl} aria-hidden="true">
+          {#each { length: lineCount } as _, i (i)}
+            <div class="pv-ln">{i + 1}</div>
+          {/each}
+        </div>
+        <textarea
+          class="pv-body"
+          bind:this={textareaEl}
+          bind:value={data.content}
+          spellcheck="false"
+          onscroll={syncGutter}
+        ></textarea>
+      </div>
+      <!-- 可见拖拽条：向下拖变大。原生 resize 手柄太细不易发现，故显式提供 -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="pv-resize"
+        onmousedown={startResize}
+        role="separator"
+        aria-label="拖动调整编辑区高度"
+        title="拖动调整高度"
+      >
+        <span class="pv-resize-grip"></span>
+      </div>
     {/if}
     <footer class="pv-foot">
       {#if data?.truncated}
@@ -157,15 +228,36 @@
     color: var(--fg);
     background: var(--hover);
   }
-  .pv-body {
-    /* 高度由用户拖拽决定(resize:vertical),不再用 flex:1 被弹窗锁死。
-       初始 46vh,最小 200px;上限取 min(68vh, 90vh-头尾)——
-       后者防止窗口很矮时 min-height 顶破 dialog 的 90vh 上限把弹窗裁掉。 */
-    height: 46vh;
-    min-height: min(200px, calc(90vh - 96px));
-    max-height: min(68vh, calc(90vh - 96px));
-    /* 不许被弹窗的 flex 压缩,否则用户拖出来的高度会被缩回去 */
+  /* P128：编辑区 = 行号栏 + textarea。高度由 bodyHeight 内联样式给，这里只管横向布局 */
+  .pv-editor {
+    display: flex;
+    min-height: 0;
+    background: var(--term-bg);
+    overflow: hidden;
     flex-shrink: 0;
+  }
+  .pv-gutter {
+    flex: 0 0 auto;
+    min-width: 3.2em;
+    padding: 0.6rem 0.5rem 0.6rem 0.7rem;
+    text-align: right;
+    color: var(--fg-muted);
+    background: var(--modal-bg);
+    border-right: 1px solid var(--border);
+    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    user-select: none;
+    overflow: hidden;
+  }
+  .pv-ln {
+    height: 1.5em;
+    font-variant-numeric: tabular-nums;
+  }
+  .pv-body {
+    /* 高度由 .pv-editor 决定（用户拖拽 → bodyHeight） */
+    flex: 1;
+    min-width: 0;
     box-sizing: border-box;
     margin: 0;
     padding: 0.6rem 0.8rem;
@@ -175,19 +267,43 @@
     font-family: "JetBrains Mono", "Cascadia Mono", monospace;
     font-size: 0.78rem;
     line-height: 1.5;
-    resize: vertical;
+    /* 关掉原生 resize 手柄：改用下方可见的 .pv-resize 拖拽条 */
+    resize: none;
     outline: none;
     white-space: pre;
     overflow: auto;
   }
-  /* 加载态不是 textarea,撑满即可 */
+  /* 可见拖拽条（原生手柄太细不易发现） */
+  .pv-resize {
+    flex: 0 0 auto;
+    height: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: ns-resize;
+    background: var(--modal-bg);
+    border-top: 1px solid var(--border);
+  }
+  .pv-resize:hover {
+    background: var(--hover);
+  }
+  .pv-resize-grip {
+    width: 42px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--border);
+  }
+  .pv-resize:hover .pv-resize-grip {
+    background: var(--accent);
+  }
+  /* 加载态不是 textarea,居中即可 */
   .pv-hint {
     display: flex;
     align-items: center;
     justify-content: center;
     color: var(--fg-muted);
     font-family: inherit;
-    resize: none;
+    flex-shrink: 0;
   }
   .pv-foot {
     display: flex;

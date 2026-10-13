@@ -61,8 +61,8 @@
 
   const initialW = Number.parseFloat(width) || 520;
   // 留 32px 边距，避免拖到把遮罩外的区域也占满
-  const clampW = (v: number) => Math.max(minWidth, Math.min(window.innerWidth - 32, v));
-  const clampH = (v: number) => Math.max(minHeight, Math.min(window.innerHeight - 32, v));
+  const clampW = (v: number) => Math.max(minWidth, Math.min(window.innerWidth - 24, v));
+  const clampH = (v: number) => Math.max(minHeight, Math.min(window.innerHeight - 24, v));
 
   // 暴露给子内容的缩放接口（键盘/按钮路径）
   $effect(() => {
@@ -179,6 +179,8 @@
     bind:this={dialogEl}
     style:width={dragW !== null ? `${dragW}px` : width}
     style:height={dragH !== null ? `${dragH}px` : height}
+    style:max-width={resizable ? "calc(100vw - 24px)" : null}
+    style:max-height={resizable ? "calc(100vh - 24px)" : null}
     onclick={(e) => e.stopPropagation()}
   >
     {@render children()}
@@ -221,10 +223,13 @@
     outline: none;
     position: relative;
   }
-  /* 可拖拽时放宽上限：用户拖多大就多大（clampW/clampH 已保证不超出视口） */
+  /* P130 修正：可拖拽时**不能**把上限设成 none ——
+     初始 height 是固定像素(如 520px)，小窗口下会超出视口把弹窗裁掉
+     （实测 515px 视口 + 520px 弹窗 → 顶部 -2px、底部超出 3px）。
+     故上限始终跟随视口，拖拽时由 clampW/clampH 再做一次精确钳制。 */
   .dialog.resizable {
-    max-width: none;
-    max-height: none;
+    max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
   }
 
   /* ---------- P130 边框拖拽手柄 ---------- */

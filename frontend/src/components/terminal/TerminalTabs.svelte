@@ -325,6 +325,8 @@
         } catch {
           /* ignore */
         }
+        // P129：字体就绪后重测，修正"首屏用回退字体测出的错误 cell 尺寸"
+        void refitAfterFonts();
       }
     }
     fitActive();
@@ -340,6 +342,41 @@
         /* ignore */
       }
     }
+  }
+
+  // P129：字体加载竞态修复。
+  //
+  // 现象（用户报告）：连接后终端字形不对，**改一下窗口大小才变成想要的字体**。
+  //
+  // 根因：`@font-face` 用 `font-display: swap`（index.html），字体是异步加载的。
+  // xterm 在 `new Terminal()` 时就按 `fontFamily` 测量字符宽高，此刻字体**尚未就绪**
+  // → 用回退字体（monospace）算出错误的 cell 尺寸与行列数 → 字形与排布都不对。
+  // 用户改窗口触发 `fit()` 重算时字体已加载完，于是"突然变对了"。
+  //
+  // 修法：等 `document.fonts.ready` 后再对所有已开终端重测并 refit。
+  // 一次性修正，且不依赖用户手动改窗口。
+  let fontsSettled = false;
+  async function refitAfterFonts() {
+    if (fontsSettled) return;
+    try {
+      await document.fonts.ready;
+    } catch {
+      /* 老 WebView 无此 API：直接按当前状态 refit 一次 */
+    }
+    fontsSettled = true;
+    for (const [, e] of terminals) {
+      if (!e.open) continue;
+      try {
+        // 字体变了必须重建字符测量：xterm 的 charSize 由 renderer 缓存，
+        // 仅 fit() 不够，需触发一次 fontSize 重设让 renderer 重算 cell 尺寸。
+        const cur = e.term.options.fontSize;
+        e.term.options.fontSize = cur;
+        e.fit.fit();
+      } catch {
+        /* ignore */
+      }
+    }
+    fitActive();
   }
 
   function focusActive() {

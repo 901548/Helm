@@ -149,16 +149,20 @@
           onscroll={syncGutter}
         ></textarea>
       </div>
-      <!-- 可见拖拽条：向下拖变大。原生 resize 手柄太细不易发现，故显式提供 -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <!-- 可见拖拽条：向下拖变大。原生 resize 手柄太细不易发现，故显式提供。
+           实测反馈"还是不能拖"—— 10px 细条在 800px 高的窗口里几乎注意不到，
+           故加高到 14px 并在 grip 旁给出文字提示。
+           role=separator 是拖拽手柄的正确语义；下方 ⌃/⌄ 按钮提供键盘等价操作。 -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_static_element_interactions -->
       <div
         class="pv-resize"
         onmousedown={startResize}
         role="separator"
         aria-label="拖动调整编辑区高度"
-        title="拖动调整高度"
+        title="按住拖动可调整高度（也可用下方 ⌃/⌄ 按钮）"
       >
         <span class="pv-resize-grip"></span>
+        <span class="pv-resize-hint">拖动调高</span>
       </div>
     {/if}
     <footer class="pv-foot">
@@ -169,6 +173,9 @@
       {:else}
         <span></span>
       {/if}
+      <!-- 高度按钮：拖拽的键盘等价物（纯拖拽控件对键盘用户不可达） -->
+      <button class="pv-btn" onclick={() => (bodyHeight = Math.max(MIN_BODY, bodyHeight - 120))} title="缩小编辑区">⌃</button>
+      <button class="pv-btn" onclick={() => (bodyHeight = Math.min(maxBody(), bodyHeight + 120))} title="放大编辑区">⌄</button>
       <button class="pv-btn" onclick={download} disabled={!data}>下载</button>
       <button
         class="pv-btn primary"
@@ -276,10 +283,11 @@
   /* 可见拖拽条（原生手柄太细不易发现） */
   .pv-resize {
     flex: 0 0 auto;
-    height: 10px;
+    height: 14px;
     display: flex;
     align-items: center;
     justify-content: center;
+    gap: 0.4rem;
     cursor: ns-resize;
     background: var(--modal-bg);
     border-top: 1px solid var(--border);
@@ -295,6 +303,14 @@
   }
   .pv-resize:hover .pv-resize-grip {
     background: var(--accent);
+  }
+  .pv-resize-hint {
+    font-size: 0.68rem;
+    color: var(--fg-muted);
+    user-select: none;
+  }
+  .pv-resize:hover .pv-resize-hint {
+    color: var(--accent);
   }
   /* 加载态不是 textarea,居中即可 */
   .pv-hint {

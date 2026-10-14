@@ -156,3 +156,57 @@ export const aiConvClear = (name: string) => invoke<void>('ai_conv_clear', { nam
 
 // 导出全部操作历史为单个 JSONL（返回落盘路径）
 export const historyExport = () => invoke<string>('history_export');
+
+// ---------- P127 快照（一期：探测 + 手动打包 + 列表 + 删除） ----------
+// 命题：让不可逆命令变可逆。详见 docs/P127-服务器快照-设计方案.md
+
+export interface SnapshotEntry {
+  file: string;
+  path: string;
+  createdAt: number;
+  size: number;
+  verified: boolean;
+  paths: string[];
+}
+
+export interface SnapshotProbe {
+  diskAvailMb: number;
+  pathSizes: [string, number][];
+  recommended: string[];
+  /** 给用户看的**结论**（不是选择题）—— 见设计稿 §4.8 */
+  reason: string;
+  lvmFreeMb: number;
+  reflink: boolean;
+  memTotalMb: number;
+}
+
+export interface SnapshotPack {
+  file: string;
+  path: string;
+  size: number;
+  verified: boolean;
+  elapsedMs: number;
+  paths: string[];
+}
+
+/** 探测本机快照能力（返回推荐配置，不让用户选档位） */
+export const snapshotProbe = (name: string) =>
+  invoke<SnapshotProbe>('snapshot_probe', { name });
+
+/** 打包快照（内部先做体积与空间检查，不够则拒绝） */
+export const snapshotPack = (
+  name: string,
+  paths: string[],
+  diskAvailMb: number,
+  estMb: number,
+) => invoke<SnapshotPack>('snapshot_pack', { name, paths, diskAvailMb, estMb });
+
+export const snapshotList = (name: string) =>
+  invoke<SnapshotEntry[]>('snapshot_list', { name });
+
+export const snapshotRemove = (name: string, file: string) =>
+  invoke<void>('snapshot_remove', { name, file });
+
+/** 执行保留策略（超出份数删最旧），返回删除数量 */
+export const snapshotPrune = (name: string) =>
+  invoke<number>('snapshot_prune', { name });

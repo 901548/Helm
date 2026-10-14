@@ -6,6 +6,8 @@
   // P126：预览/编辑弹窗抽为独立组件（自带加载态/保存态/保存/下载）
   import FilePreviewModal from "./FilePreviewModal.svelte";
   import { base64ToBytes, bytesToBase64 } from "../../lib/b64";
+  // P127：服务器快照面板（探测 + 手动打包 + 列表）
+  import SnapshotPanel from "./SnapshotPanel.svelte";
 
   interface Props {
     activeTab: string | null;
@@ -31,6 +33,8 @@
   let lastFile = $state<FileEntry | null>(null);
   let preview = $state<{ name: string; path: string; content: string; truncated: boolean; session: string } | null>(null);
   let previewLoading = $state(false);
+  // P127：快照面板开关
+  let snapOpen = $state(false);
 
   const fmtSize = fmtSizeLib;
 
@@ -372,6 +376,12 @@
           disabled={!lastFile}
           onclick={() => lastFile && doDownload(lastFile)}
         >⬇</button>
+        <button
+          class="icon-btn"
+          title="服务器快照（打包配置，可回滚）"
+          disabled={!activeTab}
+          onclick={() => (snapOpen = true)}
+        >🛡</button>
       </div>
     {/if}
   </header>
@@ -491,6 +501,10 @@
       onClose={() => (preview = null)}
       onSaved={refresh}
     />
+
+    {#if snapOpen && activeTab}
+      <SnapshotPanel session={activeTab} onClose={() => (snapOpen = false)} />
+    {/if}
 
     {/if}
   {/if}

@@ -11,6 +11,7 @@ mod monitor;
 mod recorder;
 mod safety;
 mod skills;
+mod snapshot;
 
 mod ssh;
 mod task_exec;
@@ -120,6 +121,11 @@ fn main() {
             core::forget_host_key,
             core::host_key_fingerprint,
             core::docker_ps,
+        core::snapshot_probe,
+        core::snapshot_pack,
+        core::snapshot_list,
+        core::snapshot_remove,
+        core::snapshot_prune,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

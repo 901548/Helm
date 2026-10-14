@@ -1329,6 +1329,62 @@ pub async fn fs_list_dir(
     crate::fs::list_dir(&state.ssh, &state.fs_cwd, &name, &path).await
 }
 
+// ---------- P127 快照（一期：探测 + 手动打包 + 列表 + 删除） ----------
+//
+// 命题：让不可逆命令变可逆。详见 src/snapshot.rs 与 docs/P127-服务器快照-设计方案.md。
+
+/// 探测本机快照能力（磁盘可用 / 各路径体积 / LVM / reflink），
+/// 返回**推荐配置**而非让用户选档位（设计稿 §4.8）
+#[tauri::command]
+pub async fn snapshot_probe(
+    state: State<'_, CoreState>,
+    name: String,
+) -> Result<crate::snapshot::ProbeResult, String> {
+    crate::snapshot::probe(&state.ssh, &name).await.map_err(|e| e.to_string())
+}
+
+/// 打包快照（内部先做体积与空间检查，不够则拒绝）
+#[tauri::command]
+pub async fn snapshot_pack(
+    state: State<'_, CoreState>,
+    name: String,
+    paths: Vec<String>,
+    disk_avail_mb: u64,
+    est_mb: u64,
+) -> Result<crate::snapshot::PackResult, String> {
+    crate::snapshot::pack(&state.ssh, &name, &paths, disk_avail_mb, est_mb)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 列出快照（时间倒序；残包不进列表）
+#[tauri::command]
+pub async fn snapshot_list(
+    state: State<'_, CoreState>,
+    name: String,
+) -> Result<Vec<crate::snapshot::SnapshotEntry>, String> {
+    crate::snapshot::list(&state.ssh, &name).await.map_err(|e| e.to_string())
+}
+
+/// 删除指定快照
+#[tauri::command]
+pub async fn snapshot_remove(
+    state: State<'_, CoreState>,
+    name: String,
+    file: String,
+) -> Result<(), String> {
+    crate::snapshot::remove(&state.ssh, &name, &file).await.map_err(|e| e.to_string())
+}
+
+/// 执行保留策略（超出份数删最旧），返回删除数量
+#[tauri::command]
+pub async fn snapshot_prune(
+    state: State<'_, CoreState>,
+    name: String,
+) -> Result<usize, String> {
+    crate::snapshot::prune(&state.ssh, &name).await.map_err(|e| e.to_string())
+}
+
 /// 获取会话当前目录
 #[tauri::command]
 pub async fn fs_current_dir(

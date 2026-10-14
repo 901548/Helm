@@ -59,8 +59,12 @@
   let dragW = $state<number | null>(null);
   let dragH = $state<number | null>(null);
 
-  const initialW = Number.parseFloat(width) || 520;
-  // 留 32px 边距，避免拖到把遮罩外的区域也占满
+  // 默认宽度（拖拽前的基准）。**不缓存成模块级常量** ——
+  // 那会触发 state_referenced_locally 提示（只捕获 prop 初值），
+  // 且父组件运行时改 width 时基准不会更新。改为用时现读。
+  const defaultW = () => Number.parseFloat(width) || 520;
+  // 边距 24px：与 .dialog.resizable 的 max-* 保持一致，
+  // 否则拖拽上限与 CSS 上限不一致（会"拖到一半就不动"）。
   const clampW = (v: number) => Math.max(minWidth, Math.min(window.innerWidth - 24, v));
   const clampH = (v: number) => Math.max(minHeight, Math.min(window.innerHeight - 24, v));
 
@@ -68,7 +72,7 @@
   $effect(() => {
     api = {
       nudge: (dw, dh) => {
-        const w = dragW ?? dialogEl?.offsetWidth ?? initialW;
+        const w = dragW ?? dialogEl?.offsetWidth ?? defaultW();
         const h = dragH ?? dialogEl?.offsetHeight ?? minHeight;
         if (dw) dragW = clampW(w + dw);
         if (dh) dragH = clampH(h + dh);
@@ -87,7 +91,7 @@
     resizing = true;
     const sx = e.clientX;
     const sy = e.clientY;
-    const sw = dialogEl?.offsetWidth ?? initialW;
+    const sw = dialogEl?.offsetWidth ?? defaultW();
     const sh = dialogEl?.offsetHeight ?? minHeight;
     const onMove = (ev: MouseEvent) => {
       if (edge === "r" || edge === "br") dragW = clampW(sw + (ev.clientX - sx));

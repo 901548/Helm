@@ -9,6 +9,8 @@
   import ModalShell from "../ui/ModalShell.svelte";
   import * as api from "../../lib/api";
   import type { SnapshotEntry, SnapshotProbe } from "../../lib/commands";
+  // P127 四期：还原对话框
+  import RestoreModal from "./RestoreModal.svelte";
 
   interface Props {
     session: string;
@@ -28,6 +30,8 @@
   let baselineOn = $state(false);
   /** 该会话是否已建立基线 */
   let baselineEst = $state(false);
+  /** P127 四期：正在还原的快照 */
+  let restoreTarget = $state<SnapshotEntry | null>(null);
 
   /** 用户可勾选的路径（默认用探测推荐值） */
   let picked = $state<Set<string>>(new Set());
@@ -228,6 +232,7 @@
             <span class="snap-file" title={e.path}>{e.file}</span>
             <span class="snap-size">{fmtSize(e.size)}</span>
             <span class="snap-time">{fmtTime(e.createdAt)}</span>
+            <button class="snap-restore" title="还原此快照（会先预演）" onclick={() => (restoreTarget = e)}>还原</button>
             <button class="snap-del" title="删除此快照" onclick={() => doRemove(e.file)}>×</button>
           </div>
         {/each}
@@ -235,6 +240,16 @@
     </div>
   </div>
 </ModalShell>
+
+{#if restoreTarget}
+  <RestoreModal
+    session={session}
+    pack={restoreTarget.path}
+    file={restoreTarget.file}
+    onClose={() => (restoreTarget = null)}
+    onRestored={load}
+  />
+{/if}
 
 <style>
   .snap-head {
@@ -392,6 +407,19 @@
   .snap-time {
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
+  }
+  .snap-restore {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg-muted);
+    cursor: pointer;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.7rem;
+  }
+  .snap-restore:hover {
+    color: var(--accent);
+    border-color: var(--accent);
   }
   .snap-del {
     margin-left: auto;

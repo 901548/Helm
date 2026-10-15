@@ -11,6 +11,7 @@ mod intercept;
 mod known_hosts;
 mod monitor;
 mod recorder;
+mod restore;
 mod safety;
 mod skills;
 mod snapshot;
@@ -135,6 +136,9 @@ fn main() {
         core::baseline_set_enabled,
         core::baseline_status,
         core::baseline_observe,
+        core::snapshot_dry_run,
+        core::snapshot_restore,
+        core::snapshot_discard_staged,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

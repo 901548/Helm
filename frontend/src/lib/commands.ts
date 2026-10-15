@@ -235,3 +235,44 @@ export const baselineSetEnabled = (on: boolean) =>
   invoke<void>('baseline_set_enabled', { on });
 export const baselineStatus = (name: string) =>
   invoke<[boolean, boolean]>('baseline_status', { name });
+// ---------- P127 四期：还原 ----------
+
+export interface RestoreDiff {
+  path: string;
+  /** "overwrite" = 覆盖已有文件；"create" = 新建 */
+  action: string;
+  currentSize: number;
+  packSize: number;
+}
+
+export interface DryRunResult {
+  total: number;
+  overwrite: number;
+  create: number;
+  diff: RestoreDiff[];
+  truncated: boolean;
+  /** 会动到 /etc/ssh/sshd_config（还原错误配置可能导致 sshd 起不来） */
+  touchesSshdConfig: boolean;
+}
+
+export interface RestoreResult {
+  /** 还原前自动拍的"当前状态"快照（硬编码，无开关） */
+  preSnapshot: string;
+  /** 暂存目录（就地还原时为 "/"） */
+  stagedDir: string;
+  restored: number;
+  sshdCheck: boolean | null;
+  warning: string;
+}
+
+/** 预演：列出会被覆盖/新建的文件，不做任何修改 */
+export const snapshotDryRun = (name: string, pack: string) =>
+  invoke<DryRunResult>('snapshot_dry_run', { name, pack });
+
+/** 还原（内部强制先拍二次快照；inPlace=false 只解到暂存目录） */
+export const snapshotRestore = (name: string, pack: string, inPlace: boolean) =>
+  invoke<RestoreResult>('snapshot_restore', { name, pack, inPlace });
+
+/** 删除暂存目录（只允许 staged-*） */
+export const snapshotDiscardStaged = (name: string, dir: string) =>
+  invoke<void>('snapshot_discard_staged', { name, dir });

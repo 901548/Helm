@@ -1615,6 +1615,48 @@ async fn capture_baseline(
     crate::snapshot::pack(ssh, name, &probe.recommended, probe.disk_avail_mb, est).await
 }
 
+// ---------- P127 四期：还原 ----------
+
+/// 预演还原：列出会被覆盖/新建的文件，**不做任何修改**（设计稿 §8.3）
+#[tauri::command]
+pub async fn snapshot_dry_run(
+    state: State<'_, CoreState>,
+    name: String,
+    pack: String,
+) -> Result<crate::restore::DryRunResult, String> {
+    crate::restore::dry_run(&state.ssh, &name, &pack)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 还原快照。
+///
+/// **内部强制先对当前状态拍二次快照**（§8.1，无开关可关）——
+/// 否则还原是单向门。`in_place=false`（默认）只解到暂存目录。
+#[tauri::command]
+pub async fn snapshot_restore(
+    state: State<'_, CoreState>,
+    name: String,
+    pack: String,
+    in_place: bool,
+) -> Result<crate::restore::RestoreResult, String> {
+    crate::restore::restore(&state.ssh, &name, &pack, in_place)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 删除暂存目录（只允许 staged-*）
+#[tauri::command]
+pub async fn snapshot_discard_staged(
+    state: State<'_, CoreState>,
+    name: String,
+    dir: String,
+) -> Result<(), String> {
+    crate::restore::discard_staged(&state.ssh, &name, &dir)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// 获取会话当前目录
 #[tauri::command]
 pub async fn fs_current_dir(

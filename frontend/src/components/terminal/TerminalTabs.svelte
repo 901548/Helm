@@ -365,25 +365,52 @@
   let fontsSettled = false;
   async function refitAfterFonts() {
     if (fontsSettled) return;
+    // **显式加载**目标字体，而不是只 `await document.fonts.ready`。
+    //
+    // 坑（实测确认）：`document.fonts.ready` 只等**已发起**的加载 ——
+    // 若此刻字体还没被任何 DOM 引用触发请求，它会**立即 resolve**，
+    // 于是下面的重测发生在字体真正就绪**之前**，等于白做。
+    // 必须显式 `document.fonts.load()` 把加载**发起**出去。
     try {
+      await Promise.all([
+        document.fonts.load('500 14px "JetBrains Mono"'),
+        document.fonts.load('400 14px "JetBrains Mono"'),
+      ]);
       await document.fonts.ready;
     } catch {
-      /* 老 WebView 无此 API：直接按当前状态 refit 一次 */
+      /* 老 WebView 无此 API：直接按当前状态重测一次 */
     }
     fontsSettled = true;
     for (const [, e] of terminals) {
       if (!e.open) continue;
       try {
-        // 字体变了必须重建字符测量：xterm 的 charSize 由 renderer 缓存，
-        // 仅 fit() 不够，需触发一次 fontSize 重设让 renderer 重算 cell 尺寸。
-        const cur = e.term.options.fontSize;
-        e.term.options.fontSize = cur;
+        remeasure(e.term);
+        // WebGL 渲染器的**字形图集是独立缓存的**：即使 cell 尺寸算对了，
+        // 图集里可能仍是回退字体光栅化的字形。清一次强制按当前字体重建。
+        e.webgl?.clearTextureAtlas();
         e.fit.fit();
       } catch {
         /* ignore */
       }
     }
     fitActive();
+  }
+
+  /// 强制 xterm 重测字符尺寸。
+  ///
+  /// **必须真的改变选项值**：xterm 内部是
+  /// `onMultipleOptionChange(["fontFamily","fontSize"], () => this.measure())`
+  /// —— 同值赋值**不会**触发 `measure()`。所以旧写法
+  /// `const cur = fontSize; fontSize = cur;` 是**空操作**（实测确认，
+  /// 这正是"连接后字体不对、改窗口才变对"的根因）。
+  ///
+  /// 这里用「先改成邻近值、再改回」制造一次真实变化。字号差 0.01px
+  /// 人眼不可见，但足以让 xterm 走完 measure 流程。
+  function remeasure(term: Terminal) {
+    const want = term.options.fontSize ?? termFontSize;
+    const nudged = want + 0.01;
+    term.options.fontSize = nudged;
+    term.options.fontSize = want;
   }
 
   function focusActive() {

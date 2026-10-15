@@ -20,6 +20,7 @@
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::ssh::SshManager;
@@ -28,6 +29,25 @@ use crate::task_exec::run_task_exec;
 /// 默认落点（相对 $HOME）。**不能用 /tmp** —— systemd-tmpfiles 默认 10 天清理，
 /// 快照会静默消失（用户以为有退路其实没有，比没有快照更危险）。
 pub const DEFAULT_DIR: &str = ".helm-snapshots";
+
+// ---------- P127 二期：命令前拦截开关 ----------
+//
+// 用全局原子而非 CoreState 字段，理由：`send_input` 是**热路径**（每次按键都调），
+// 从 config 锁里读会引入不必要的锁竞争；且该开关是进程级策略，无会话维度。
+//
+// **默认关闭**（与设计稿 §9 一致）：这是会写服务器磁盘、且会拦用户输入的功能，
+// 必须显式开启。
+static INTERCEPT_ON: AtomicBool = AtomicBool::new(false);
+
+/// 是否启用命令前拦截
+pub fn intercept_enabled() -> bool {
+    INTERCEPT_ON.load(Ordering::Relaxed)
+}
+
+/// 设置命令前拦截开关
+pub fn set_intercept_enabled(on: bool) {
+    INTERCEPT_ON.store(on, Ordering::Relaxed);
+}
 
 /// 敏感文件排除清单（设计稿 §3.3）。
 ///

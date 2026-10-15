@@ -636,7 +636,14 @@
       }
     }
     try {
-      await api.aiControl(activeTab ?? "", approve ? "approve" : "reject");
+      // P127 二期：先尝试解决"命令前拦截"的挂起命令（终端手打触发的）。
+      // 两者互斥（AI 任务运行时用户不会同时在终端敲命令），故顺序尝试安全。
+      const had = await api.interceptPending();
+      if (had) {
+        await api.interceptResolve(approve);
+      } else {
+        await api.aiControl(activeTab ?? "", approve ? "approve" : "reject");
+      }
     } catch {
       /* ignore */
     }

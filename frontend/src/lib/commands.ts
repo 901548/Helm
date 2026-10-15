@@ -210,3 +210,17 @@ export const snapshotRemove = (name: string, file: string) =>
 /** 执行保留策略（超出份数删最旧），返回删除数量 */
 export const snapshotPrune = (name: string) =>
   invoke<number>('snapshot_prune', { name });
+// ---------- P127 二期：命令前拦截 ----------
+
+/** 查询是否有被拦截、等待确认的危险命令；返回命令行或 null */
+export const interceptPending = () =>
+  invoke<[string, string] | null>('intercept_pending');
+
+/** 解决挂起的危险命令：approve=true 原样重放，false 丢弃 */
+export const interceptResolve = (approve: boolean) =>
+  invoke<void>('intercept_resolve', { approve });
+
+/** 设置/读取命令前拦截开关（默认关，须显式开启） */
+export const snapshotSetIntercept = (on: boolean) =>
+  invoke<void>('snapshot_set_intercept', { on });
+export const snapshotGetIntercept = () => invoke<boolean>('snapshot_get_intercept');

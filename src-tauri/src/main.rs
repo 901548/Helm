@@ -6,6 +6,7 @@ mod config;
 mod core;
 mod crypto;
 mod fs;
+mod intercept;
 mod known_hosts;
 mod monitor;
 mod recorder;
@@ -126,6 +127,10 @@ fn main() {
         core::snapshot_list,
         core::snapshot_remove,
         core::snapshot_prune,
+        core::snapshot_set_intercept,
+        core::snapshot_get_intercept,
+        core::intercept_resolve,
+        core::intercept_pending,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

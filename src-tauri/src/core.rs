@@ -269,6 +269,22 @@ pub struct CoreState {
     pub known_hosts: Arc<Mutex<crate::known_hosts::KnownHostsStore>>,
     /// 操作记录器（P70：终端输入 + AI 轨迹 → JSONL）
     pub recorder: Arc<crate::recorder::Recorder>,
+    /// P127 二期：命令前拦截的每会话行缓冲（判定用，不持有待发字节）
+    pub intercept: Mutex<std::collections::HashMap<String, crate::intercept::LineBuf>>,
+    /// P127 二期：被扣住的危险命令（等待用户确认时暂存原始字节，确认后原样重放）
+    pub pending_danger: Mutex<Option<PendingDanger>>,
+}
+
+/// 被拦截等待确认的危险命令
+#[derive(Debug, Clone)]
+pub struct PendingDanger {
+    pub session: String,
+    pub cmd: String,
+    /// 判级原因（前端确认卡展示用；当前经 `PendingCommand` 事件下发）
+    #[allow(dead_code)]
+    pub reason: String,
+    /// **原始字节**（含 `\r`）—— 确认后原样重放，不做任何重构
+    pub raw: Vec<u8>,
 }
 
 impl CoreState {
@@ -296,6 +312,8 @@ impl CoreState {
             fs_cwd: Mutex::new(std::collections::HashMap::new()),
             known_hosts,
             recorder,
+            intercept: Mutex::new(std::collections::HashMap::new()),
+            pending_danger: Mutex::new(None),
         }
     }
 
@@ -698,20 +716,107 @@ pub fn build_rdp_file(info: &crate::config::SessionInfo, width: u32, height: u32
 // ---------- 终端 commands ----------
 
 /// 向指定会话发送输入字节
+///
+/// **P127 二期：命令前拦截**（设计稿 §4）。
+///
+/// 时序洞察：前端逐键发送，命令文本早已进服务器 PTY，但**它在 readline 的
+/// 行编辑缓冲里、尚未执行** —— 扣住 `\r` 就能抢在命令前。
+///
+/// 铁律（§4.4）：**拿不准就不拦**。`↑` 历史回放/`Tab` 补全时后端看不到最终命令，
+/// 这类行标记"不可信"直接放行 —— 错拦（按了回车没反应）比漏拦更糟。
 #[tauri::command]
 pub async fn send_input(
+    app: AppHandle,
     state: State<'_, CoreState>,
     name: String,
     data: Vec<u8>,
     // P73：ZMODEM 协议字节走 record=false（训练日志只记人类键入）
     record: Option<bool>,
 ) -> Result<(), String> {
+    // 拦截仅在"人类键入"路径生效（ZMODEM 协议字节不走）
+    let is_human = record.unwrap_or(true);
+    if is_human && crate::snapshot::intercept_enabled() {
+        let decision = {
+            let mut map = state.intercept.lock().await;
+            let lb = map.entry(name.clone()).or_default();
+            lb.feed(&data, true)
+        };
+        if let crate::intercept::Decision::Confirm { cmd, level, reason } = decision {
+            // 扣住整段（含 \r），暂存原始字节等确认
+            {
+                let mut pend = state.pending_danger.lock().await;
+                *pend = Some(PendingDanger {
+                    session: name.clone(),
+                    cmd: cmd.clone(),
+                    reason: reason.clone(),
+                    raw: data.clone(),
+                });
+            }
+            // **必须也喂给记录器**：拦截时我们提前 return，若不给 recorder 送字节，
+            // 它内部的行缓冲会永远悬着（收不到 `\r`），下一条命令的字符就被追加到
+            // 同一行 —— 实测出现过 `"rm -rf /echo STILL_ALIVE"` 这种拼接脏记录。
+            // recorder 自身会正确处理 `\r`（落盘该行并清空缓冲），故原样喂入即可。
+            if record.unwrap_or(true) {
+                state.recorder.record_input_async(&name, &data).await;
+            }
+            // 通知前端弹确认卡
+            let _ = app.emit(
+                "ai",
+                AiPayload::PendingCommand {
+                    name: name.clone(),
+                    command: cmd,
+                    level,
+                    reason,
+                },
+            );
+            return Ok(());
+        }
+    }
+
     state.ssh.send_input(&name, &data).await;
     if record.unwrap_or(true) {
         // P100-5：落盘走阻塞线程池，不在 tokio worker 上做文件 I/O
         state.recorder.record_input_async(&name, &data).await;
     }
     Ok(())
+}
+
+/// 处理被拦截的危险命令（P127 二期）
+///
+/// `approve=true` → 原样重放原始字节（**不做任何重构**，避免改变语义）；
+/// `approve=false` → 丢弃，并清掉该会话的行缓冲（避免残留影响下一行）。
+#[tauri::command]
+pub async fn intercept_resolve(
+    state: State<'_, CoreState>,
+    approve: bool,
+) -> Result<(), String> {
+    let pend = {
+        let mut p = state.pending_danger.lock().await;
+        p.take()
+    };
+    let Some(p) = pend else {
+        return Ok(());
+    };
+    // 无论批准与否都清缓冲：该行已结束，残留会让下一行判定错乱
+    {
+        let mut map = state.intercept.lock().await;
+        if let Some(lb) = map.get_mut(&p.session) {
+            lb.reset();
+        }
+    }
+    if approve {
+        state.ssh.send_input(&p.session, &p.raw).await;
+        // **不重复记录**：拦截时已把该段喂给 recorder（见 send_input 里的说明），
+        // 这里再记一次会产生重复行。
+    }
+    Ok(())
+}
+
+/// 查询是否有待确认的危险命令（前端重挂载后恢复确认卡用）
+#[tauri::command]
+pub async fn intercept_pending(state: State<'_, CoreState>) -> Result<Option<(String, String)>, String> {
+    let p = state.pending_danger.lock().await;
+    Ok(p.as_ref().map(|x| (x.session.clone(), x.cmd.clone())))
 }
 
 /// 向活跃会话发送输入字节
@@ -1383,6 +1488,19 @@ pub async fn snapshot_prune(
     name: String,
 ) -> Result<usize, String> {
     crate::snapshot::prune(&state.ssh, &name).await.map_err(|e| e.to_string())
+}
+
+/// 设置命令前拦截开关（P127 二期）
+#[tauri::command]
+pub async fn snapshot_set_intercept(on: bool) -> Result<(), String> {
+    crate::snapshot::set_intercept_enabled(on);
+    Ok(())
+}
+
+/// 获取命令前拦截开关状态
+#[tauri::command]
+pub async fn snapshot_get_intercept() -> Result<bool, String> {
+    Ok(crate::snapshot::intercept_enabled())
 }
 
 /// 获取会话当前目录

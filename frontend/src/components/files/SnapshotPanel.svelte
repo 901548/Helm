@@ -22,6 +22,8 @@
   let packing = $state(false);
   let error = $state("");
   let notice = $state("");
+  /** P127 二期：命令前拦截开关（默认关，须显式开启） */
+  let interceptOn = $state(false);
 
   /** 用户可勾选的路径（默认用探测推荐值） */
   let picked = $state<Set<string>>(new Set());
@@ -30,15 +32,30 @@
     loading = true;
     error = "";
     try {
-      const [p, list] = await Promise.all([api.snapshotProbe(session), api.snapshotList(session)]);
+      const [p, list, ic] = await Promise.all([
+        api.snapshotProbe(session),
+        api.snapshotList(session),
+        api.snapshotGetIntercept(),
+      ]);
       probe = p;
       entries = list;
+      interceptOn = ic;
       // 首次加载用探测推荐值预勾选
       if (picked.size === 0) picked = new Set(p.recommended);
     } catch (e) {
       error = String(e);
     } finally {
       loading = false;
+    }
+  }
+
+  async function toggleIntercept() {
+    const next = !interceptOn;
+    try {
+      await api.snapshotSetIntercept(next);
+      interceptOn = next;
+    } catch (e) {
+      error = String(e);
     }
   }
 
@@ -129,6 +146,18 @@
           <span class="dim">无块级快照能力（用 tar 打包）</span>
         {/if}
       </div>
+
+      <!-- P127 二期：命令前拦截。默认关 —— 会拦输入，须显式开启 -->
+      <label class="snap-item snap-toggle">
+        <input type="checkbox" checked={interceptOn} onchange={toggleIntercept} />
+        <span>危险命令前拦截（执行 <code>rm -rf /</code> 这类不可逆命令前弹确认）</span>
+      </label>
+      {#if interceptOn}
+        <div class="snap-hint-sm">
+          仅拦 <strong>Critical</strong> 级（系统级不可逆）；<code>rm -rf /etc/xxx</code> 等 Warning 不拦。
+          <code>↑</code> 历史回放与 Tab 补全无法追踪最终命令，<strong>一律放行</strong>（宁可不拦，不可错拦）。
+        </div>
+      {/if}
 
       <div class="snap-pick">
         <div class="snap-pick-title">打包范围</div>
@@ -243,6 +272,22 @@
   }
   .snap-item code {
     font-family: "JetBrains Mono", "Cascadia Mono", monospace;
+  }
+  .snap-toggle {
+    margin: 0.4rem 0;
+    padding: 0.35rem 0.5rem;
+    background: var(--input-bg);
+    border-radius: var(--radius-sm);
+    align-items: flex-start;
+  }
+  .snap-toggle input {
+    margin-top: 0.15rem;
+  }
+  .snap-hint-sm {
+    margin: 0.3rem 0 0.5rem;
+    font-size: 0.72rem;
+    line-height: 1.6;
+    color: var(--fg-muted);
   }
   .snap-size {
     margin-left: auto;

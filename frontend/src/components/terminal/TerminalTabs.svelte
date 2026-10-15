@@ -363,30 +363,73 @@
   // 修法：等 `document.fonts.ready` 后再对所有已开终端重测并 refit。
   // 一次性修正，且不依赖用户手动改窗口。
   let fontsSettled = false;
+
+  /// 终端字体规格（与 `createTerminal` 的 `fontFamily`/`fontWeight`/`fontSize` 一致）。
+  /// **字重必须显式带上** —— `document.fonts.load("14px X")` 默认只加载 w400，
+  /// 那正是"偏细"的来源。
+  const TERM_FONT = '500 14px "JetBrains Mono"';
+
+  /// 提前加载终端字体（w500 与 w400 都加载，避免任何回落窗口）。
+  async function loadTerminalFont() {
+    try {
+      await Promise.all([
+        document.fonts.load(TERM_FONT),
+        document.fonts.load('400 14px "JetBrains Mono"'),
+      ]);
+    } catch {
+      /* 老 WebView 无 FontFaceSet.load：忽略，后续 refitAfterFonts 仍会兜一次 */
+    }
+  }
   async function refitAfterFonts() {
+    // 只做一次（首次终端打开时触发）。后续终端建立时字体通常已就绪，
+    // 且 `applyFontRefit` 会对**所有**已开终端生效，故无需重复注册监听。
     if (fontsSettled) return;
+    fontsSettled = true;
     // **显式加载**目标字体，而不是只 `await document.fonts.ready`。
     //
     // 坑（实测确认）：`document.fonts.ready` 只等**已发起**的加载 ——
     // 若此刻字体还没被任何 DOM 引用触发请求，它会**立即 resolve**，
     // 于是下面的重测发生在字体真正就绪**之前**，等于白做。
     // 必须显式 `document.fonts.load()` 把加载**发起**出去。
+    //
+    // **必须有超时**：字体请求若被阻断/极慢（实测用 CDP 挂起请求可复现），
+    // `fonts.load()` 永不 resolve → 这里永久挂起 → 重测永远不发生。
+    // 超时后先按当前状态纠正一次；字体**迟到**时再由下面的
+    // `loadingdone` 监听补一次（这才是"慢加载"场景的兜底）。
     try {
-      await Promise.all([
-        document.fonts.load('500 14px "JetBrains Mono"'),
-        document.fonts.load('400 14px "JetBrains Mono"'),
+      await Promise.race([
+        loadTerminalFont(),
+        new Promise((r) => setTimeout(r, 4000)),
       ]);
-      await document.fonts.ready;
+      await Promise.race([
+        document.fonts.ready,
+        new Promise((r) => setTimeout(r, 4000)),
+      ]);
     } catch {
       /* 老 WebView 无此 API：直接按当前状态重测一次 */
     }
-    fontsSettled = true;
+    applyFontRefit();
+    // 字体迟到（首次没赶上超时）时再纠正一次。
+    // 用 `loadingdone` 而非再 await：它会在**每次**字体加载完成时触发。
+    try {
+      document.fonts.addEventListener(
+        "loadingdone",
+        () => applyFontRefit(),
+        { once: true },
+      );
+    } catch {
+      /* 无此 API：忽略（已有超时兜底） */
+    }
+  }
+
+  /// 对全部已开终端重测字符尺寸并 refit（可重入，供超时与迟到两条路径调用）
+  function applyFontRefit() {
     for (const [, e] of terminals) {
       if (!e.open) continue;
       try {
         remeasure(e.term);
         // WebGL 渲染器的**字形图集是独立缓存的**：即使 cell 尺寸算对了，
-        // 图集里可能仍是回退字体光栅化的字形。清一次强制按当前字体重建。
+        // 图集里可能仍是回退字重光栅化的字形。清一次强制按当前字体重建。
         e.webgl?.clearTextureAtlas();
         e.fit.fit();
       } catch {
@@ -717,6 +760,19 @@
   });
 
   onMount(() => {
+    // **提前把终端字体加载好**（关键修复）。
+    //
+    // 现象：连接后字体**偏细**，改一次窗口才变饱满。
+    // 根因：终端设 `fontWeight: 500`（JetBrains Medium），而 `font-display: swap`
+    // 下 w500 尚未就绪时浏览器**回落到 w400**（笔画偏细）。xterm 只在
+    // `fontFamily`/`fontSize` **真的变化**时重测 —— 字重变了它不重测，
+    // 故"字体就绪后重测"也救不了字重；只有用户改窗口触发图集重建才纠正。
+    //
+    // 注意：w400 与 w500 的**字符宽度完全相同**（实测都是 8.4px），
+    // 所以任何基于 cols/cell 宽的判据都测不出这个 bug —— 必须靠肉眼或像素。
+    //
+    // 连接本身要 ~20 秒，在 onMount 就发起加载完全来得及。
+    void loadTerminalFont();
     // P73 调试：dev 模式暴露终端表（哨兵/传输状态核查用），生产构建无此全局
     if (import.meta.env.DEV) {
       (window as any).__helmTerms = terminals;

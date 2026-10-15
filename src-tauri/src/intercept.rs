@@ -33,6 +33,8 @@ pub struct LineBuf {
     buf: String,
     /// 本行是否"不可信"（出现过 `\x1b` 等无法追踪的编辑操作）
     untrusted: bool,
+    /// 最近一条已回车的命令行（供滚动基线判定"刚执行了什么"）
+    last_completed: String,
 }
 
 /// 对**一次 `send_input` 调用所携带的整段字节**的处理结论。
@@ -60,6 +62,15 @@ impl LineBuf {
         self.untrusted = false;
     }
 
+    /// 最近一条**已回车**的命令行（供滚动基线判定"刚执行了什么"）。
+    ///
+    /// 注意：这是"用户敲下并回车的内容"，与"实际执行了什么"在
+    /// `↑` 历史/Tab 补全时可能不一致 —— 故基线侧另有 `untrusted` 保护：
+    /// 不可信行的 `last_completed` 会置空，避免按错误文本判级。
+    pub fn last_completed(&self) -> &str {
+        &self.last_completed
+    }
+
     /// 当前已累积的命令行（供测试与调试）
     #[allow(dead_code)]
     pub fn current(&self) -> &str {
@@ -85,6 +96,11 @@ impl LineBuf {
                     // 无论判定结果如何，本行缓冲都结束
                     self.buf.clear();
                     self.untrusted = false;
+
+                    // 记录本行供滚动基线用。**不可信行置空** —— 因为
+                    // `↑` 历史/Tab 补全时我们看到的文本与服务器实际执行的不一致，
+                    // 拿它判"是否只读"会得出错误结论（宁可当作"未知"不触发）。
+                    self.last_completed = if untrusted { String::new() } else { cmd.clone() };
 
                     // 拦截未开启 / 空行 / 不可信行 → 放行（铁律，见模块头）
                     if !intercept_enabled || cmd.is_empty() || untrusted {
@@ -340,6 +356,41 @@ mod tests {
             Decision::Confirm { level, .. } => assert_eq!(level, DangerLevel::Critical),
             other => panic!("shutdown 应被拦,实际 {other:?}"),
         }
+    }
+
+    #[test]
+    fn last_completed_recorded_even_when_intercept_disabled() {
+        // 回归(实测抓到):拦截关闭时 feed 也必须被调用 —— 否则
+        // `last_completed` 永远为空,滚动基线(三期)拿不到命令。
+        // 根因:早期把 feed 放在 `intercept_enabled()` 条件内,
+        // 导致基线"只读零触发正确,但写操作也不触发"。
+        let mut lb = LineBuf::new();
+        lb.feed(b"touch /tmp/x", false); // 拦截关闭
+        assert_eq!(lb.feed(b"\r", false), Decision::Pass);
+        assert_eq!(
+            lb.last_completed(),
+            "touch /tmp/x",
+            "拦截关闭时仍须记录已完成的命令行"
+        );
+    }
+
+    #[test]
+    fn untrusted_line_clears_last_completed() {
+        // ↑历史/Tab 补全时看到的文本与服务器实际执行的不一致,
+        // 拿它判"是否只读"会得出错误结论 → 置空表示"未知",不触发基线
+        let mut lb = LineBuf::new();
+        lb.feed(b"\x1b[A", true);
+        lb.feed(b"\r", true);
+        assert_eq!(lb.last_completed(), "", "不可信行不得留下命令文本");
+    }
+
+    #[test]
+    fn last_completed_updates_each_line() {
+        let mut lb = LineBuf::new();
+        lb.feed(b"ls\r", true);
+        assert_eq!(lb.last_completed(), "ls");
+        lb.feed(b"touch /tmp/y\r", true);
+        assert_eq!(lb.last_completed(), "touch /tmp/y");
     }
 
     #[test]

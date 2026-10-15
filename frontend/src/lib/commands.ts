@@ -224,3 +224,14 @@ export const interceptResolve = (approve: boolean) =>
 export const snapshotSetIntercept = (on: boolean) =>
   invoke<void>('snapshot_set_intercept', { on });
 export const snapshotGetIntercept = () => invoke<boolean>('snapshot_get_intercept');
+// ---------- P127 三期：滚动基线 ----------
+
+/** 一条命令执行完毕（OSC7 到达时调用）。后端判定是否该拍基线。 */
+export const baselineObserve = (name: string) =>
+  invoke<void>('baseline_observe', { name });
+
+/** 设置/查询自动基线开关；返回 [开关, 该会话是否已建立基线] */
+export const baselineSetEnabled = (on: boolean) =>
+  invoke<void>('baseline_set_enabled', { on });
+export const baselineStatus = (name: string) =>
+  invoke<[boolean, boolean]>('baseline_status', { name });

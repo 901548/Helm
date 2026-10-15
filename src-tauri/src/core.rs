@@ -273,6 +273,13 @@ pub struct CoreState {
     pub intercept: Mutex<std::collections::HashMap<String, crate::intercept::LineBuf>>,
     /// P127 二期：被扣住的危险命令（等待用户确认时暂存原始字节，确认后原样重放）
     pub pending_danger: Mutex<Option<PendingDanger>>,
+    /// P127 三期：滚动基线记账（每会话一份）
+    /// 用 Arc 包裹以便在后台 task 里持有
+    pub baseline: Arc<Mutex<crate::baseline::BaselineManager>>,
+    /// P127 三期：自动基线开关
+    pub baseline_on: Arc<std::sync::atomic::AtomicBool>,
+    /// P127 三期：基线打包中标记（避免并发打包把磁盘打满）
+    pub baseline_busy: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// 被拦截等待确认的危险命令
@@ -314,6 +321,9 @@ impl CoreState {
             recorder,
             intercept: Mutex::new(std::collections::HashMap::new()),
             pending_danger: Mutex::new(None),
+            baseline: Arc::new(Mutex::new(crate::baseline::BaselineManager::new())),
+            baseline_on: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            baseline_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -735,11 +745,20 @@ pub async fn send_input(
 ) -> Result<(), String> {
     // 拦截仅在"人类键入"路径生效（ZMODEM 协议字节不走）
     let is_human = record.unwrap_or(true);
-    if is_human && crate::snapshot::intercept_enabled() {
+    if is_human {
+        // **始终喂行缓冲**，即使拦截关闭。
+        //
+        // 原因：`last_completed` 是**滚动基线（三期）的输入** —— 基线要判断
+        // "刚执行的命令是否只读"，而它与拦截开关是**两个独立功能**。
+        // 早期版本把 feed 放在 `intercept_enabled()` 条件内，导致拦截关闭时
+        // 基线永远拿不到命令（实测：只读零触发正确，但写操作也不触发）。
+        //
+        // `feed` 本身是纯字符串运算（微秒级），无条件执行的开销可忽略。
         let decision = {
             let mut map = state.intercept.lock().await;
             let lb = map.entry(name.clone()).or_default();
-            lb.feed(&data, true)
+            // 关闭时传 false：feed 仍记录 last_completed，但不产出 Confirm
+            lb.feed(&data, crate::snapshot::intercept_enabled())
         };
         if let crate::intercept::Decision::Confirm { cmd, level, reason } = decision {
             // 扣住整段（含 \r），暂存原始字节等确认
@@ -1501,6 +1520,99 @@ pub async fn snapshot_set_intercept(on: bool) -> Result<(), String> {
 #[tauri::command]
 pub async fn snapshot_get_intercept() -> Result<bool, String> {
     Ok(crate::snapshot::intercept_enabled())
+}
+
+// ---------- P127 三期：滚动基线 ----------
+
+/// 设置自动基线开关（P127 三期）
+#[tauri::command]
+pub async fn baseline_set_enabled(state: State<'_, CoreState>, on: bool) -> Result<(), String> {
+    state.baseline_on.store(on, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+/// 查询自动基线开关 + 该会话是否已建立基线
+#[tauri::command]
+pub async fn baseline_status(
+    state: State<'_, CoreState>,
+    name: String,
+) -> Result<(bool, bool), String> {
+    let on = state.baseline_on.load(std::sync::atomic::Ordering::SeqCst);
+    let est = state.baseline.lock().await.established(&name);
+    Ok((on, est))
+}
+
+/// **一条命令执行完毕**的通知（前端在 OSC7 提示符到达时调用）。
+///
+/// 为什么用 OSC7 而不是解析输入字节流：OSC7 的语义是**命令执行完毕**
+/// （bash 每次重画提示符都发），可靠；输入字节流只说明"用户敲了什么"。
+///
+/// 这里只做"该不该拍"的判定，需要时在后台打包（不阻塞前端）。
+#[tauri::command]
+pub async fn baseline_observe(
+    app: AppHandle,
+    state: State<'_, CoreState>,
+    name: String,
+) -> Result<(), String> {
+    if !state.baseline_on.load(std::sync::atomic::Ordering::SeqCst) {
+        return Ok(());
+    }
+    // 取该会话最近一条已回车的命令（不可信行会被置空 → 不判定）
+    let cmd = {
+        let map = state.intercept.lock().await;
+        map.get(&name).map(|lb| lb.last_completed().to_string()).unwrap_or_default()
+    };
+    if cmd.is_empty() {
+        return Ok(());
+    }
+    // 只读命令不计入、不触发（用户要求"弹性"）
+    let readonly = crate::safety::is_readonly_command(&cmd);
+    let policy = crate::baseline::BaselinePolicy::default();
+    let verdict = {
+        let mut m = state.baseline.lock().await;
+        m.observe(&name, readonly, policy)
+    };
+    if verdict != crate::baseline::BaselineVerdict::Capture {
+        return Ok(());
+    }
+    // 已在打包 → 跳过（manager 内部也拦了，这里是双保险）
+    if state.baseline_busy.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    let ssh = state.ssh.clone();
+    let baseline = state.baseline.clone();
+    let busy = state.baseline_busy.clone();
+    let app2 = app.clone();
+    let sess = name.clone();
+    tokio::spawn(async move {
+        let result = capture_baseline(&ssh, &sess).await;
+        busy.store(false, std::sync::atomic::Ordering::SeqCst);
+        // 用 lock() 而非 try_lock()：此处必须确保状态被重置，
+        // 否则会永久卡在 packing=true（基线再也不拍）
+        baseline.lock().await.finish_capture(&sess);
+        // 静默：基线是兜底机制，失败不打扰用户（否则会变成噪音）
+        if let Err(e) = &result {
+            eprintln!("[baseline] {sess} 打包失败: {e}");
+        }
+        let _ = app2.emit("baseline", serde_json::json!({ "name": sess, "ok": result.is_ok() }));
+    });
+    Ok(())
+}
+
+/// 实际拍基线：探测 → 打包（复用一期的 `snapshot::pack`）
+async fn capture_baseline(
+    ssh: &Arc<SshManager>,
+    name: &str,
+) -> anyhow::Result<crate::snapshot::PackResult> {
+    let probe = crate::snapshot::probe(ssh, name).await?;
+    let est: u64 = probe
+        .path_sizes
+        .iter()
+        .filter(|(p, _)| probe.recommended.contains(p))
+        .map(|(_, mb)| *mb)
+        .sum();
+    crate::snapshot::pack(ssh, name, &probe.recommended, probe.disk_avail_mb, est).await
 }
 
 /// 获取会话当前目录

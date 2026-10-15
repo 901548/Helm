@@ -2,6 +2,7 @@
 
 mod agent;
 mod ai_job;
+mod baseline;
 mod config;
 mod core;
 mod crypto;
@@ -131,6 +132,9 @@ fn main() {
         core::snapshot_get_intercept,
         core::intercept_resolve,
         core::intercept_pending,
+        core::baseline_set_enabled,
+        core::baseline_status,
+        core::baseline_observe,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

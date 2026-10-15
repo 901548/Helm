@@ -35,6 +35,8 @@
     onClose: (name: string) => void;
     onCd?: (name: string, target: string) => void;
     onPwd?: (name: string, pwd: string) => void;
+  /// P127 三期：一条命令执行完毕（OSC7 到达）。用于滚动基线判定。
+  onCmdDone?: (name: string) => void;
     aiMode: "qa" | "agent";
     aiBusy: boolean;
     aiState?: AiState;
@@ -72,6 +74,7 @@
     onClose,
     onCd,
     onPwd,
+  onCmdDone,
     aiMode,
     aiBusy,
     aiState = "idle",
@@ -130,6 +133,10 @@
   function syncOscPwd(name: string, pwd: string) {
     hasMarker.set(name, true);
     const norm = normalizePwd(pwd);
+    // P127 三期：**每次 OSC7 都是一条命令执行完毕**的信号，
+    // 必须在下面的 PWD 去重**之前**上报 —— 否则 `sed -i xxx` 这类
+    // 不改变 PWD 的写命令永远不会触发基线判定（正是最需要兜底的场景）。
+    onCmdDone?.(name);
     if (lastPwd.get(name) === norm) return;
     lastPwd.set(name, norm);
     fireCd(name, norm);

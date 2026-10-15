@@ -514,6 +514,14 @@
     pwds[name] = pwd;
   }
 
+  /// P127 三期：一条命令执行完毕（OSC7）→ 交给后端做滚动基线判定。
+  /// 后端自行判断"是否只读/是否到阈值",前端不做任何决策。
+  function handleCmdDone(name: string) {
+    api.baselineObserve(name).catch(() => {
+      /* 基线是兜底机制,失败静默 */
+    });
+  }
+
   // P89：按会话更新卡片桶（事件路由以 p.name 为键，后台会话也积累）
   function updateCards(name: string, fn: (cards: AiCard[]) => AiCard[]) {
     aiCards = { ...aiCards, [name]: fn(aiCards[name] ?? []) };
@@ -760,6 +768,7 @@
           onClose={onTabClose}
           onCd={handleCd}
           onPwd={handlePwd}
+      onCmdDone={handleCmdDone}
           aiMode={aiMode[activeTab ?? ""] ?? "qa"}
           aiBusy={aiBusy[activeTab ?? ""] ?? false}
           aiState={aiState[activeTab ?? ""] ?? "idle"}

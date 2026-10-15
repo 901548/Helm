@@ -24,6 +24,10 @@
   let notice = $state("");
   /** P127 二期：命令前拦截开关（默认关，须显式开启） */
   let interceptOn = $state(false);
+  /** P127 三期：自动基线开关 */
+  let baselineOn = $state(false);
+  /** 该会话是否已建立基线 */
+  let baselineEst = $state(false);
 
   /** 用户可勾选的路径（默认用探测推荐值） */
   let picked = $state<Set<string>>(new Set());
@@ -32,14 +36,17 @@
     loading = true;
     error = "";
     try {
-      const [p, list, ic] = await Promise.all([
+      const [p, list, ic, bs] = await Promise.all([
         api.snapshotProbe(session),
         api.snapshotList(session),
         api.snapshotGetIntercept(),
+        api.baselineStatus(session),
       ]);
       probe = p;
       entries = list;
       interceptOn = ic;
+      baselineOn = bs[0];
+      baselineEst = bs[1];
       // 首次加载用探测推荐值预勾选
       if (picked.size === 0) picked = new Set(p.recommended);
     } catch (e) {
@@ -54,6 +61,16 @@
     try {
       await api.snapshotSetIntercept(next);
       interceptOn = next;
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function toggleBaseline() {
+    const next = !baselineOn;
+    try {
+      await api.baselineSetEnabled(next);
+      baselineOn = next;
     } catch (e) {
       error = String(e);
     }
@@ -156,6 +173,22 @@
         <div class="snap-hint-sm">
           仅拦 <strong>Critical</strong> 级（系统级不可逆）；<code>rm -rf /etc/xxx</code> 等 Warning 不拦。
           <code>↑</code> 历史回放与 Tab 补全无法追踪最终命令，<strong>一律放行</strong>（宁可不拦，不可错拦）。
+        </div>
+      {/if}
+
+      <!-- P127 三期：滚动基线。拦截层拦不住 `sed -i` 这类改配置的命令，靠它兜底 -->
+      <label class="snap-item snap-toggle">
+        <input type="checkbox" checked={baselineOn} onchange={toggleBaseline} />
+        <span>
+          滚动基线（改配置前自动留底）
+          {#if baselineEst}<span class="ok">· 已建立</span>{/if}
+        </span>
+      </label>
+      {#if baselineOn}
+        <div class="snap-hint-sm">
+          <strong>首次写操作立即拍</strong>，之后每 10 条写操作或 15 分钟更新一次。
+          只读命令（<code>ls</code>/<code>grep</code>/<code>tail</code>…）<strong>不触发</strong>，故查询再多也不会有开销。
+          退路 = 最近一次基线（最多丢 15 分钟）。
         </div>
       {/if}
 
@@ -282,6 +315,9 @@
   }
   .snap-toggle input {
     margin-top: 0.15rem;
+  }
+  .snap-toggle .ok {
+    color: var(--ok);
   }
   .snap-hint-sm {
     margin: 0.3rem 0 0.5rem;

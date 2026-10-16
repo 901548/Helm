@@ -8,36 +8,28 @@
   import HistoryModal from "./components/chrome/HistoryModal.svelte";
   import StatusBar from "./components/chrome/StatusBar.svelte";
   import * as api from "./lib/api";
-  import type { AiCard, AiLogEntry, AiQaCard, AiConfig, AiState, SessionInfo, SessionKind, SessionStatus, Theme, UiConfig } from "./lib/api";
+  import type { AiCard, AiLogEntry, AiQaCard, AiConfig, SessionInfo, SessionKind, SessionStatus, Theme, UiConfig } from "./lib/api";
   // P124：后端对话记录 → 卡片的映射抽为纯函数模块（带单测）
   import { convToCards, convTaskText, type ConvEntry } from "./lib/conv";
+  // P134-A：会话级 AI 态 8 桶收敛为单 map（含改名迁移/删除清理策略，带单测）
+  import { getAi, setAi, updateAi, renameAiSession, dropAiSession, type AiSessionMap } from "./lib/aiSession";
 
   let sessions = $state<SessionInfo[]>([]);
   let statuses = $state<Record<string, SessionStatus>>({});
   let tabs = $state<string[]>([]);
   let activeTab = $state<string | null>(null);
-  // 多会话：按会话名记录忙碌态，面板/提交只取当前活动会话的那一份
-  let aiBusy = $state<Record<string, boolean>>({});
-  // §8.7.1 唯一状态机前端侧：ai_job 广播的 State 事件按会话落盘，dock 只读活动会话那份
-  let aiState = $state<Record<string, AiState>>({});
-  // P95：AI 模式按会话隔离（Record<会话名, mode>）——旧全局单值在多会话 QA/Agent
-  // 混跑时事件路由串扰（A 会话 QA 完成被 B 会话的 agent 模式误判）
-  let aiMode = $state<Record<string, "qa" | "agent">>({});
+  // P134-A：会话级 AI 态单桶（busy/state/mode/cards/taskText/summary/streamOpen/thinking）
+  // ——此前为 8 个并行 Record（加一个状态要改声明/事件路由/改名迁移/删除清理四处，
+  // 该缺陷类在 P89/P92/P95/P96/P127 各出过一次真 bug）；读写一律经 lib/aiSession
+  // 帮助函数，迁移/清理策略集中且有 Vitest 覆盖
+  let aiSessions = $state<AiSessionMap>({});
   let aiConfig = $state<AiConfig | null>(null);
   let uiConfig = $state<UiConfig | null>(null);
-  // P39 AI 常驻命令条 + 活动流状态
-  // P89：对话卡片按会话分桶（后端 AiSlot.conv 为权威副本，切换标签时拉取）
-  let aiCards = $state<Record<string, AiCard[]>>({});
-  let aiTaskText = $state<Record<string, string>>({});
-  let aiSummary = $state<Record<string, { text: string; ok: boolean } | null>>({});
-  // P2-5 修复：活动流开合按会话分桶（全局单值在多会话下把 A 的开合态串给 B）
-  let aiStreamOpen = $state<Record<string, boolean>>({});
+  // P39 AI 常驻命令条 + 活动流状态（卡片/任务/摘要/开合/思考均在 aiSessions 单桶内）
   let aiFocusSeq = $state(0);
   let logOpen = $state(false);
   let aiLog = $state<AiLogEntry[]>([]);
   let aiEcho = $state<{ seq: number; name: string; text: string }[]>([]);
-  // 推理型模型思考过程：实时累积展示，不混入最终答案卡片
-  let aiThinking = $state<Record<string, string>>({});
   let pwds = $state<Record<string, string>>({});
   let echoSeq = 0;
   let logId = 0;
@@ -73,6 +65,9 @@
     Object.fromEntries(sessions.map((s) => [s.name, s.kind ?? "linux"])),
   );
 
+  // P134-A：活动会话的 AI 态（缺条目时返回缺省态，模板/条件单点取用）
+  const activeAi = $derived(getAi(aiSessions, activeTab ?? ""));
+
   $effect(() => {
     document.documentElement.dataset.theme = resolvedTheme;
     document.documentElement.style.colorScheme = resolvedTheme;
@@ -98,7 +93,7 @@
     const n = name ?? activeTab ?? "";
     if (!n) return;
     try {
-      aiMode = { ...aiMode, [n]: await api.aiMode(n) };
+      setAi(aiSessions, n, { mode: await api.aiMode(n) });
     } catch {
       /* ignore */
     }
@@ -171,15 +166,15 @@
       switch (p.kind) {
         case "busy":
           // 多会话：忙碌按会话命名，互不覆盖；面板只读当前会话那一份
-          aiBusy[p.name] = p.busy;
+          setAi(aiSessions, p.name, { busy: p.busy });
           break;
         case "state":
           // §8.7.1 显式状态迁移，dock 状态 chip 唯一判态来源
-          aiState[p.name] = p.state;
+          setAi(aiSessions, p.name, { state: p.state });
           break;
         case "streaming": {
           // QA 流式追加进活动流卡片;Agent 模式的模型原始输出不展示(等解析后的命令卡片)
-          if (!p.text || (aiMode[p.name] ?? "qa") !== "qa" || !isActive) break;
+          if (!p.text || getAi(aiSessions, p.name).mode !== "qa" || !isActive) break;
           updateCards(p.name, (cards) => {
             const last = cards[cards.length - 1];
             if (last && last.kind === "qa" && !last.done) {
@@ -192,7 +187,9 @@
         case "reasoning": {
           // 推理型模型思考过程：仅活动会话时实时展示（QA 卡未完成时可见）
           if (!isActive) break;
-          aiThinking = { ...aiThinking, [p.name]: ((aiThinking[p.name] ?? "") + (p.text || "")).slice(-4000) };
+          updateAi(aiSessions, p.name, (s) => ({
+            thinking: (s.thinking + (p.text || "")).slice(-4000),
+          }));
           break;
         }
         case "commandStep": {
@@ -214,7 +211,7 @@
               return [...cards, { id: ++cardId, kind: "step", command: p.command, status: p.success ? "ok" : "fail", message: p.message, output: p.output || undefined }];
             });
             if (isActive) {
-              aiStreamOpen = { ...aiStreamOpen, [p.name]: true };
+              setAi(aiSessions, p.name, { streamOpen: true });
             }
             addLog({
               id: ++logId,
@@ -252,7 +249,7 @@
             { id: ++cardId, kind: "step", command: p.command, status: "confirm", level: p.level, reason: p.reason, source: p.source === "intercept" ? "intercept" : "ai" },
           ]);
           if (isActive) {
-            aiStreamOpen = { ...aiStreamOpen, [p.name]: true };
+            setAi(aiSessions, p.name, { streamOpen: true });
           }
           break;
         case "planning":
@@ -263,7 +260,7 @@
               { id: ++cardId, kind: "plan", commands: p.commands, status: "plan", needConfirm: p.needConfirm ?? true },
             ]);
             if (isActive) {
-              aiStreamOpen = { ...aiStreamOpen, [p.name]: true };
+              setAi(aiSessions, p.name, { streamOpen: true });
             }
           }
           break;
@@ -297,19 +294,18 @@
         case "done":
           if (isActive) {
             // P88-A：QA 模式下完整回答已在卡片内流式展示，摘要只放短句（消除问/答挤一行）
-            const isQa = (aiMode[p.name] ?? "qa") === "qa";
+            const isQa = getAi(aiSessions, p.name).mode === "qa";
             if (isQa) {
               // P106：空回答兜底——模型有时返回空 content（提示词/服务端异常），
               // 只显示「已回答」会让用户以为答案丢了；明确提示并标警示色。
-              const cards = aiCards[p.name] ?? [];
+              const cards = getAi(aiSessions, p.name).cards;
               const lastQa = [...cards].reverse().find((c): c is AiQaCard => c.kind === "qa");
               const emptyAnswer = !lastQa || !lastQa.text.trim();
-              aiSummary = {
-                ...aiSummary,
-                [p.name]: { text: emptyAnswer ? "模型未返回内容" : "已回答", ok: !emptyAnswer },
-              };
+              setAi(aiSessions, p.name, {
+                summary: { text: emptyAnswer ? "模型未返回内容" : "已回答", ok: !emptyAnswer },
+              });
             } else {
-              aiSummary = { ...aiSummary, [p.name]: { text: p.message, ok: true } };
+              setAi(aiSessions, p.name, { summary: { text: p.message, ok: true } });
             }
             finishQaCard(p.name);
             addLog({
@@ -322,13 +318,13 @@
               output: "",
             });
           }
-          if ((aiMode[p.name] ?? "qa") === "agent" && p.name) {
+          if (getAi(aiSessions, p.name).mode === "agent" && p.name) {
             pushEcho(p.name, `\r\n\x1b[32m[AI] ✓ ${p.message}\x1b[0m\r\n`);
           }
           break;
         case "error":
           if (isActive) {
-            aiSummary = { ...aiSummary, [p.name]: { text: p.message, ok: false } };
+            setAi(aiSessions, p.name, { summary: { text: p.message, ok: false } });
             finishQaCard(p.name);
             addLog({
               id: ++logId,
@@ -340,7 +336,7 @@
               output: "",
             });
           }
-          if ((aiMode[p.name] ?? "qa") === "agent" && p.name) {
+          if (getAi(aiSessions, p.name).mode === "agent" && p.name) {
             pushEcho(p.name, `\r\n\x1b[31m[AI] ✗ ${p.message}\x1b[0m\r\n`);
           }
           break;
@@ -437,23 +433,10 @@
           delete pwds[oldName];
         }
         // P96：后端 update_session 改名已 rename AI 槽（保留对话历史/模式，运行中任务停止）。
-        // 前端只迁移「静态」状态 aiMode/pwds；卡片/busy/state/summary/thinking 不迁移——
-        // $effect(activeTab) 会用后端迁移后的 conv 重建历史卡片，busy/state 默认复位（后端已 reset busy）。
-        if (aiMode[oldName] !== undefined) {
-          aiMode[info.name] = aiMode[oldName];
-          delete aiMode[oldName];
-        }
-        // P2-5：活动流开合态随改名迁移（后端 conv 已保留，UI 开合也应跟走）
-        if (aiStreamOpen[oldName] !== undefined) {
-          aiStreamOpen[info.name] = aiStreamOpen[oldName];
-          delete aiStreamOpen[oldName];
-        }
-        delete aiCards[oldName];
-        delete aiTaskText[oldName];
-        delete aiSummary[oldName];
-        delete aiThinking[oldName];
-        delete aiBusy[oldName];
-        delete aiState[oldName];
+        // 前端只迁移「静态」状态 mode/streamOpen（renameAiSession）；卡片/busy/state/
+        // summary/thinking 不迁移——$effect(activeTab) 会用后端迁移后的 conv 重建历史
+        // 卡片，busy/state 默认复位（后端已 reset busy）。
+        renameAiSession(aiSessions, oldName, info.name);
         if (activeTab === oldName) {
           activeTab = info.name;
           api.setActive(info.name);
@@ -492,15 +475,8 @@
     sessions = sessions.filter((s) => s.name !== name);
     delete statuses[name];
     delete pwds[name];
-    // P89：AI 对话桶随会话删除清理
-    delete aiCards[name];
-    delete aiTaskText[name];
-    delete aiSummary[name];
-    delete aiThinking[name];
-    delete aiBusy[name];
-    delete aiState[name];
-    delete aiMode[name];
-    delete aiStreamOpen[name];
+    // P89：AI 会话态随会话删除清理（单桶一处清）
+    dropAiSession(aiSessions, name);
     tabs = tabs.filter((t) => t !== name);
     if (activeTab === name) {
       activeTab = pickNextActive(name);
@@ -531,7 +507,7 @@
 
   // P89：按会话更新卡片桶（事件路由以 p.name 为键，后台会话也积累）
   function updateCards(name: string, fn: (cards: AiCard[]) => AiCard[]) {
-    aiCards = { ...aiCards, [name]: fn(aiCards[name] ?? []) };
+    updateAi(aiSessions, name, (s) => ({ cards: fn(s.cards) }));
   }
 
   // P89：切换标签时从后端拉取该会话的权威对话记录（后台会话的积累也在）
@@ -546,11 +522,13 @@
         // P96：任务进行中（busy/pending）时，后端 conv 只含「已完成」条目，
         // 全量覆盖会清掉前端正在流的 QA 卡/待确认命令卡；busy 期间跳过覆盖，
         // 任务结束(done/error)后前端卡片已由事件更新，下次切标签再读 conv 重建即可
-        if (aiBusy[n]) return;
+        if (getAi(aiSessions, n).busy) return;
         // P124：映射逻辑抽到 lib/conv（纯函数 + 单测覆盖），此处只做状态写入
         const entries = conv as ConvEntry[];
-        aiTaskText = { ...aiTaskText, [n]: convTaskText(entries) };
-        aiCards = { ...aiCards, [n]: convToCards(entries, () => ++cardId) };
+        setAi(aiSessions, n, {
+          taskText: convTaskText(entries),
+          cards: convToCards(entries, () => ++cardId),
+        });
       })
       .catch(() => {});
   });
@@ -581,16 +559,13 @@
   /// AI 命令条提交:重置活动流 + 调后端;Agent 任务在终端留一行锚点
   /// `container`：Docker 会话运行时目标容器（§8.7.4）
   async function submitFromDock(text: string, container?: string | null, termContext?: string | null) {
-    if (!text.trim() || aiBusy[activeTab ?? ""]) return;
+    if (!text.trim() || getAi(aiSessions, activeTab ?? "").busy) return;
     const name = activeTab ?? "";
-    const mode = aiMode[name] ?? "qa";
+    const mode = getAi(aiSessions, name).mode;
     // 提交新任务：作废在途的旧 conv 拉取，避免其晚到覆盖刚建的任务头/卡片
     convSeq++;
     updateCards(name, () => (mode === "qa" ? [{ id: ++cardId, kind: "qa", text: "", done: false }] : []));
-    aiTaskText = { ...aiTaskText, [name]: text };
-    aiSummary = { ...aiSummary, [name]: null };
-    aiStreamOpen = { ...aiStreamOpen, [name]: true };
-    aiThinking = { ...aiThinking, [name]: "" };
+    setAi(aiSessions, name, { taskText: text, summary: null, streamOpen: true, thinking: "" });
     if (mode === "agent" && name) {
       pushEcho(name, `\r\n\x1b[90m[AI] 任务: ${text}\x1b[0m\r\n`);
     }
@@ -598,7 +573,7 @@
     try {
       await api.aiSubmit(name, text, pwd || undefined, container || null, termContext || null);
     } catch (e) {
-      aiSummary = { ...aiSummary, [name]: { text: String(e), ok: false } };
+      setAi(aiSessions, name, { summary: { text: String(e), ok: false } });
       finishQaCard(name);
       addLog({
         id: ++logId,
@@ -614,7 +589,7 @@
 
   function handleModeChange(m: "qa" | "agent") {
     const n = activeTab ?? "";
-    aiMode = { ...aiMode, [n]: m };
+    setAi(aiSessions, n, { mode: m });
     api.aiSetMode(n, m).catch(() => {});
   }
 
@@ -629,8 +604,9 @@
 
   function toggleStream() {
     const n = activeTab ?? "";
-    if ((aiCards[n]?.length ?? 0) || aiSummary[n] || aiTaskText[n]) {
-      aiStreamOpen = { ...aiStreamOpen, [n]: !aiStreamOpen[n] };
+    const s = getAi(aiSessions, n);
+    if (s.cards.length || s.summary || s.taskText) {
+      setAi(aiSessions, n, { streamOpen: !s.streamOpen });
     }
   }
 
@@ -642,7 +618,7 @@
     const n = activeTab ?? "";
     // 乐观更新:按点击卡片 id 精确定位;拒绝时后端会回发 CommandStep(已跳过)统一收口
     let source: "ai" | "intercept" = "ai";
-    const cards = aiCards[n] ?? [];
+    const cards = getAi(aiSessions, n).cards;
     let i = cardId !== undefined ? cards.findIndex((c) => c.id === cardId) : -1;
     if (i < 0) {
       // 兜底（未传 id 的调用）：最近的逐条确认卡，否则整份计划卡
@@ -676,7 +652,7 @@
 
   /// §8.7.3 整份计划修改：用编辑后的命令列表覆盖并执行
   async function editPlan(commands: string[]) {
-    const cards = aiCards[activeTab ?? ""] ?? [];
+    const cards = getAi(aiSessions, activeTab ?? "").cards;
     const pi = [...cards].reverse().findIndex((c) => c.kind === "plan" && c.status === "plan");
     if (pi >= 0) {
       const i = cards.length - 1 - pi;
@@ -699,22 +675,20 @@
   }
 
   async function clearAi() {
+    const n = activeTab ?? "";
     try {
-      await api.aiClearHistory(activeTab ?? "");
+      await api.aiClearHistory(n);
     } catch {
       /* ignore */
     }
     aiLog = [];
-    updateCards(activeTab ?? "", () => []);
+    updateCards(n, () => []);
     try {
-      await api.aiConvClear(activeTab ?? "");
+      await api.aiConvClear(n);
     } catch {
       /* ignore */
     }
-    aiSummary = { ...aiSummary, [activeTab ?? ""]: null };
-    aiTaskText = { ...aiTaskText, [activeTab ?? ""]: "" };
-    aiStreamOpen = { ...aiStreamOpen, [activeTab ?? ""]: false };
-    aiThinking = { ...aiThinking, [activeTab ?? ""]: "" };
+    setAi(aiSessions, n, { summary: null, taskText: "", streamOpen: false, thinking: "" });
   }
 
   async function saveSettings(ai: AiConfig, ui: UiConfig) {
@@ -786,18 +760,18 @@
           onCd={handleCd}
           onPwd={handlePwd}
       onCmdDone={handleCmdDone}
-          aiMode={aiMode[activeTab ?? ""] ?? "qa"}
-          aiBusy={aiBusy[activeTab ?? ""] ?? false}
-          aiState={aiState[activeTab ?? ""] ?? "idle"}
-          cards={aiCards[activeTab ?? ""] ?? []}
-          taskText={aiTaskText[activeTab ?? ""] ?? ""}
-          summary={aiSummary[activeTab ?? ""] ?? null}
-          aiStreamOpen={aiStreamOpen[activeTab ?? ""] ?? false}
+          aiMode={activeAi.mode}
+          aiBusy={activeAi.busy}
+          aiState={activeAi.state}
+          cards={activeAi.cards}
+          taskText={activeAi.taskText}
+          summary={activeAi.summary}
+          aiStreamOpen={activeAi.streamOpen}
           aiFocusSeq={aiFocusSeq}
           aiLog={aiLog}
           logOpen={logOpen}
           aiEcho={aiEcho}
-          thinking={aiThinking[activeTab ?? ""] ?? ""}
+          thinking={activeAi.thinking}
           termFontSize={uiConfig?.term_font_size ?? 14}
           termScrollback={uiConfig?.term_scrollback ?? 5000}
           onModeChange={handleModeChange}

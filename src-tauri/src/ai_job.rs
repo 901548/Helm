@@ -298,24 +298,21 @@ pub(crate) async fn run_ai_job(
                 // chat_fut 借用 current_input/term_ctx——整轮 chat+select 收在块内，
                 // 块结束即归还借用，之后才能改写下一轮输入（E0506）。
                 let end = {
-                    // 每轮 chat 独立取锁：块结束（drop chat_fut）即释放，
+                    // 每轮 chat 独立取锁：块结束（drive_step 返回即 drop chat_fut）即释放，
                     // 后续 RUN 命令执行与下一轮准备都不持锁（见上方修复说明）。
                     let mut ag = agent.lock().await;
                     let chat_fut = ag.chat(&current_input, current_term_ctx.as_deref(), sink.as_mut().map(|f| f as _));
-                    tokio::pin!(chat_fut);
-                    tokio::select! {
-                        result = &mut chat_fut => match result {
-                            Ok(r) => QaRoundEnd::Reply(r),
-                            Err(e) => QaRoundEnd::Failed(e.to_string()),
-                        },
-                        // 收到 Cancel(ai_stop)时,块结束即 drop 未完成的 chat_fut
-                        // （中断进行中的 HTTP 请求），随后才释放 agent 锁。
-                        ctl = ctl_rx.recv() => {
-                            if ctl == Some(AiControl::Cancel) {
-                                let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
-                            }
+                    // 语义对齐(P127 审查修复)：与 Agent 路径共用 drive_step——
+                    // 旧实现收到任意控制消息(陈旧的 Approve/Reject/Edit)都会误中止回答；
+                    // 通道关闭(ControlClosed)同样收口终止。仅显式 Cancel 才 emit Done。
+                    match drive_step(chat_fut, ctl_rx).await {
+                        Driven::Returned(Ok(r)) => QaRoundEnd::Reply(r),
+                        Driven::Returned(Err(e)) => QaRoundEnd::Failed(e.to_string()),
+                        Driven::Cancelled => {
+                            let _ = app.emit("ai", AiPayload::Done { name: session.to_string(), message: "已停止".to_string() });
                             QaRoundEnd::Cancelled
                         }
+                        Driven::ControlClosed => QaRoundEnd::Cancelled,
                     }
                 };
                 match end {
@@ -495,6 +492,11 @@ pub(crate) async fn run_ai_job(
                 if confirm_all || any_danger {
                     emit_state(AiRunState::AwaitingConfirm);
                     if flush_stale(ctl_rx) {
+                        // 滞留 Cancel 兑现：与取消分支一致补 Done，前端摘要不停在"等待确认"
+                        let _ = app.emit(
+                            "ai",
+                            AiPayload::Done { name: session.to_string(), message: "已停止".to_string() },
+                        );
                         emit_state(AiRunState::Idle);
                         return;
                     }
@@ -509,6 +511,12 @@ pub(crate) async fn run_ai_job(
                             return;
                         }
                         Ok(_) => {
+                            // 通道关闭 / Cancel / 其他控制：终止并补 Done（P127 审查修复，
+                            // 旧实现静默 return，前端摘要停在"等待确认"）
+                            let _ = app.emit(
+                                "ai",
+                                AiPayload::Done { name: session.to_string(), message: "已停止".to_string() },
+                            );
                             emit_state(AiRunState::Idle);
                             return;
                         }
@@ -950,6 +958,30 @@ pub(crate) async fn run_ai_job(
                             }
                         }
                         step_active = next_active_goal(&go_states);
+                        // P83：FC 显式 goal_ok——在命令执行前结算当前子目标（Ok 推进）。
+                        // 必须放在 commands.is_empty() 分支之前：空命令回合（goal_ok + 无命令）若跳过
+                        // 结算，go_states 不推进 → finish 被拒、白烧回合（P127 四期审查修复）。
+                        if fc_goal_ok {
+                            if let Some(idx) = step_active {
+                                let (final_ok, _) = apply_goal_outcome(
+                                    idx,
+                                    true,
+                                    &mut go_states,
+                                    &mut go_fail_retries,
+                                    MAX_GOAL_FAIL_RETRIES,
+                                );
+                                let _ = app.emit(
+                                    "ai",
+                                    AiPayload::GoalDone {
+                                        name: session.to_string(),
+                                        goal_index: idx as u32,
+                                        total: goals.len() as u32,
+                                        status: if final_ok { "ok".to_string() } else { "failed".to_string() },
+                                    },
+                                );
+                                conv_goal_done(&conv, idx as u32, final_ok).await;
+                            }
+                        }
                         if commands.is_empty() {
                             // 本回合无命令：回填全部工具结果，直接进入下一轮
                             {
@@ -964,29 +996,6 @@ pub(crate) async fn run_ai_job(
                     }
                 }
                 invalid_steps = 0;
-
-                // P83：FC 显式 goal_ok——在命令执行前结算当前子目标（Ok 推进）
-                if fc_goal_ok {
-                    if let Some(idx) = step_active {
-                        let (final_ok, _) = apply_goal_outcome(
-                            idx,
-                            true,
-                            &mut go_states,
-                            &mut go_fail_retries,
-                            MAX_GOAL_FAIL_RETRIES,
-                        );
-                        let _ = app.emit(
-                            "ai",
-                            AiPayload::GoalDone {
-                                name: session.to_string(),
-                                goal_index: idx as u32,
-                                total: goals.len() as u32,
-                                status: if final_ok { "ok".to_string() } else { "failed".to_string() },
-                            },
-                        );
-                        conv_goal_done(&conv, idx as u32, final_ok).await;
-                    }
-                }
 
                 // §8.7.2 整份计划卡：parse_commands 之后、逐命令之前广播计划
                 let plan_cmds: Vec<PlanCommand> = commands
@@ -1095,6 +1104,7 @@ pub(crate) async fn run_ai_job(
                                 command: command.clone(),
                                 level,
                                 reason,
+                                source: "ai".to_string(),
                             },
                         );
                         // 推理/执行期间滞留的陈旧 Approve/Reject 必须先清空,

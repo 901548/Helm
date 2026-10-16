@@ -91,7 +91,7 @@ export type AiPayload =
   | { kind: "commandStep"; name: string; command: string; success: boolean; message: string; output: string }
   | { kind: "done"; name: string; message: string }
   | { kind: "error"; name: string; message: string }
-  | { kind: "pendingCommand"; name: string; command: string; level: DangerLevel; reason: string }
+  | { kind: "pendingCommand"; name: string; command: string; level: DangerLevel; reason: string; source: string }
   | { kind: "state"; name: string; state: AiState }
   | { kind: "planning"; name: string; commands: PlanCommandUi[]; needConfirm: boolean }
   // P57 L2 子目标事件（L2-beta 起 total = 本任务子目标总数）
@@ -161,6 +161,8 @@ export interface AiStepCard {
   output?: string;
   level?: DangerLevel;
   reason?: string;
+  /// 确认来源（confirm 态路由用）："ai" = Agent 逐条确认；"intercept" = 终端命令前拦截
+  source?: "ai" | "intercept";
 }
 
 export interface AiPlanCard {

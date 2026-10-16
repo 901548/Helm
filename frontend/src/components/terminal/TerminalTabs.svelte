@@ -51,8 +51,8 @@
     thinking?: string;
     termFontSize?: number;
     termScrollback?: number;
-    onModeChange: (m: "qa" | "agent") => void;    onApprove: () => void;
-    onReject: () => void;
+    onModeChange: (m: "qa" | "agent") => void;    onApprove: (id?: number) => void;
+    onReject: (id?: number) => void;
     onEditPlan: (commands: string[]) => void;
     onStop: () => void;
     onClear: () => void;
@@ -303,6 +303,8 @@
         markerBufs.delete(name);
         hasMarker.delete(name);
         lastPwd.delete(name);
+        // P99-2 回放游标随终端销毁清理：不清理则同名会话重连后新终端跳过新回显
+        lastEchoSeq.delete(name);
       }
     }
     const containers = termArea.querySelectorAll<HTMLDivElement>("[data-term]");

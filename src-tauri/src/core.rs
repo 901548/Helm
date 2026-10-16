@@ -227,7 +227,9 @@ pub enum AiPayload {
     CommandStep { name: String, command: String, success: bool, message: String, output: String },
     Done { name: String, message: String },
     Error { name: String, message: String },
-    PendingCommand { name: String, command: String, level: DangerLevel, reason: String },
+    /// source 标记确认来源："ai" = Agent 逐条确认；"intercept" = 终端命令前拦截(P127 二期)。
+    /// 前端按点击卡片所携带的来源精确路由（此前靠"两者互斥"假设猜通道，多会话下会错位）
+    PendingCommand { name: String, command: String, level: DangerLevel, reason: String, source: String },
     /// §8.7.1 唯一状态机：前端只订阅本事件判态，其余事件仅作 delta 内容
     State { name: String, state: AiRunState },
     /// §8.7.2 计划卡：parse_commands 之后、逐命令确认之前的整份计划。
@@ -786,6 +788,7 @@ pub async fn send_input(
                     command: cmd,
                     level,
                     reason,
+                    source: "intercept".to_string(),
                 },
             );
             return Ok(());

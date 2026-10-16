@@ -18,11 +18,11 @@
     focusSeq: number;
     logOpen: boolean;
     thinking?: string;
-    container?: string | null;
     onSubmit: (text: string, container?: string | null) => void;
     onStop: () => void;
-    onApprove: () => void;
-    onReject: () => void;
+    /// 确认/拒绝携带点击卡片的 id（后端 PendingCommand.source 决定路由：AI 确认 vs 终端拦截）
+    onApprove: (id?: number) => void;
+    onReject: (id?: number) => void;
     onEditPlan: (commands: string[]) => void;
     onModeChange: (m: "qa" | "agent") => void;
     onToggleStream: () => void;
@@ -44,7 +44,6 @@
     focusSeq,
     logOpen,
     thinking = "",
-    container = null,
     onSubmit,
     onStop,
     onApprove,
@@ -57,8 +56,8 @@
   } = $props<Props>();
 
   let text = $state("");
-  // §8.7.4 Docker 会话运行时容器选择（每次提交携带）
-  let containerInput = $state(container ?? "");
+  // §8.7.4 Docker 会话运行时容器选择（每次提交携带；默认项=会话持久化容器）
+  let containerInput = $state("");
   // §8.7.4 容器下拉：docker ps 拉取的容器列表（仅 kind=docker 会话 fetch）
   let containers = $state<string[]>([]);
   let containersLoading = $state(false);
@@ -297,8 +296,8 @@
                   {#if c.needConfirm}
                     <button class="mini ghost" onclick={() => startEditPlan(c)}>修改</button>
                     <button class="mini" onclick={() => toggleOut(c.id)}>查看命令</button>
-                    <button class="mini ghost" onclick={onReject}>放弃</button>
-                    <button class="mini go" onclick={onApprove}>执行</button>
+                    <button class="mini ghost" onclick={() => onReject(c.id)}>放弃</button>
+                    <button class="mini go" onclick={() => onApprove(c.id)}>执行</button>
                   {:else}
                     <span class="safe-hint" title="全部为安全命令，无需确认">安全 · 自动执行</span>
                     <button class="mini" onclick={() => toggleOut(c.id)}>查看命令</button>
@@ -333,8 +332,8 @@
                 <code class="cmd">$ {c.command}</code>
                 {#if c.status === "confirm"}
                   <span class="danger" title={c.reason}>{levelText[c.level ?? "Warning"]} · {c.reason}</span>
-                  <button class="mini ghost" onclick={onReject}>跳过</button>
-                  <button class="mini go" onclick={onApprove}>执行</button>
+                  <button class="mini ghost" onclick={() => onReject(c.id)}>跳过</button>
+                  <button class="mini go" onclick={() => onApprove(c.id)}>执行</button>
                 {:else if c.message}
                   <span class="msg">{c.message}</span>
                 {/if}

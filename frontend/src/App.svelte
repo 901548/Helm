@@ -30,7 +30,8 @@
   let aiCards = $state<Record<string, AiCard[]>>({});
   let aiTaskText = $state<Record<string, string>>({});
   let aiSummary = $state<Record<string, { text: string; ok: boolean } | null>>({});
-  let aiStreamOpen = $state(false);
+  // P2-5 修复：活动流开合按会话分桶（全局单值在多会话下把 A 的开合态串给 B）
+  let aiStreamOpen = $state<Record<string, boolean>>({});
   let aiFocusSeq = $state(0);
   let logOpen = $state(false);
   let aiLog = $state<AiLogEntry[]>([]);
@@ -213,7 +214,7 @@
               return [...cards, { id: ++cardId, kind: "step", command: p.command, status: p.success ? "ok" : "fail", message: p.message, output: p.output || undefined }];
             });
             if (isActive) {
-              aiStreamOpen = true;
+              aiStreamOpen = { ...aiStreamOpen, [p.name]: true };
             }
             addLog({
               id: ++logId,
@@ -248,10 +249,10 @@
           }
           updateCards(p.name, (cards) => [
             ...cards,
-            { id: ++cardId, kind: "step", command: p.command, status: "confirm", level: p.level, reason: p.reason },
+            { id: ++cardId, kind: "step", command: p.command, status: "confirm", level: p.level, reason: p.reason, source: p.source === "intercept" ? "intercept" : "ai" },
           ]);
           if (isActive) {
-            aiStreamOpen = true;
+            aiStreamOpen = { ...aiStreamOpen, [p.name]: true };
           }
           break;
         case "planning":
@@ -262,7 +263,7 @@
               { id: ++cardId, kind: "plan", commands: p.commands, status: "plan", needConfirm: p.needConfirm ?? true },
             ]);
             if (isActive) {
-              aiStreamOpen = true;
+              aiStreamOpen = { ...aiStreamOpen, [p.name]: true };
             }
           }
           break;
@@ -442,6 +443,11 @@
           aiMode[info.name] = aiMode[oldName];
           delete aiMode[oldName];
         }
+        // P2-5：活动流开合态随改名迁移（后端 conv 已保留，UI 开合也应跟走）
+        if (aiStreamOpen[oldName] !== undefined) {
+          aiStreamOpen[info.name] = aiStreamOpen[oldName];
+          delete aiStreamOpen[oldName];
+        }
         delete aiCards[oldName];
         delete aiTaskText[oldName];
         delete aiSummary[oldName];
@@ -494,6 +500,7 @@
     delete aiBusy[name];
     delete aiState[name];
     delete aiMode[name];
+    delete aiStreamOpen[name];
     tabs = tabs.filter((t) => t !== name);
     if (activeTab === name) {
       activeTab = pickNextActive(name);
@@ -582,7 +589,7 @@
     updateCards(name, () => (mode === "qa" ? [{ id: ++cardId, kind: "qa", text: "", done: false }] : []));
     aiTaskText = { ...aiTaskText, [name]: text };
     aiSummary = { ...aiSummary, [name]: null };
-    aiStreamOpen = true;
+    aiStreamOpen = { ...aiStreamOpen, [name]: true };
     aiThinking = { ...aiThinking, [name]: "" };
     if (mode === "agent" && name) {
       pushEcho(name, `\r\n\x1b[90m[AI] 任务: ${text}\x1b[0m\r\n`);
@@ -622,35 +629,45 @@
 
   function toggleStream() {
     const n = activeTab ?? "";
-    if ((aiCards[n]?.length ?? 0) || aiSummary[n] || aiTaskText[n]) aiStreamOpen = !aiStreamOpen;
+    if ((aiCards[n]?.length ?? 0) || aiSummary[n] || aiTaskText[n]) {
+      aiStreamOpen = { ...aiStreamOpen, [n]: !aiStreamOpen[n] };
+    }
   }
 
-  async function decide(approve: boolean) {
-    // 乐观更新确认卡片;拒绝时后端会回发 CommandStep(已跳过)统一收口
-    // 优先找逐条确认卡(step/confirm),否则找整份计划卡(plan/plan)
-    let i = -1;
-    const cards = aiCards[activeTab ?? ""] ?? [];
-    const ci = [...cards].reverse().findIndex((c) => c.kind === "step" && c.status === "confirm");
-    if (ci >= 0) {
-      i = cards.length - 1 - ci;
-      const c = cards[i] as (typeof cards)[number] & { kind: "step" };
-      updateCards(activeTab ?? "", (cs) => [...cs.slice(0, i), { ...c, status: approve ? "running" : "skipped" }, ...cs.slice(i + 1)]);
-    } else {
-      const pi = [...cards].reverse().findIndex((c) => c.kind === "plan" && c.status === "plan");
-      if (pi >= 0) {
-        i = cards.length - 1 - pi;
-        const c = cards[i] as (typeof cards)[number] & { kind: "plan" };
-        updateCards(activeTab ?? "", (cs) => [...cs.slice(0, i), { ...c, status: approve ? "running" : "skipped" }, ...cs.slice(i + 1)]);
+  /// 确认/拒绝：按点击卡片携带的 id + source 精确路由——
+  /// source="intercept" → intercept_resolve(终端命令前拦截)；否则 → ai_control(AI 逐条/整份)。
+  /// 旧实现用 intercept_pending 预检猜通道("两者互斥"假设)，批 B 会话的 AI 确认会
+  /// 消费掉 A 会话的挂起拦截（或反之），多会话/并发任务下错位。
+  async function decide(approve: boolean, cardId?: number) {
+    const n = activeTab ?? "";
+    // 乐观更新:按点击卡片 id 精确定位;拒绝时后端会回发 CommandStep(已跳过)统一收口
+    let source: "ai" | "intercept" = "ai";
+    const cards = aiCards[n] ?? [];
+    let i = cardId !== undefined ? cards.findIndex((c) => c.id === cardId) : -1;
+    if (i < 0) {
+      // 兜底（未传 id 的调用）：最近的逐条确认卡，否则整份计划卡
+      const ci = [...cards].reverse().findIndex((c) => c.kind === "step" && c.status === "confirm");
+      if (ci >= 0) {
+        i = cards.length - 1 - ci;
+      } else {
+        const pi = [...cards].reverse().findIndex((c) => c.kind === "plan" && c.status === "plan");
+        if (pi >= 0) i = cards.length - 1 - pi;
+      }
+    }
+    if (i >= 0) {
+      const c = cards[i];
+      if (c.kind === "step" && c.status === "confirm") {
+        source = c.source === "intercept" ? "intercept" : "ai";
+        updateCards(n, (cs) => [...cs.slice(0, i), { ...c, status: approve ? "running" : "skipped" }, ...cs.slice(i + 1)]);
+      } else if (c.kind === "plan" && c.status === "plan") {
+        updateCards(n, (cs) => [...cs.slice(0, i), { ...c, status: approve ? "running" : "skipped" }, ...cs.slice(i + 1)]);
       }
     }
     try {
-      // P127 二期：先尝试解决"命令前拦截"的挂起命令（终端手打触发的）。
-      // 两者互斥（AI 任务运行时用户不会同时在终端敲命令），故顺序尝试安全。
-      const had = await api.interceptPending();
-      if (had) {
+      if (source === "intercept") {
         await api.interceptResolve(approve);
       } else {
-        await api.aiControl(activeTab ?? "", approve ? "approve" : "reject");
+        await api.aiControl(n, approve ? "approve" : "reject");
       }
     } catch {
       /* ignore */
@@ -696,7 +713,7 @@
     }
     aiSummary = { ...aiSummary, [activeTab ?? ""]: null };
     aiTaskText = { ...aiTaskText, [activeTab ?? ""]: "" };
-    aiStreamOpen = false;
+    aiStreamOpen = { ...aiStreamOpen, [activeTab ?? ""]: false };
     aiThinking = { ...aiThinking, [activeTab ?? ""]: "" };
   }
 
@@ -775,7 +792,7 @@
           cards={aiCards[activeTab ?? ""] ?? []}
           taskText={aiTaskText[activeTab ?? ""] ?? ""}
           summary={aiSummary[activeTab ?? ""] ?? null}
-          aiStreamOpen={aiStreamOpen}
+          aiStreamOpen={aiStreamOpen[activeTab ?? ""] ?? false}
           aiFocusSeq={aiFocusSeq}
           aiLog={aiLog}
           logOpen={logOpen}
@@ -784,8 +801,8 @@
           termFontSize={uiConfig?.term_font_size ?? 14}
           termScrollback={uiConfig?.term_scrollback ?? 5000}
           onModeChange={handleModeChange}
-          onApprove={() => decide(true)}
-          onReject={() => decide(false)}
+          onApprove={(id?: number) => decide(true, id)}
+          onReject={(id?: number) => decide(false, id)}
           onEditPlan={editPlan}
           onStop={stopAi}
           onClear={clearAi}

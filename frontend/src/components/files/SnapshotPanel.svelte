@@ -144,101 +144,150 @@
     const p = (n: number) => String(n).padStart(2, "0");
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
+
+  /// 探测结论拆两段：主句（快照什么/多大/留几份）+ 次要（磁盘/跳过项，可折叠）
+  const reasonMain = $derived((probe?.reason ?? "").split("已跳过")[0].trim());
+  const skipped = $derived(
+    (probe?.reason ?? "").includes("已跳过")
+      ? "已跳过" + (probe?.reason ?? "").split("已跳过")[1]
+      : "",
+  );
+  let showDetail = $state(false);
 </script>
 
-<ModalShell labelledBy="snap-title" width="620px" {onClose}>
+<ModalShell
+  labelledBy="snap-title"
+  width="640px"
+  height="560px"
+  resizable
+  minWidth={480}
+  minHeight={360}
+  {onClose}
+>
   <header class="snap-head">
     <h3 id="snap-title">服务器快照</h3>
     <button class="snap-close" title="关闭 (Esc)" onclick={onClose}>×</button>
   </header>
 
+  <!-- 探测结论：固定摘要条（不随内容滚动，始终可见） -->
+  {#if probe}
+    <div class="snap-summary">
+      <div class="snap-summary-main">{reasonMain}</div>
+      <button class="snap-more" onclick={() => (showDetail = !showDetail)}>
+        {showDetail ? "收起" : "详情"}
+      </button>
+    </div>
+    {#if showDetail}
+      <div class="snap-detail">
+        <div class="snap-kv"><span>磁盘可用</span><b>{probe.diskAvailMb}MB</b></div>
+        <div class="snap-kv">
+          <span>块级快照</span>
+          <b class:dim={probe.lvmFreeMb === 0 && !probe.reflink}>
+            {probe.lvmFreeMb > 0 ? `LVM 剩余 ${probe.lvmFreeMb}MB` : probe.reflink ? "支持 reflink" : "不可用（改用 tar）"}
+          </b>
+        </div>
+        {#if skipped}
+          <div class="snap-kv"><span>已跳过</span><b class="dim">{skipped.replace("已跳过：", "")}</b></div>
+        {/if}
+      </div>
+    {/if}
+  {/if}
+
   <div class="snap-body">
     {#if loading}
       <p class="snap-hint">探测中…</p>
     {:else if probe}
-      <!-- 探测结论：以「已按本机情况配置」呈现，而非让用户选档位（设计稿 §4.8） -->
-      <div class="snap-conclusion">{probe.reason}</div>
+      <!-- 区块 1：自动保护（两个开关归为一组，视觉上独立于打包设置） -->
+      <section class="snap-sec">
+        <div class="snap-sec-title">自动保护</div>
 
-      <div class="snap-caps">
-        <span>磁盘可用 {probe.diskAvailMb}MB</span>
-        {#if probe.lvmFreeMb > 0}<span class="ok">LVM 剩余 {probe.lvmFreeMb}MB</span>{/if}
-        {#if probe.reflink}<span class="ok">支持 reflink</span>{/if}
-        {#if !probe.reflink && probe.lvmFreeMb === 0}
-          <span class="dim">无块级快照能力（用 tar 打包）</span>
-        {/if}
-      </div>
+        <!-- P127 二期：命令前拦截。默认关 —— 会拦输入，须显式开启 -->
+        <label class="snap-toggle">
+          <input type="checkbox" checked={interceptOn} onchange={toggleIntercept} />
+          <div class="snap-toggle-txt">
+            <div class="snap-toggle-name">
+              危险命令前拦截
+              {#if interceptOn}<span class="pill on">已开启</span>{:else}<span class="pill">关闭</span>{/if}
+            </div>
+            <div class="snap-toggle-desc">
+              执行 <code>rm -rf /</code> 这类不可逆命令前弹确认，<b>抢在命令执行前</b>。
+              只拦 Critical 级；<code>↑</code> 历史与 Tab 补全一律放行。
+            </div>
+          </div>
+        </label>
 
-      <!-- P127 二期：命令前拦截。默认关 —— 会拦输入，须显式开启 -->
-      <label class="snap-item snap-toggle">
-        <input type="checkbox" checked={interceptOn} onchange={toggleIntercept} />
-        <span>危险命令前拦截（执行 <code>rm -rf /</code> 这类不可逆命令前弹确认）</span>
-      </label>
-      {#if interceptOn}
-        <div class="snap-hint-sm">
-          仅拦 <strong>Critical</strong> 级（系统级不可逆）；<code>rm -rf /etc/xxx</code> 等 Warning 不拦。
-          <code>↑</code> 历史回放与 Tab 补全无法追踪最终命令，<strong>一律放行</strong>（宁可不拦，不可错拦）。
+        <!-- P127 三期：滚动基线。拦截层拦不住 `sed -i` 这类改配置的命令，靠它兜底 -->
+        <label class="snap-toggle">
+          <input type="checkbox" checked={baselineOn} onchange={toggleBaseline} />
+          <div class="snap-toggle-txt">
+            <div class="snap-toggle-name">
+              滚动基线
+              {#if baselineOn}<span class="pill on">已开启</span>{:else}<span class="pill">关闭</span>{/if}
+              {#if baselineEst}<span class="pill ok">已建立</span>{/if}
+            </div>
+            <div class="snap-toggle-desc">
+              改配置前自动留底。<b>只读命令</b>（<code>ls</code>/<code>grep</code>…）不触发，
+              首次写操作立即拍，之后每 10 条或 15 分钟更新。
+            </div>
+          </div>
+        </label>
+      </section>
+
+      <!-- 区块 2：打包范围 -->
+      <section class="snap-sec">
+        <div class="snap-sec-title">
+          打包范围
+          <span class="snap-sec-note">预估 {estMb}MB</span>
         </div>
-      {/if}
-
-      <!-- P127 三期：滚动基线。拦截层拦不住 `sed -i` 这类改配置的命令，靠它兜底 -->
-      <label class="snap-item snap-toggle">
-        <input type="checkbox" checked={baselineOn} onchange={toggleBaseline} />
-        <span>
-          滚动基线（改配置前自动留底）
-          {#if baselineEst}<span class="ok">· 已建立</span>{/if}
-        </span>
-      </label>
-      {#if baselineOn}
-        <div class="snap-hint-sm">
-          <strong>首次写操作立即拍</strong>，之后每 10 条写操作或 15 分钟更新一次。
-          只读命令（<code>ls</code>/<code>grep</code>/<code>tail</code>…）<strong>不触发</strong>，故查询再多也不会有开销。
-          退路 = 最近一次基线（最多丢 15 分钟）。
+        <div class="snap-paths">
+          {#each probe.pathSizes as [p, mb] (p)}
+            <label class="snap-path" class:over={mb > 500}>
+              <input type="checkbox" checked={picked.has(p)} onchange={() => toggle(p)} />
+              <code>{p}</code>
+              <span class="snap-size">{mb}MB</span>
+            </label>
+          {/each}
         </div>
-      {/if}
-
-      <div class="snap-pick">
-        <div class="snap-pick-title">打包范围</div>
-        {#each probe.pathSizes as [p, mb] (p)}
-          <label class="snap-item">
-            <input type="checkbox" checked={picked.has(p)} onchange={() => toggle(p)} />
-            <code>{p}</code>
-            <span class="snap-size">{mb}MB</span>
-          </label>
-        {/each}
-      </div>
-
-      <div class="snap-est">
-        预估 <strong>{estMb}MB</strong>
         {#if estMb * 3 > probe.diskAvailMb}
-          <span class="warn">· 空间偏紧（需 {estMb * 3}MB 安全余量）</span>
+          <div class="snap-warn">空间偏紧：需 {estMb * 3}MB 安全余量，当前可用 {probe.diskAvailMb}MB</div>
         {/if}
-      </div>
+      </section>
 
-      <button class="snap-btn primary" onclick={doPack} disabled={packing || estMb === 0}>
-        {packing ? "打包中…" : "创建快照"}
-      </button>
+      <!-- 区块 3：已有快照 -->
+      <section class="snap-sec">
+        <div class="snap-sec-title">
+          已有快照
+          <span class="snap-sec-note">{entries.length} 份</span>
+        </div>
+        {#if entries.length === 0}
+          <p class="snap-hint">暂无快照</p>
+        {:else}
+          {#each entries as e (e.file)}
+            <div class="snap-row">
+              <div class="snap-row-main">
+                <span class="snap-file" title={e.path}>{e.file}</span>
+                <span class="snap-meta">{fmtSize(e.size)} · {fmtTime(e.createdAt)}</span>
+              </div>
+              <button class="snap-restore" title="还原此快照（会先预演）" onclick={() => (restoreTarget = e)}>还原</button>
+              <button class="snap-del" title="删除此快照" onclick={() => doRemove(e.file)}>×</button>
+            </div>
+          {/each}
+        {/if}
+      </section>
     {/if}
 
     {#if error}<div class="snap-error">{error}</div>{/if}
     {#if notice}<div class="snap-notice">{notice}</div>{/if}
-
-    <div class="snap-list">
-      <div class="snap-pick-title">已有快照（{entries.length}）</div>
-      {#if entries.length === 0}
-        <p class="snap-hint">暂无快照</p>
-      {:else}
-        {#each entries as e (e.file)}
-          <div class="snap-row">
-            <span class="snap-file" title={e.path}>{e.file}</span>
-            <span class="snap-size">{fmtSize(e.size)}</span>
-            <span class="snap-time">{fmtTime(e.createdAt)}</span>
-            <button class="snap-restore" title="还原此快照（会先预演）" onclick={() => (restoreTarget = e)}>还原</button>
-            <button class="snap-del" title="删除此快照" onclick={() => doRemove(e.file)}>×</button>
-          </div>
-        {/each}
-      {/if}
-    </div>
   </div>
+
+  <!-- 主操作固定在底栏（内容再长也够得着） -->
+  <footer class="snap-foot">
+    <span class="snap-foot-note">{picked.size} 个路径 · 约 {estMb}MB</span>
+    <button class="snap-btn" onclick={onClose}>关闭</button>
+    <button class="snap-btn primary" onclick={doPack} disabled={packing || estMb === 0}>
+      {packing ? "打包中…" : "创建快照"}
+    </button>
+  </footer>
 </ModalShell>
 
 {#if restoreTarget}
@@ -252,25 +301,29 @@
 {/if}
 
 <style>
+  /* 三段式：固定头（标题/摘要）+ 滚动主体 + 固定底栏。
+     `.snap-body` 必须 flex:1 + min-height:0，否则内容会把弹窗撑破（列表被裁）。 */
   .snap-head {
     display: flex;
     align-items: center;
-    padding: 0.6rem 1rem;
+    gap: 0.5rem;
+    padding: 0.55rem 0.9rem;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
   .snap-head h3 {
     margin: 0;
-    font-size: 0.9rem;
+    font-size: 0.88rem;
+    font-weight: 600;
   }
   .snap-close {
     margin-left: auto;
     border: none;
     background: transparent;
     color: var(--fg-muted);
-    font-size: 1.15rem;
+    font-size: 1.1rem;
     line-height: 1;
-    padding: 0 0.35rem;
+    padding: 0.1rem 0.35rem;
     border-radius: var(--radius-sm);
     cursor: pointer;
   }
@@ -278,66 +331,168 @@
     color: var(--fg);
     background: var(--hover);
   }
-  .snap-body {
-    padding: 0.8rem 1rem;
-    overflow: auto;
-    min-height: 200px;
-    max-height: 60vh;
-  }
-  .snap-conclusion {
-    padding: 0.5rem 0.7rem;
-    background: var(--input-bg);
-    border-radius: var(--radius-sm);
-    font-size: 0.78rem;
-    line-height: 1.5;
-  }
-  .snap-caps {
+
+  /* 摘要条：一句话说清"快照什么"，详情默认收起（用户不关心跳过项） */
+  .snap-summary {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.6rem;
-    margin: 0.5rem 0;
-    font-size: 0.72rem;
-    color: var(--fg-muted);
-  }
-  .snap-caps .ok {
-    color: var(--ok);
-  }
-  .snap-caps .dim {
-    opacity: 0.7;
-  }
-  .snap-pick-title {
-    font-size: 0.74rem;
-    color: var(--fg-muted);
-    margin: 0.6rem 0 0.3rem;
-  }
-  .snap-item {
-    display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 0.5rem;
-    padding: 0.25rem 0;
-    font-size: 0.78rem;
+    padding: 0.5rem 0.9rem;
+    background: var(--input-bg);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .snap-summary-main {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.76rem;
+    line-height: 1.55;
+  }
+  .snap-more {
+    flex-shrink: 0;
+    border: none;
+    background: transparent;
+    color: var(--accent);
+    font-size: 0.72rem;
+    cursor: pointer;
+    padding: 0;
+  }
+  .snap-more:hover {
+    text-decoration: underline;
+  }
+  .snap-detail {
+    padding: 0.4rem 0.9rem 0.5rem;
+    background: var(--input-bg);
+    border-bottom: 1px solid var(--border);
+    font-size: 0.73rem;
+    flex-shrink: 0;
+  }
+  .snap-kv {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.1rem 0;
+  }
+  .snap-kv span {
+    color: var(--fg-muted);
+    min-width: 4.5em;
+  }
+  .snap-kv b {
+    font-weight: 500;
+    word-break: break-all;
+  }
+  .snap-kv b.dim {
+    color: var(--fg-muted);
+    font-weight: 400;
+  }
+
+  /* 滚动主体 */
+  .snap-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    /* 底部留白：让最后一条能完全滚出底栏边界，不被"切一半" */
+    padding: 0 0.9rem 0.9rem;
+  }
+
+  /* 分区 */
+  .snap-sec {
+    padding: 0.65rem 0 0.3rem;
+  }
+  .snap-sec + .snap-sec {
+    border-top: 1px solid var(--border);
+  }
+  .snap-sec-title {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    font-size: 0.73rem;
+    font-weight: 600;
+    color: var(--fg-muted);
+    letter-spacing: 0.03em;
+    margin-bottom: 0.35rem;
+  }
+  .snap-sec-note {
+    margin-left: auto;
+    font-weight: 400;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 开关卡片 */
+  .snap-toggle {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.55rem;
+    padding: 0.45rem 0.6rem;
+    margin-bottom: 0.35rem;
+    background: var(--input-bg);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
     cursor: pointer;
   }
-  .snap-item code {
-    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
-  }
-  .snap-toggle {
-    margin: 0.4rem 0;
-    padding: 0.35rem 0.5rem;
-    background: var(--input-bg);
-    border-radius: var(--radius-sm);
-    align-items: flex-start;
+  .snap-toggle:hover {
+    border-color: var(--border);
   }
   .snap-toggle input {
     margin-top: 0.15rem;
+    flex-shrink: 0;
   }
-  .snap-toggle .ok {
+  .snap-toggle-txt {
+    min-width: 0;
+  }
+  .snap-toggle-name {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.79rem;
+    font-weight: 500;
+  }
+  .snap-toggle-desc {
+    margin-top: 0.15rem;
+    font-size: 0.72rem;
+    line-height: 1.55;
+    color: var(--fg-muted);
+  }
+  .pill {
+    font-size: 0.64rem;
+    font-weight: 400;
+    padding: 0.02rem 0.35rem;
+    border-radius: 999px;
+    background: var(--track-bg);
+    color: var(--fg-muted);
+  }
+  .pill.on {
+    background: var(--accent);
+    color: #fff;
+  }
+  .pill.ok {
+    background: transparent;
+    border: 1px solid var(--ok);
     color: var(--ok);
   }
-  .snap-hint-sm {
-    margin: 0.3rem 0 0.5rem;
-    font-size: 0.72rem;
-    line-height: 1.6;
+
+  /* 路径列表 */
+  .snap-paths {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .snap-path {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.22rem 0.4rem;
+    border-radius: var(--radius-sm);
+    font-size: 0.77rem;
+    cursor: pointer;
+  }
+  .snap-path:hover {
+    background: var(--hover);
+  }
+  .snap-path code {
+    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
+    font-size: 0.77rem;
+  }
+  .snap-path.over code {
     color: var(--fg-muted);
   }
   .snap-size {
@@ -345,75 +500,51 @@
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
     font-size: 0.72rem;
+    flex-shrink: 0;
   }
-  .snap-est {
-    margin: 0.5rem 0;
-    font-size: 0.76rem;
-  }
-  .snap-est .warn {
+  .snap-warn {
+    margin-top: 0.3rem;
+    font-size: 0.72rem;
     color: var(--warning);
   }
-  .snap-btn {
-    padding: 0.35rem 0.9rem;
-    font-size: 0.78rem;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-    background: transparent;
-    color: var(--fg);
-    cursor: pointer;
-  }
-  .snap-btn.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #fff;
-    font-weight: 600;
-  }
-  .snap-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  .snap-error {
-    margin: 0.5rem 0;
-    padding: 0.4rem 0.6rem;
-    background: var(--warn-bg);
-    border-radius: var(--radius-sm);
-    font-size: 0.75rem;
-    color: var(--danger);
-  }
-  .snap-notice {
-    margin: 0.5rem 0;
-    font-size: 0.75rem;
-    color: var(--ok);
-  }
-  .snap-list {
-    margin-top: 0.6rem;
-    border-top: 1px solid var(--border);
-    padding-top: 0.4rem;
-  }
+
+  /* 快照列表 */
   .snap-row {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.3rem 0;
-    font-size: 0.76rem;
-    border-bottom: 1px solid var(--border);
+    padding: 0.35rem 0.4rem;
+    border-radius: var(--radius-sm);
+  }
+  .snap-row:hover {
+    background: var(--hover);
+  }
+  .snap-row-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.05rem;
   }
   .snap-file {
     font-family: "JetBrains Mono", "Cascadia Mono", monospace;
+    font-size: 0.75rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .snap-time {
+  .snap-meta {
+    font-size: 0.7rem;
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
   }
   .snap-restore {
+    flex-shrink: 0;
     border: 1px solid var(--border);
     background: transparent;
     color: var(--fg-muted);
     cursor: pointer;
-    padding: 0.05rem 0.4rem;
+    padding: 0.1rem 0.45rem;
     border-radius: var(--radius-sm);
     font-size: 0.7rem;
   }
@@ -422,21 +553,77 @@
     border-color: var(--accent);
   }
   .snap-del {
-    margin-left: auto;
+    flex-shrink: 0;
     border: none;
     background: transparent;
     color: var(--fg-muted);
     cursor: pointer;
     padding: 0 0.3rem;
     border-radius: var(--radius-sm);
+    font-size: 0.85rem;
   }
   .snap-del:hover {
     color: var(--danger);
     background: var(--hover);
   }
+
+  /* 固定底栏 */
+  .snap-foot {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 0.9rem;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .snap-foot-note {
+    margin-right: auto;
+    font-size: 0.72rem;
+    color: var(--fg-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .snap-btn {
+    padding: 0.32rem 0.85rem;
+    font-size: 0.77rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .snap-btn:hover:not(:disabled) {
+    background: var(--hover);
+  }
+  .snap-btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+  .snap-btn.primary:hover:not(:disabled) {
+    filter: brightness(1.1);
+  }
+  .snap-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .snap-error {
+    margin: 0.4rem 0;
+    padding: 0.4rem 0.6rem;
+    background: var(--warn-bg);
+    border-radius: var(--radius-sm);
+    font-size: 0.74rem;
+    color: var(--danger);
+  }
+  .snap-notice {
+    margin: 0.4rem 0;
+    font-size: 0.74rem;
+    color: var(--ok);
+  }
   .snap-hint {
-    margin: 0.5rem 0;
-    font-size: 0.78rem;
+    margin: 0.4rem 0;
+    font-size: 0.76rem;
     color: var(--fg-muted);
   }
 </style>

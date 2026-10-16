@@ -51,8 +51,17 @@
       interceptOn = ic;
       baselineOn = bs[0];
       baselineEst = bs[1];
-      // 首次加载用探测推荐值预勾选
-      if (picked.size === 0) picked = new Set(p.recommended);
+      // 首次加载用探测推荐值预勾选。
+      // **与 pickable 取交集**：picked 若含列表里看不到的路径，它会被算进
+      // `estMb` 却无法取消（估值与所见不符）。后端目前已按 MAX_SIZE_MB 过滤，
+      // 这里再取一次交集，保证「所见即所算」，后端改常量也不会静默错位。
+      if (picked.size === 0) {
+        picked = new Set(
+          p.recommended.filter((x) =>
+            p.pathSizes.some(([q, mb]) => q === x && mb <= MAX_MB),
+          ),
+        );
+      }
     } catch (e) {
       error = String(e);
     } finally {
@@ -138,6 +147,11 @@
     return (b / 1024 / 1024).toFixed(1) + "MB";
   }
 
+  /// MB → 人类可读。>= 1024MB 用 GB，否则全是四五位数字（12293MB / 2054MB）看着累
+  function fmtMb(mb: number): string {
+    return mb >= 1024 ? (mb / 1024).toFixed(1) + "GB" : mb + "MB";
+  }
+
   function fmtTime(ts: number): string {
     if (!ts) return "—";
     const d = new Date(ts * 1000);
@@ -145,20 +159,28 @@
     return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
 
-  /// 探测结论拆两段：主句（快照什么/多大/留几份）+ 次要（磁盘/跳过项，可折叠）
-  const reasonMain = $derived((probe?.reason ?? "").split("已跳过")[0].trim());
-  const skipped = $derived(
-    (probe?.reason ?? "").includes("已跳过")
-      ? "已跳过" + (probe?.reason ?? "").split("已跳过")[1]
-      : "",
+  /// 与后端 `snapshot.rs` 的 `MAX_SIZE_MB` 一致。
+  /// **超过它的目录不列出来**：列了也能勾，但打包必被体积检查拒绝 ——
+  /// 那是"勾了白勾"的误导选项，正是面板显得乱的主因之一。
+  const MAX_MB = 500;
+
+  /// 可选的打包路径（只列真正能打包的）
+  const pickable = $derived(
+    (probe?.pathSizes ?? []).filter(([, mb]) => mb <= MAX_MB),
   );
-  let showDetail = $state(false);
+  /// 被跳过的路径名（只在下面提一句"为什么没有它"，不再逐个列出来占地方）
+  const skippedNames = $derived(
+    (probe?.pathSizes ?? [])
+      .filter(([, mb]) => mb > MAX_MB)
+      .map(([p]) => p)
+      .join("、"),
+  );
 </script>
 
 <ModalShell
   labelledBy="snap-title"
   width="640px"
-  height="560px"
+  height="510px"
   resizable
   minWidth={480}
   minHeight={360}
@@ -169,30 +191,6 @@
     <button class="snap-close" title="关闭 (Esc)" onclick={onClose}>×</button>
   </header>
 
-  <!-- 探测结论：固定摘要条（不随内容滚动，始终可见） -->
-  {#if probe}
-    <div class="snap-summary">
-      <div class="snap-summary-main">{reasonMain}</div>
-      <button class="snap-more" onclick={() => (showDetail = !showDetail)}>
-        {showDetail ? "收起" : "详情"}
-      </button>
-    </div>
-    {#if showDetail}
-      <div class="snap-detail">
-        <div class="snap-kv"><span>磁盘可用</span><b>{probe.diskAvailMb}MB</b></div>
-        <div class="snap-kv">
-          <span>块级快照</span>
-          <b class:dim={probe.lvmFreeMb === 0 && !probe.reflink}>
-            {probe.lvmFreeMb > 0 ? `LVM 剩余 ${probe.lvmFreeMb}MB` : probe.reflink ? "支持 reflink" : "不可用（改用 tar）"}
-          </b>
-        </div>
-        {#if skipped}
-          <div class="snap-kv"><span>已跳过</span><b class="dim">{skipped.replace("已跳过：", "")}</b></div>
-        {/if}
-      </div>
-    {/if}
-  {/if}
-
   <div class="snap-body">
     {#if loading}
       <p class="snap-hint">探测中…</p>
@@ -201,23 +199,28 @@
       <section class="snap-sec">
         <div class="snap-sec-title">自动保护</div>
 
-        <!-- P127 二期：命令前拦截。默认关 —— 会拦输入，须显式开启 -->
-        <label class="snap-toggle">
+        <!-- P127 二期：命令前拦截。默认关 —— 会拦输入，须显式开启。
+             正文只留一句"它会替你做什么"；边界细节（只拦 Critical / 历史与补全放行）
+             放进 title，需要的人 hover 得到，不需要的人不被干扰。 -->
+        <label
+          class="snap-toggle"
+          title="只拦 Critical 级（系统级不可逆）；rm -rf /etc/xxx 等不拦。↑ 历史回放与 Tab 补全无法追踪最终命令，一律放行（宁可不拦，不可错拦）。"
+        >
           <input type="checkbox" checked={interceptOn} onchange={toggleIntercept} />
           <div class="snap-toggle-txt">
             <div class="snap-toggle-name">
               危险命令前拦截
               {#if interceptOn}<span class="pill on">已开启</span>{:else}<span class="pill">关闭</span>{/if}
             </div>
-            <div class="snap-toggle-desc">
-              执行 <code>rm -rf /</code> 这类不可逆命令前弹确认，<b>抢在命令执行前</b>。
-              只拦 Critical 级；<code>↑</code> 历史与 Tab 补全一律放行。
-            </div>
+            <div class="snap-toggle-desc">执行 <code>rm -rf /</code> 这类命令前拦一下</div>
           </div>
         </label>
 
         <!-- P127 三期：滚动基线。拦截层拦不住 `sed -i` 这类改配置的命令，靠它兜底 -->
-        <label class="snap-toggle">
+        <label
+          class="snap-toggle"
+          title="首次写操作立即拍，之后每 10 条写操作或 15 分钟更新一次。只读命令（ls/grep/tail…）不触发，故查询再多也不会有开销。退路 = 最近一次基线（最多丢 15 分钟）。"
+        >
           <input type="checkbox" checked={baselineOn} onchange={toggleBaseline} />
           <div class="snap-toggle-txt">
             <div class="snap-toggle-name">
@@ -225,31 +228,33 @@
               {#if baselineOn}<span class="pill on">已开启</span>{:else}<span class="pill">关闭</span>{/if}
               {#if baselineEst}<span class="pill ok">已建立</span>{/if}
             </div>
-            <div class="snap-toggle-desc">
-              改配置前自动留底。<b>只读命令</b>（<code>ls</code>/<code>grep</code>…）不触发，
-              首次写操作立即拍，之后每 10 条或 15 分钟更新。
-            </div>
+            <div class="snap-toggle-desc">改配置前自动留底，查询类命令不打扰</div>
           </div>
         </label>
       </section>
 
-      <!-- 区块 2：打包范围 -->
+      <!-- 区块 2：打包范围。**只列真能打包的目录**（超上限的不列，勾了也白勾）。 -->
       <section class="snap-sec">
         <div class="snap-sec-title">
           打包范围
-          <span class="snap-sec-note">预估 {estMb}MB</span>
+          <span class="snap-sec-note">{pickable.length} 个目录</span>
         </div>
         <div class="snap-paths">
-          {#each probe.pathSizes as [p, mb] (p)}
-            <label class="snap-path" class:over={mb > 500}>
+          {#each pickable as [p, mb] (p)}
+            <label class="snap-path">
               <input type="checkbox" checked={picked.has(p)} onchange={() => toggle(p)} />
               <code>{p}</code>
-              <span class="snap-size">{mb}MB</span>
+              <span class="snap-size">{fmtMb(mb)}</span>
             </label>
           {/each}
         </div>
+        {#if skippedNames}
+          <div class="snap-skip" title="单目录超过 {MAX_MB}MB 会被体积检查拒绝，故不列出">
+            已跳过 {skippedNames}（超过 {MAX_MB}MB）
+          </div>
+        {/if}
         {#if estMb * 3 > probe.diskAvailMb}
-          <div class="snap-warn">空间偏紧：需 {estMb * 3}MB 安全余量，当前可用 {probe.diskAvailMb}MB</div>
+          <div class="snap-warn">空间偏紧：需 {fmtMb(estMb * 3)} 安全余量，当前可用 {fmtMb(probe.diskAvailMb)}</div>
         {/if}
       </section>
 
@@ -280,9 +285,12 @@
     {#if notice}<div class="snap-notice">{notice}</div>{/if}
   </div>
 
-  <!-- 主操作固定在底栏（内容再长也够得着） -->
+  <!-- 主操作固定在底栏。磁盘可用放这里（次要信息，不占正文）。 -->
   <footer class="snap-foot">
-    <span class="snap-foot-note">{picked.size} 个路径 · 约 {estMb}MB</span>
+    <span class="snap-foot-note">
+      {#if estMb > 0}约 {fmtMb(estMb)}{/if}
+      {#if probe}<span class="snap-foot-disk">磁盘可用 {fmtMb(probe.diskAvailMb)}</span>{/if}
+    </span>
     <button class="snap-btn" onclick={onClose}>关闭</button>
     <button class="snap-btn primary" onclick={doPack} disabled={packing || estMb === 0}>
       {packing ? "打包中…" : "创建快照"}
@@ -330,59 +338,6 @@
   .snap-close:hover {
     color: var(--fg);
     background: var(--hover);
-  }
-
-  /* 摘要条：一句话说清"快照什么"，详情默认收起（用户不关心跳过项） */
-  .snap-summary {
-    display: flex;
-    align-items: flex-start;
-    gap: 0.5rem;
-    padding: 0.5rem 0.9rem;
-    background: var(--input-bg);
-    border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-  }
-  .snap-summary-main {
-    flex: 1;
-    min-width: 0;
-    font-size: 0.76rem;
-    line-height: 1.55;
-  }
-  .snap-more {
-    flex-shrink: 0;
-    border: none;
-    background: transparent;
-    color: var(--accent);
-    font-size: 0.72rem;
-    cursor: pointer;
-    padding: 0;
-  }
-  .snap-more:hover {
-    text-decoration: underline;
-  }
-  .snap-detail {
-    padding: 0.4rem 0.9rem 0.5rem;
-    background: var(--input-bg);
-    border-bottom: 1px solid var(--border);
-    font-size: 0.73rem;
-    flex-shrink: 0;
-  }
-  .snap-kv {
-    display: flex;
-    gap: 0.5rem;
-    padding: 0.1rem 0;
-  }
-  .snap-kv span {
-    color: var(--fg-muted);
-    min-width: 4.5em;
-  }
-  .snap-kv b {
-    font-weight: 500;
-    word-break: break-all;
-  }
-  .snap-kv b.dim {
-    color: var(--fg-muted);
-    font-weight: 400;
   }
 
   /* 滚动主体 */
@@ -492,15 +447,20 @@
     font-family: "JetBrains Mono", "Cascadia Mono", monospace;
     font-size: 0.77rem;
   }
-  .snap-path.over code {
-    color: var(--fg-muted);
-  }
   .snap-size {
     margin-left: auto;
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
     font-size: 0.72rem;
     flex-shrink: 0;
+  }
+  /* 跳过项只提一句"为什么没有它"，不再逐个列出来占地方 */
+  .snap-skip {
+    margin-top: 0.25rem;
+    font-size: 0.7rem;
+    color: var(--fg-muted);
+    opacity: 0.75;
+    cursor: help;
   }
   .snap-warn {
     margin-top: 0.3rem;
@@ -578,9 +538,15 @@
   }
   .snap-foot-note {
     margin-right: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
     font-size: 0.72rem;
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
+  }
+  .snap-foot-disk {
+    opacity: 0.7;
   }
   .snap-btn {
     padding: 0.32rem 0.85rem;

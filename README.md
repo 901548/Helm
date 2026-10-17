@@ -23,6 +23,14 @@ Windows 桌面应用：多标签 SSH 终端、SFTP 文件管理、系统监控�
 - **ZMODEM（rz/sz）文件传输**：终端内直接收发文件，进度浮层，落到下载目录
 - 删除有根路径拒绝 + 危险命令判级双保险；下载有 64MB 上限、预览有截断标记
 
+### 服务器快照（文件面板 🛡，让不可逆命令变可逆）
+- **手动快照**：探测驱动的自适应打包范围；打包即排除 `shadow` / `ssh_host_*` / `id_*` / `*.pem` 等敏感文件（不加密反而更安全），完整性校验失败残包即删
+- **命令前拦截**：后端行缓冲扣住回车，Critical 级命令停在 readline 缓冲里**未执行**就弹确认；拿不准的输入（↑历史 / Tab 补全）一律放行
+- **滚动基线**：只读命令不触发，首次写操作立即拍，之后每 10 条写 / 15 分钟（仅 bash 会话）
+- **还原**：预演 diff → 默认只解到暂存目录 → 就地还原需输入 `RESTORE` + 强制二次快照 + `sshd -t` 语法校验
+- **变化包 + 快照链 + 单文件取回**：全量开链，`--newer-mtime` 增量随链叠加；包内清单浏览；单文件取回 / 就地还原自动 `.bak` 备份
+- 快照落 `~/.helm-snapshots/`（避开 /tmp 定期清理），默认保留 10 份
+
 ### 系统监控
 - 终端上方薄条：CPU / 内存 / 负载 / 网速，2 秒刷新，独立 exec 通道不污染终端
 - Linux（/proc）与 Windows（PowerShell CIM）双模式采集
@@ -83,10 +91,10 @@ cargo tauri build    # 打包 release:helm.exe + msi + nsis 安装包
 运行测试：
 
 ```bash
-cd src-tauri && cargo test                          # 148 项(含 SSH/SFTP live 测试,无 src-tauri/config.yaml 时自动跳过)
+cd src-tauri && cargo test                          # 217 项(含 SSH/SFTP live 测试,无 src-tauri/config.yaml 时自动跳过)
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings   # 静态检查(零告警)
 npm run build                                       # 前端构建
-npm test                                            # 前端单元测试(Vitest 35 项)
+npm test                                            # 前端单元测试(Vitest 84 项)
 ```
 
 > 项目使用 MinGW GNU 工具链开发（见 `.cargo/config.toml` 的 linker 配置），MSVC 工具链同样可行。
@@ -151,7 +159,7 @@ frontend/src/
 ├── components/
 │   ├── terminal/    # TerminalTabs / SysMonitor / AiCopilot
 │   ├── sessions/    # SessionPanel / SessionForm
-│   ├── files/       # FileBrowser
+│   ├── files/       # FileBrowser / SnapshotPanel / SnapshotBrowser / RestoreModal
 │   ├── chrome/      # StatusBar / SettingsModal / HistoryModal
 │   └── ui/          # ModalShell(弹窗外壳:dialog 语义 + Esc + 遮罩关闭)
 └── lib/
@@ -162,7 +170,11 @@ frontend/src/
     ├── constants.ts # 跨层契约常量(密文哨兵等)
     ├── osc.ts       # OSC7 PWD 提取(含单测)
     ├── paths.ts     # 路径规范化(含单测)
-    └── echo.ts      # AI 回显按会话重放(含单测)
+    ├── echo.ts      # AI 回显按会话重放(含单测)
+    ├── conv.ts      # 对话记录→活动流卡片映射(含单测)
+    ├── cdtrack.ts   # 非 bash 会话 cd 回退推断(含单测)
+    ├── b64.ts       # base64 编解码(UTF-8 安全,含单测)
+    └── aiSession.ts # AI 会话状态单桶(含单测)
 
 src-tauri/src/
 ├── main.rs         # Tauri 入口 + 窗口尺寸/位置持久化
@@ -170,12 +182,19 @@ src-tauri/src/
 ├── ai_job.rs       # AI 任务编排:run_ai_job 状态机 + 子目标/账本
 ├── task_exec.rs    # Agent 命令组装/解析/执行(Linux/Windows/Docker)
 ├── ssh.rs          # SshManager:连接/PTY/exec/SFTP 通道
-├── agent.rs        # AI 客户端(QA 流式 + Agent 单步 + FC + 测试连接/模型列表)
+├── agent.rs        # AI 客户端(引擎本体:QA 流式 + Agent 单步 + FC)
+├── agent_prompts.rs # 提示词域(QA/Agent 内置提示词)
+├── agent_stream.rs # 传输域(SSE 解析/重试退避/本地判定/models)
+├── agent_parse.rs  # 解析域(回复清理/命令提取/子目标与 RUN 协议)
 ├── safety.rs       # 危险命令判级 + QA 只读命令门禁
 ├── skills.rs       # 内置技能(意图匹配 + 确定性命令序列)
 ├── fs.rs           # SFTP 文件命令
 ├── monitor.rs      # 系统监控采集(Linux/Windows)
 ├── recorder.rs     # 操作记录器(输入 + AI 轨迹落 JSONL)
+├── snapshot.rs     # 服务器快照:探测/自适应/打包/校验/保留/链
+├── intercept.rs    # 命令前拦截:行缓冲状态机(拿不准就放行)
+├── baseline.rs     # 滚动基线:只读不拍,写操作才拍
+├── restore.rs      # 快照还原:预演/暂存/强制二次快照
 ├── crypto.rs       # DPAPI 加解密
 ├── known_hosts.rs  # 主机密钥 TOFU
 └── config.rs       # 配置加载/原子保存
@@ -202,7 +221,7 @@ node scripts/bench/run.mjs           # Agent 评测:8 个真实运维任务,原�
 node scripts/verify-ui.mjs           # UI 冒烟(需 CDP 调试端口 9229 + vite),退出码即结果
 ```
 
-- **SFT 导出**：按 `ai_task` 分窗，只收 `exit_code == 0` 的成功步，剔除协议标记与重复；system 提示词运行时从 `agent.rs` 提取（改提示词无需同步脚本）。产物 `dataset/` 已 gitignore（含内网数据）
+- **SFT 导出**：按 `ai_task` 分窗，只收 `exit_code == 0` 的成功步，剔除协议标记与重复；system 提示词运行时从 `agent_prompts.rs` 提取（改提示词无需同步脚本）。产物 `dataset/` 已 gitignore（含内网数据）
 - **评测基准**：`scripts/bench/tasks.json` 定义 8 个任务（磁盘/内存/日志/服务/文件/用户/端口/清理），支持 `verify` 后置校验（file-exists / file-absent）与 `no-op` 判定
 - 训练在训练机上进行（本机不训练）：`dataset/sft-samples.jsonl` → QLoRA 小模型 → GGUF → Ollama 导入 → 用同一套 bench 对比基线
 

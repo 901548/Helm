@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent;
+mod agent_parse;
+mod agent_prompts;
+mod agent_stream;
 mod ai_job;
 mod baseline;
 mod config;

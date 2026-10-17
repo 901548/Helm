@@ -16,7 +16,7 @@ node scripts/dataset/export.mjs        # 输出 dataset/sft-samples.jsonl + data
 ```json
 {
   "messages": [
-    { "role": "system", "content": "<内置 Agent 提示词，导出时自动从 src-tauri/src/agent.rs 提取>" },
+    { "role": "system", "content": "<内置 Agent 提示词，导出时自动从 src-tauri/src/agent_prompts.rs 提取>" },
     { "role": "user", "content": "[任务] 查看磁盘使用情况…\n[目录] /root\n[上一步命令] df -h\n[上一步输出]\n…" },
     { "role": "assistant", "content": "df -h | sort -k 5 -nr | head -n 6" }
   ],
@@ -59,4 +59,4 @@ node scripts/dataset/export.mjs        # 输出 dataset/sft-samples.jsonl + data
 
 - 记录器：`src-tauri/src/recorder.rs`（P70，字段定义与过滤规则的源头）
 - 评测：`scripts/bench/run.mjs`（v2，事件流判定 + 自动批准）
-- 提示词单一来源：`src-tauri/src/agent.rs::default_system_prompt_agent`（导出器运行时自动提取，改提示词无需同步本脚本）
+- 提示词单一来源：`src-tauri/src/agent_prompts.rs::default_system_prompt_agent`（P134-C 自 agent.rs 拆出；导出器运行时自动提取，改提示词无需同步本脚本）

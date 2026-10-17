@@ -4,7 +4,7 @@
 // 输出：dataset/sft-samples.jsonl（OpenAI messages 单轮样本）+ dataset/stats.json + 控制台审计
 //
 // 样本构造（与部署形态一致）：
-//   system   = 内置 Agent 提示词（运行时从 src-tauri/src/agent.rs 提取，防两处漂移）
+//   system   = 内置 Agent 提示词（运行时从 src-tauri/src/agent_prompts.rs 提取，防两处漂移）
 //   user     = [任务] + [目录] +（非首步时）[上一步命令的输出]——还原 agent_step 的 prev_output 上下文
 //   assistant= 该步命令（单行，exit_code==0 才收）
 //
@@ -26,15 +26,15 @@ const OUT = path.join(ROOT, process.argv.includes("--out") ? process.argv[proces
 const PREV_OUTPUT_CAP = 400; // user 上下文里上一步输出的截断长度（agent 实际回喂更大，训练样本取短防稀释）
 const COMMAND_CAP = 2000; // 防御：异常长的"命令"不可能是正经单行命令
 
-// ---------- 内置 Agent 提示词：从 agent.rs 提取（与部署一致，防两处漂移） ----------
+// ---------- 内置 Agent 提示词：从 agent_prompts.rs 提取（与部署一致，防两处漂移；P134-C 自 agent.rs 拆出） ----------
 function extractAgentPrompt() {
-  const src = fs.readFileSync(path.join(ROOT, "src-tauri/src/agent.rs"), "utf8");
+  const src = fs.readFileSync(path.join(ROOT, "src-tauri/src/agent_prompts.rs"), "utf8");
   const m = src.match(/pub fn default_system_prompt_agent\(\) -> String \{\s*concat!\(([\s\S]*?)\)\s*\.to_string\(\)/);
-  if (!m) throw new Error("无法从 agent.rs 提取 default_system_prompt_agent——函数签名变了，请同步本脚本");
+  if (!m) throw new Error("无法从 agent_prompts.rs 提取 default_system_prompt_agent——函数签名变了，请同步本脚本");
   const parts = [...m[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((x) =>
     x[1].replace(/\\n/g, "\n").replace(/\\"/g, '"').replace(/\\\\/g, "\\"),
   );
-  if (parts.length === 0) throw new Error("agent.rs 提示词提取为空");
+  if (parts.length === 0) throw new Error("agent_prompts.rs 提示词提取为空");
   return parts.join("");
 }
 
@@ -169,7 +169,7 @@ const audit = {
     "qa 记录未导出：历史回答由旧运维提示词产生（DONE / echo 2 等命令形态），属负样本",
     "input 记录未导出：人类键入缺少任务上下文",
     "失败步未导出为单轮样本：恢复型多轮轨迹留作 v2（见 scripts/dataset/README.md）",
-    "样本 system 统一使用内置 Agent 提示词（运行时从 agent.rs 提取）——部署训练后的模型建议清空 config.system_prompt_agent 保持一致",
+    "样本 system 统一使用内置 Agent 提示词（运行时从 agent_prompts.rs 提取）——部署训练后的模型建议清空 config.system_prompt_agent 保持一致",
   ],
 };
 fs.writeFileSync(path.join(OUT, "stats.json"), JSON.stringify(audit, null, 2));

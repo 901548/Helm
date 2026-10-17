@@ -157,8 +157,11 @@ export const aiConvClear = (name: string) => invoke<void>('ai_conv_clear', { nam
 // 导出全部操作历史为单个 JSONL（返回落盘路径）
 export const historyExport = () => invoke<string>('history_export');
 
-// ---------- P127 快照（一期：探测 + 手动打包 + 列表 + 删除） ----------
+// ---------- P127 快照（四期：探测 + 链式打包 + 清单 + 成员取回/还原 + 保留） ----------
 // 命题：让不可逆命令变可逆。详见 docs/P127-服务器快照-设计方案.md
+
+/** "full" = 全量包；"chg" = 变化包（增量，依附于同链的全量包） */
+export type SnapshotKind = 'full' | 'chg';
 
 export interface SnapshotEntry {
   file: string;
@@ -167,6 +170,13 @@ export interface SnapshotEntry {
   size: number;
   verified: boolean;
   paths: string[];
+  kind?: SnapshotKind;
+}
+
+/** 一条快照链：全量包 + 其后的变化包（时间正序叠加） */
+export interface SnapshotChain {
+  full: SnapshotEntry;
+  changes: SnapshotEntry[];
 }
 
 export interface SnapshotProbe {
@@ -203,6 +213,10 @@ export const snapshotPack = (
 
 export const snapshotList = (name: string) =>
   invoke<SnapshotEntry[]>('snapshot_list', { name });
+
+/** 按链分组列出快照（最新链在前，链内变化包时间正序） */
+export const snapshotChains = (name: string) =>
+  invoke<SnapshotChain[]>('snapshot_chains', { name });
 
 export const snapshotRemove = (name: string, file: string) =>
   invoke<void>('snapshot_remove', { name, file });
@@ -253,6 +267,8 @@ export interface DryRunResult {
   truncated: boolean;
   /** 会动到 /etc/ssh/sshd_config（还原错误配置可能导致 sshd 起不来） */
   touchesSshdConfig: boolean;
+  /** 本次还原会依次解包的包（全量在前，变化包时间正序） */
+  packs: string[];
 }
 
 export interface RestoreResult {
@@ -265,14 +281,50 @@ export interface RestoreResult {
   warning: string;
 }
 
-/** 预演：列出会被覆盖/新建的文件，不做任何修改 */
-export const snapshotDryRun = (name: string, pack: string) =>
-  invoke<DryRunResult>('snapshot_dry_run', { name, pack });
+/** 预演：`file` 为列表中的快照文件名（后端自动解析其所属链并叠加），不做任何修改 */
+export const snapshotDryRun = (name: string, file: string) =>
+  invoke<DryRunResult>('snapshot_dry_run', { name, file });
 
 /** 还原（内部强制先拍二次快照；inPlace=false 只解到暂存目录） */
-export const snapshotRestore = (name: string, pack: string, inPlace: boolean) =>
-  invoke<RestoreResult>('snapshot_restore', { name, pack, inPlace });
+export const snapshotRestore = (name: string, file: string, inPlace: boolean) =>
+  invoke<RestoreResult>('snapshot_restore', { name, file, inPlace });
 
 /** 删除暂存目录（只允许 staged-*） */
 export const snapshotDiscardStaged = (name: string, dir: string) =>
   invoke<void>('snapshot_discard_staged', { name, dir });
+
+// ---------- P127 四期（本批）：包内成员浏览 / 单文件取回 / 单文件还原 ----------
+
+export interface MemberEntry {
+  /** 归档内路径（相对 `/`） */
+  path: string;
+  size: number;
+}
+
+export interface FetchResult {
+  /** 文件内容（base64） */
+  contentB64: string;
+  /** 是否因超限被截断（截断时只回传尾部，还原不可用） */
+  truncated: boolean;
+  size: number;
+}
+
+export interface FileRestoreResult {
+  /** 还原目标（宿主绝对路径） */
+  target: string;
+  /** 自动备份路径（为空 = 目标原本不存在） */
+  backup: string;
+  size: number;
+}
+
+/** 列出某个包内的文件清单（按大小降序，超限截断） */
+export const snapshotMembers = (name: string, file: string) =>
+  invoke<MemberEntry[]>('snapshot_members', { name, file });
+
+/** 取回单文件内容（base64；超 FETCH_RETAIN_CAP 时只回尾部并标记截断） */
+export const snapshotFetchFile = (name: string, file: string, member: string) =>
+  invoke<FetchResult>('snapshot_fetch_file', { name, file, member });
+
+/** 单文件还原到原路径（还原前自动把当前文件备份为 .bak-<ts>） */
+export const snapshotRestoreFile = (name: string, file: string, member: string) =>
+  invoke<FileRestoreResult>('snapshot_restore_file', { name, file, member });

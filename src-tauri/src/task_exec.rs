@@ -124,6 +124,23 @@ pub async fn run_task_exec(
     kind: SessionKind,
     container: Option<&str>,
 ) -> Result<TaskExecResult> {
+    run_task_exec_with_limit(handle, cmd, cwd, timeout_secs, kind, container, MAX_TASK_OUTPUT_RETAIN)
+        .await
+}
+
+/// 同 `run_task_exec`，但可指定输出保留上限（字节，保尾部）。
+///
+/// 快照单文件取回（P127 四期）需要把 base64 后的文件内容（可达 ~22MiB）完整带回，
+/// 64KiB 的默认上限只适用于 Agent 步骤输出；调用方按用途传入合适上限。
+pub async fn run_task_exec_with_limit(
+    handle: Arc<russh::client::Handle<SshHandler>>,
+    cmd: &str,
+    cwd: &str,
+    timeout_secs: u64,
+    kind: SessionKind,
+    container: Option<&str>,
+    retain_cap: usize,
+) -> Result<TaskExecResult> {
     let full = if kind == SessionKind::Windows {
         task_exec_cmd_windows(cwd, cmd)
     } else if kind == SessionKind::Docker {
@@ -149,11 +166,11 @@ pub async fn run_task_exec(
             match channel.wait().await {
                 Some(ChannelMsg::Data { data }) => {
                     buf.push_str(&String::from_utf8_lossy(&data));
-                    trim_to_tail(&mut buf, MAX_TASK_OUTPUT_RETAIN);
+                    trim_to_tail(&mut buf, retain_cap);
                 }
                 Some(ChannelMsg::ExtendedData { data, .. }) => {
                     buf.push_str(&String::from_utf8_lossy(&data));
-                    trim_to_tail(&mut buf, MAX_TASK_OUTPUT_RETAIN);
+                    trim_to_tail(&mut buf, retain_cap);
                 }
                 Some(_) => {}
                 None => break,

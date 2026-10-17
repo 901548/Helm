@@ -1456,7 +1456,7 @@ pub async fn fs_list_dir(
     crate::fs::list_dir(&state.ssh, &state.fs_cwd, &name, &path).await
 }
 
-// ---------- P127 快照（一期：探测 + 手动打包 + 列表 + 删除） ----------
+// ---------- P127 快照（探测 + 打包 + 清单 + 链 + 成员取回/还原 + 保留） ----------
 //
 // 命题：让不可逆命令变可逆。详见 src/snapshot.rs 与 docs/P127-服务器快照-设计方案.md。
 
@@ -1503,13 +1503,59 @@ pub async fn snapshot_remove(
     crate::snapshot::remove(&state.ssh, &name, &file).await.map_err(|e| e.to_string())
 }
 
-/// 执行保留策略（超出份数删最旧），返回删除数量
+/// 执行保留策略（按链计：保留最近 N 条链，超出的整链删除），返回删除数量
 #[tauri::command]
 pub async fn snapshot_prune(
     state: State<'_, CoreState>,
     name: String,
 ) -> Result<usize, String> {
     crate::snapshot::prune(&state.ssh, &name).await.map_err(|e| e.to_string())
+}
+
+/// 按链分组列出快照（链 = 全量 + 其变化包；最新链在前）
+#[tauri::command]
+pub async fn snapshot_chains(
+    state: State<'_, CoreState>,
+    name: String,
+) -> Result<Vec<crate::snapshot::SnapshotChain>, String> {
+    let entries = crate::snapshot::list(&state.ssh, &name).await.map_err(|e| e.to_string())?;
+    Ok(crate::snapshot::build_chains(&entries))
+}
+
+/// 浏览快照包内文件清单（成员级；仅普通文件）
+#[tauri::command]
+pub async fn snapshot_members(
+    state: State<'_, CoreState>,
+    name: String,
+    file: String,
+) -> Result<Vec<crate::snapshot::MemberEntry>, String> {
+    crate::snapshot::members(&state.ssh, &name, &file).await.map_err(|e| e.to_string())
+}
+
+/// 从快照包内取回单个文件内容（base64；大文件按上限截断）
+#[tauri::command]
+pub async fn snapshot_fetch_file(
+    state: State<'_, CoreState>,
+    name: String,
+    file: String,
+    member: String,
+) -> Result<crate::snapshot::FetchResult, String> {
+    crate::snapshot::fetch_file(&state.ssh, &name, &file, &member)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// 从快照还原单个文件到远端原路径（覆盖前自动备份原文件）
+#[tauri::command]
+pub async fn snapshot_restore_file(
+    state: State<'_, CoreState>,
+    name: String,
+    file: String,
+    member: String,
+) -> Result<crate::snapshot::FileRestoreResult, String> {
+    crate::snapshot::restore_file(&state.ssh, &name, &file, &member)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// 设置命令前拦截开关（P127 二期）
@@ -1608,31 +1654,56 @@ async fn capture_baseline(
     ssh: &Arc<SshManager>,
     name: &str,
 ) -> anyhow::Result<crate::snapshot::PackResult> {
-    let probe = crate::snapshot::probe(ssh, name).await?;
-    let est: u64 = probe
-        .path_sizes
-        .iter()
-        .filter(|(p, _)| probe.recommended.contains(p))
-        .map(|(_, mb)| *mb)
-        .sum();
-    crate::snapshot::pack(ssh, name, &probe.recommended, probe.disk_avail_mb, est).await
+    // 自适应范围 + 链化（P127 四期）：同范围未超 `MAX_CHG_PER_CHAIN` 就出变化包
+    crate::snapshot::capture_auto(ssh, name).await
 }
 
-// ---------- P127 四期：还原 ----------
+// ---------- P127 四期（本批）：还原（链感知） ----------
+
+/// 把「列表中某个快照文件」解析成**本次还原要用的包序列**：
+/// 链首全量包 + 截至该文件（含）的时间正序变化包。
+///
+/// 变化包是叠加语义，故比该文件更新的变化包**不纳入**（= 还原到该时间点）。
+/// 若该文件是不带全量的孤儿变化包（build_chains 会丢弃），给出明确报错。
+async fn packs_for_file(
+    state: &CoreState,
+    name: &str,
+    file: &str,
+) -> Result<Vec<String>, String> {
+    let entries = crate::snapshot::list(&state.ssh, name).await.map_err(|e| e.to_string())?;
+    let chains = crate::snapshot::build_chains(&entries);
+    let chain = chains
+        .iter()
+        .find(|c| c.full.file == file || c.changes.iter().any(|x| x.file == file))
+        .ok_or_else(|| format!("找不到该快照（或它缺少所属全量包，无法还原）：{file}"))?;
+    let mut packs = vec![chain.full.path.clone()];
+    if chain.full.file != file {
+        for chg in &chain.changes {
+            packs.push(chg.path.clone());
+            if chg.file == file {
+                break;
+            }
+        }
+    }
+    Ok(packs)
+}
 
 /// 预演还原：列出会被覆盖/新建的文件，**不做任何修改**（设计稿 §8.3）
+///
+/// `file` 为列表中的快照文件名；内部解析为其所属链后叠加预演。
 #[tauri::command]
 pub async fn snapshot_dry_run(
     state: State<'_, CoreState>,
     name: String,
-    pack: String,
+    file: String,
 ) -> Result<crate::restore::DryRunResult, String> {
-    crate::restore::dry_run(&state.ssh, &name, &pack)
+    let packs = packs_for_file(&state, &name, &file).await?;
+    crate::restore::dry_run(&state.ssh, &name, &packs)
         .await
         .map_err(|e| e.to_string())
 }
 
-/// 还原快照。
+/// 还原快照（链 = 全量 + 变化包，依次解包叠加）。
 ///
 /// **内部强制先对当前状态拍二次快照**（§8.1，无开关可关）——
 /// 否则还原是单向门。`in_place=false`（默认）只解到暂存目录。
@@ -1640,10 +1711,11 @@ pub async fn snapshot_dry_run(
 pub async fn snapshot_restore(
     state: State<'_, CoreState>,
     name: String,
-    pack: String,
+    file: String,
     in_place: bool,
 ) -> Result<crate::restore::RestoreResult, String> {
-    crate::restore::restore(&state.ssh, &name, &pack, in_place)
+    let packs = packs_for_file(&state, &name, &file).await?;
+    crate::restore::restore(&state.ssh, &name, &packs, in_place)
         .await
         .map_err(|e| e.to_string())
 }

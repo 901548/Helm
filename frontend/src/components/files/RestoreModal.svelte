@@ -12,12 +12,12 @@
 
   interface Props {
     session: string;
-    pack: string;
+    /** 列表中的快照文件名；后端自动解析其所属链（全量 + 变化包）并叠加 */
     file: string;
     onClose: () => void;
     onRestored: () => void;
   }
-  let { session, pack, file, onClose, onRestored }: Props = $props();
+  let { session, file, onClose, onRestored }: Props = $props();
 
   let dry = $state<DryRunResult | null>(null);
   let loading = $state(true);
@@ -33,7 +33,7 @@
     loading = true;
     error = "";
     try {
-      dry = await api.snapshotDryRun(session, pack);
+      dry = await api.snapshotDryRun(session, file);
     } catch (e) {
       error = String(e);
     } finally {
@@ -42,7 +42,7 @@
   }
 
   $effect(() => {
-    void pack;
+    void file;
     load();
   });
 
@@ -55,7 +55,7 @@
     working = true;
     error = "";
     try {
-      result = await api.snapshotRestore(session, pack, inPlace);
+      result = await api.snapshotRestore(session, file, inPlace);
       onRestored();
     } catch (e) {
       error = String(e);
@@ -86,10 +86,20 @@
     {:else if dry}
       <!-- 预演摘要（§8.3：还原必须可预演） -->
       <div class="rs-summary">
-        包内 <strong>{dry.total}</strong> 个文件：
+        {#if dry.packs.length > 1}合并 {dry.packs.length} 个包，{/if}包内 <strong>{dry.total}</strong> 个文件：
         <span class="ov">覆盖 {dry.overwrite}</span>
         <span class="cr">新建 {dry.create}</span>
       </div>
+
+      {#if dry.packs.length > 1}
+        <!-- 链式还原：全量包 + 变化包按时间正序依次解包叠加 -->
+        <div class="rs-chain">
+          <div class="rs-chain-title">此快照属于一条链，将按顺序依次解包叠加（后一个包覆盖前一个）：</div>
+          {#each dry.packs as p, i (p)}
+            <code class="rs-chain-pack">{p}</code>{#if i < dry.packs.length - 1}<span class="rs-chain-arrow">→</span>{/if}
+          {/each}
+        </div>
+      {/if}
 
       {#if dry.touchesSshdConfig}
         <div class="rs-danger">
@@ -226,6 +236,28 @@
   .rs-summary .cr {
     color: var(--ok);
     margin-left: 0.4rem;
+  }
+  /* 链式还原：包序列展示 */
+  .rs-chain {
+    padding: 0.45rem 0.7rem;
+    background: var(--input-bg);
+    border-radius: var(--radius-sm);
+    font-size: 0.72rem;
+    line-height: 1.8;
+    margin-bottom: 0.5rem;
+    word-break: break-all;
+  }
+  .rs-chain-title {
+    color: var(--fg-muted);
+    margin-bottom: 0.15rem;
+  }
+  .rs-chain-pack {
+    font-family: "JetBrains Mono", "Cascadia Mono", monospace;
+    font-size: 0.72rem;
+  }
+  .rs-chain-arrow {
+    color: var(--fg-muted);
+    margin: 0 0.3rem;
   }
   .rs-danger {
     padding: 0.5rem 0.7rem;

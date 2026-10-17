@@ -66,6 +66,8 @@ pub struct DryRunResult {
     pub truncated: bool,
     /// 包内是否含 `etc/ssh/sshd_config`（还原它可能导致 sshd 起不来）
     pub touches_sshd_config: bool,
+    /// 本次还原会依次解包的包（全量在前，变化包按时间正序；UI 展示用）
+    pub packs: Vec<String>,
 }
 
 /// 暂存还原结果
@@ -91,7 +93,7 @@ const DIFF_LIMIT: usize = 300;
 ///
 /// 用 `tar -tzf` + `awk` 一次拿到 路径 与 大小：
 /// `tar -tvzf` 的输出形如 `-rw-r--r-- root/root 1234 2026-10-15 11:00 etc/hosts`
-fn list_cmd(pack: &str) -> String {
+pub(crate) fn list_cmd(pack: &str) -> String {
     format!(
         // 只取普通文件（`-` 开头），目录条目跳过（还原时会自动建）
         "tar -tvzf {p} 2>/dev/null | awk '$1 ~ /^-/ {{s=$3; $1=$2=$3=$4=$5=\"\"; sub(/^ +/,\"\"); print s\"\\t\"$0}}'",
@@ -177,6 +179,7 @@ pub fn build_diff(
         truncated: pack_files.len() > limit,
         diff,
         touches_sshd_config: touches_sshd,
+        packs: Vec::new(),
     }
 }
 
@@ -198,15 +201,27 @@ pub fn stat_cmd(paths: &[String]) -> String {
 }
 
 /// 预演：列出包内文件 + 与当前状态对比，**不做任何修改**
-pub async fn dry_run(ssh: &Arc<SshManager>, name: &str, pack: &str) -> Result<DryRunResult> {
-    let (out, code) = run(ssh, name, &list_cmd(pack), DRY_RUN_TIMEOUT_SECS).await?;
-    if code != 0 {
-        return Err(anyhow!("读取快照内容失败（包可能损坏）"));
+///
+/// `packs`：本次还原要用的包（链顺序——全量在前，变化包按时间正序在后）。
+/// 变化包是"叠加"语义，故合并成员时**后包覆盖前包**（同一路径取最后出现的版本）。
+pub async fn dry_run(ssh: &Arc<SshManager>, name: &str, packs: &[String]) -> Result<DryRunResult> {
+    if packs.is_empty() {
+        return Err(anyhow!("没有可还原的快照"));
     }
-    let files = parse_tar_list(&out);
-    if files.is_empty() {
+    let mut merged: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for p in packs {
+        let (out, code) = run(ssh, name, &list_cmd(p), DRY_RUN_TIMEOUT_SECS).await?;
+        if code != 0 {
+            return Err(anyhow!("读取快照内容失败（包可能损坏）：{}", p));
+        }
+        for (path, size) in parse_tar_list(&out) {
+            merged.insert(path, size);
+        }
+    }
+    if merged.is_empty() {
         return Err(anyhow!("快照内没有文件"));
     }
+    let files: Vec<(String, u64)> = merged.into_iter().collect();
 
     // 分批查目标状态（避免一次给太多路径）
     let mut exists = std::collections::HashMap::new();
@@ -222,34 +237,34 @@ pub async fn dry_run(ssh: &Arc<SshManager>, name: &str, pack: &str) -> Result<Dr
         }
     }
 
-    Ok(build_diff(&files, &exists, DIFF_LIMIT))
+    let mut r = build_diff(&files, &exists, DIFF_LIMIT);
+    r.packs = packs.to_vec();
+    Ok(r)
 }
 
-/// 还原。
+/// 还原（支持"全量 + 变化包"链：按顺序依次解包叠加）。
 ///
 /// **顺序不可颠倒**（设计稿 §8.1）：
 ///   1. **先对当前状态拍二次快照** —— 否则还原是单向门
-///   2. 解包到暂存目录（默认）或就地（`in_place=true`）
+///   2. 按链顺序解包到暂存目录（默认）或就地（`in_place=true`）；
+///      变化包在前包之上叠加，任一包失败即整体中止
 ///   3. 就地时：`sshd -t` 校验，失败则告警（不 reload）
 pub async fn restore(
     ssh: &Arc<SshManager>,
     name: &str,
-    pack: &str,
+    packs: &[String],
     in_place: bool,
 ) -> Result<RestoreResult> {
+    if packs.is_empty() {
+        return Err(anyhow!("没有可还原的快照"));
+    }
+
     // ---- 1. 强制二次快照（无开关可关）----
-    let pre = crate::snapshot::probe(ssh, name).await?;
-    let est: u64 = pre
-        .path_sizes
-        .iter()
-        .filter(|(p, _)| pre.recommended.contains(p))
-        .map(|(_, mb)| *mb)
-        .sum();
-    let pre_snap = crate::snapshot::pack(ssh, name, &pre.recommended, pre.disk_avail_mb, est)
+    let pre_snap = crate::snapshot::capture_auto(ssh, name)
         .await
         .map_err(|e| anyhow!("还原前的二次快照失败，已中止还原（保护当前状态）：{e}"))?;
 
-    // ---- 2. 解包 ----
+    // ---- 2. 解包（链顺序叠加）----
     let (home, _) = run(ssh, name, "printf %s \"$HOME\"", 20).await?;
     let home = home.trim().trim_end_matches('/').to_string();
     let ts = now_secs(ssh, name).await?;
@@ -261,21 +276,37 @@ pub async fn restore(
         (d.clone(), d)
     };
 
-    let cmd = format!(
-        "mkdir -p {t} && tar -xzf {p} -C {t} 2>&1 | head -5; echo \"___RC___$?\"",
-        t = shq(&target),
-        p = shq(pack)
-    );
-    let (out, _) = run(ssh, name, &cmd, RESTORE_TIMEOUT_SECS).await?;
-    // 注意：管道后 `$?` 是 head 的状态，故改用文件数校验
-    let (cnt_out, _) = run(
-        ssh,
-        name,
-        &format!("find {t} -type f 2>/dev/null | wc -l", t = shq(&target)),
-        60,
-    )
-    .await?;
-    let restored: usize = cnt_out.trim().parse().unwrap_or(0);
+    // 用 `&&` 串起链内各包：任一步失败即中止（退出码可靠，不再经管道）
+    let extract = packs
+        .iter()
+        .map(|p| format!("tar -xzf {} -C {}", shq(p), shq(&target)))
+        .collect::<Vec<_>>()
+        .join(" && ");
+    let cmd = format!("mkdir -p {t} && {extract}", t = shq(&target));
+    let (out, code) = run(ssh, name, &cmd, RESTORE_TIMEOUT_SECS).await?;
+    if code != 0 {
+        return Err(anyhow!("还原失败（exit {code}）：{}", out.trim()));
+    }
+
+    // 就地还原不能 `find /`（会把整个文件系统数一遍）→ 用链内成员总数；
+    // 暂存目录用真实落盘计数（防"解出 0 个文件却报成功"）。
+    let restored: usize = if in_place {
+        let mut n = 0usize;
+        for p in packs {
+            let (o, _) = run(ssh, name, &list_cmd(p), DRY_RUN_TIMEOUT_SECS).await?;
+            n += parse_tar_list(&o).len();
+        }
+        n
+    } else {
+        let (cnt_out, _) = run(
+            ssh,
+            name,
+            &format!("find {t} -type f 2>/dev/null | wc -l", t = shq(&target)),
+            60,
+        )
+        .await?;
+        cnt_out.trim().parse().unwrap_or(0)
+    };
     if restored == 0 {
         return Err(anyhow!("还原失败：未解出任何文件。输出：{}", out.trim()));
     }
@@ -293,7 +324,9 @@ pub async fn restore(
         )
         .await?;
         if has.contains("YES") {
-            let (o, c) = run(ssh, name, "sshd -t 2>&1 | head -3", 30).await?;
+            // 不能接管道:管道后 `$?` 是 head 的状态恒为 0(实测踩过),
+            // `sshd -t` 的退出码必须直接取,否则校验形同虚设。
+            let (o, c) = run(ssh, name, "sshd -t 2>&1", 30).await?;
             let ok = c == 0;
             sshd_check = Some(ok);
             if !ok {

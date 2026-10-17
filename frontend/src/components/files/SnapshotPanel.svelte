@@ -1,5 +1,5 @@
 <script lang="ts">
-  // P127 快照面板（一期：探测 + 手动打包 + 列表 + 删除）
+  // P127 快照面板（四期：探测 + 链式打包 + 链分组列表 + 浏览/取回 + 还原 + 删除）
   //
   // 设计要点（docs/P127-服务器快照-设计方案.md）：
   //   - **不让用户选档位**（§4.8）：探测后以「结论」形式告知，而非选择题
@@ -8,9 +8,11 @@
   //   - 残包不进列表：pack 内部校验失败即删（§14.1）—— 残包比没有包更危险
   import ModalShell from "../ui/ModalShell.svelte";
   import * as api from "../../lib/api";
-  import type { SnapshotEntry, SnapshotProbe } from "../../lib/commands";
+  import type { SnapshotChain, SnapshotEntry, SnapshotProbe } from "../../lib/commands";
   // P127 四期：还原对话框
   import RestoreModal from "./RestoreModal.svelte";
+  // P127 四期（本批）：包内成员浏览/取回
+  import SnapshotBrowser from "./SnapshotBrowser.svelte";
 
   interface Props {
     session: string;
@@ -19,7 +21,7 @@
   let { session, onClose }: Props = $props();
 
   let probe = $state<SnapshotProbe | null>(null);
-  let entries = $state<SnapshotEntry[]>([]);
+  let chains = $state<SnapshotChain[]>([]);
   let loading = $state(true);
   let packing = $state(false);
   let error = $state("");
@@ -32,6 +34,13 @@
   let baselineEst = $state(false);
   /** P127 四期：正在还原的快照 */
   let restoreTarget = $state<SnapshotEntry | null>(null);
+  /** P127 四期（本批）：正在浏览成员的包文件名 */
+  let browseFile = $state<string | null>(null);
+
+  /** 全部快照份数（全量 + 变化包） */
+  const totalCount = $derived(
+    chains.reduce((s, c) => s + 1 + c.changes.length, 0),
+  );
 
   /** 用户可勾选的路径（默认用探测推荐值） */
   let picked = $state<Set<string>>(new Set());
@@ -40,14 +49,14 @@
     loading = true;
     error = "";
     try {
-      const [p, list, ic, bs] = await Promise.all([
+      const [p, cs, ic, bs] = await Promise.all([
         api.snapshotProbe(session),
-        api.snapshotList(session),
+        api.snapshotChains(session),
         api.snapshotGetIntercept(),
         api.baselineStatus(session),
       ]);
       probe = p;
-      entries = list;
+      chains = cs;
       interceptOn = ic;
       baselineOn = bs[0];
       baselineEst = bs[1];
@@ -258,23 +267,50 @@
         {/if}
       </section>
 
-      <!-- 区块 3：已有快照 -->
+      <!-- 区块 3：已有快照（按链分组：全量包 + 其后的变化包缩进叠加展示） -->
       <section class="snap-sec">
         <div class="snap-sec-title">
           已有快照
-          <span class="snap-sec-note">{entries.length} 份</span>
+          <span class="snap-sec-note">
+            {totalCount} 份{#if chains.length > 1} · {chains.length} 条链{/if}
+          </span>
         </div>
-        {#if entries.length === 0}
+        {#if totalCount === 0}
           <p class="snap-hint">暂无快照</p>
         {:else}
-          {#each entries as e (e.file)}
-            <div class="snap-row">
-              <div class="snap-row-main">
-                <span class="snap-file" title={e.path}>{e.file}</span>
-                <span class="snap-meta">{fmtSize(e.size)} · {fmtTime(e.createdAt)}</span>
+          {#each chains as ch (ch.full.file)}
+            <div class="snap-chain">
+              <div class="snap-row">
+                <div class="snap-row-main">
+                  <span class="snap-file" title={ch.full.path}>
+                    {#if ch.changes.length > 0}<span class="kind full">全量</span>{/if}
+                    {ch.full.file}
+                  </span>
+                  <span class="snap-meta">
+                    {fmtSize(ch.full.size)} · {fmtTime(ch.full.createdAt)}{#if ch.changes.length > 0} · 含 {ch.changes.length} 个变化包{/if}
+                  </span>
+                </div>
+                <button class="snap-browse" title="浏览包内文件" onclick={() => (browseFile = ch.full.file)}>浏览</button>
+                <button class="snap-restore" title="还原此快照（会先预演）" onclick={() => (restoreTarget = ch.full)}>还原</button>
+                <button
+                  class="snap-del"
+                  title={ch.changes.length > 0 ? `删除整条链（含 ${ch.changes.length} 个变化包）` : "删除此快照"}
+                  onclick={() => doRemove(ch.full.file)}>×</button>
               </div>
-              <button class="snap-restore" title="还原此快照（会先预演）" onclick={() => (restoreTarget = e)}>还原</button>
-              <button class="snap-del" title="删除此快照" onclick={() => doRemove(e.file)}>×</button>
+              {#each ch.changes as e (e.file)}
+                <div class="snap-row chg">
+                  <div class="snap-row-main">
+                    <span class="snap-file" title={e.path}>
+                      <span class="kind chg">变化</span>
+                      {e.file}
+                    </span>
+                    <span class="snap-meta">{fmtSize(e.size)} · {fmtTime(e.createdAt)}</span>
+                  </div>
+                  <button class="snap-browse" title="浏览包内文件" onclick={() => (browseFile = e.file)}>浏览</button>
+                  <button class="snap-restore" title="还原到此快照（全量 + 之前的叠加，会先预演）" onclick={() => (restoreTarget = e)}>还原</button>
+                  <button class="snap-del" title="删除此变化包（会丢弃它之后的变化叠加）" onclick={() => doRemove(e.file)}>×</button>
+                </div>
+              {/each}
             </div>
           {/each}
         {/if}
@@ -301,10 +337,17 @@
 {#if restoreTarget}
   <RestoreModal
     session={session}
-    pack={restoreTarget.path}
     file={restoreTarget.file}
     onClose={() => (restoreTarget = null)}
     onRestored={load}
+  />
+{/if}
+
+{#if browseFile}
+  <SnapshotBrowser
+    session={session}
+    file={browseFile}
+    onClose={() => (browseFile = null)}
   />
 {/if}
 
@@ -468,7 +511,14 @@
     color: var(--warning);
   }
 
-  /* 快照列表 */
+  /* 快照列表（按链分组） */
+  .snap-chain {
+    margin-bottom: 0.3rem;
+  }
+  .snap-chain + .snap-chain {
+    border-top: 1px dashed var(--border);
+    padding-top: 0.25rem;
+  }
   .snap-row {
     display: flex;
     align-items: center;
@@ -478,6 +528,27 @@
   }
   .snap-row:hover {
     background: var(--hover);
+  }
+  /* 变化包缩进：视觉上"依附于上面的全量包" */
+  .snap-row.chg {
+    padding-left: 1.2rem;
+  }
+  .kind {
+    display: inline-block;
+    font-size: 0.62rem;
+    line-height: 1.4;
+    padding: 0 0.28rem;
+    border-radius: 3px;
+    margin-right: 0.25rem;
+    vertical-align: 1px;
+  }
+  .kind.full {
+    background: var(--accent);
+    color: #fff;
+  }
+  .kind.chg {
+    border: 1px solid var(--border);
+    color: var(--fg-muted);
   }
   .snap-row-main {
     flex: 1;
@@ -498,7 +569,8 @@
     color: var(--fg-muted);
     font-variant-numeric: tabular-nums;
   }
-  .snap-restore {
+  .snap-restore,
+  .snap-browse {
     flex-shrink: 0;
     border: 1px solid var(--border);
     background: transparent;
@@ -508,7 +580,8 @@
     border-radius: var(--radius-sm);
     font-size: 0.7rem;
   }
-  .snap-restore:hover {
+  .snap-restore:hover,
+  .snap-browse:hover {
     color: var(--accent);
     border-color: var(--accent);
   }

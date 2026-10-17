@@ -1,59 +1,26 @@
 <script lang="ts">
   import { dockerPs } from "../../lib/api";
-  import type { AiCard, AiGoalCard, AiState, DangerLevel, SessionStatus } from "../../lib/api";
+  import type { AiCard, AiDockProps, AiGoalCard, AiState, DangerLevel, SessionKind, SessionStatus } from "../../lib/api";
 
   // AI 常驻命令条 + 活动流(P39):所有 AI 触点收敛于此——
   // 模式切换、任务输入、步骤卡片、危险确认、停止/日志,终端保持纯净。
   interface Props {
-    mode: "qa" | "agent";
-    busy: boolean;
-    aiState?: AiState;
-    kind?: string;
+    /** P134-B：AI dock 聚合对象（数据 `ai.session` + focusSeq/log/logOpen/echo + 全部回调） */
+    ai: AiDockProps;
+    kind?: SessionKind;
     name?: string;
     status?: SessionStatus;
-    cards: AiCard[];
-    taskText: string;
-    summary: { text: string; ok: boolean } | null;
-    streamOpen: boolean;
-    focusSeq: number;
-    logOpen: boolean;
-    thinking?: string;
-    onSubmit: (text: string, container?: string | null) => void;
-    onStop: () => void;
-    /// 确认/拒绝携带点击卡片的 id（后端 PendingCommand.source 决定路由：AI 确认 vs 终端拦截）
-    onApprove: (id?: number) => void;
-    onReject: (id?: number) => void;
-    onEditPlan: (commands: string[]) => void;
-    onModeChange: (m: "qa" | "agent") => void;
-    onToggleStream: () => void;
-    onToggleLog: () => void;
-    onClear: () => void;
   }
 
   let {
-    mode,
-    busy,
-    aiState = "idle",
+    ai,
     kind = "linux",
     name = "",
     status = "Disconnected",
-    cards,
-    taskText,
-    summary,
-    streamOpen,
-    focusSeq,
-    logOpen,
-    thinking = "",
-    onSubmit,
-    onStop,
-    onApprove,
-    onReject,
-    onEditPlan,
-    onModeChange,
-    onToggleStream,
-    onToggleLog,
-    onClear,
   } = $props<Props>();
+
+  // 会话 AI 运行态（busy/state/mode/cards/taskText/summary/streamOpen/thinking）
+  const s = $derived(ai.session);
 
   let text = $state("");
   // §8.7.4 Docker 会话运行时容器选择（每次提交携带；默认项=会话持久化容器）
@@ -85,7 +52,7 @@
     readingBack: "读取回显",
   };
 
-  const hasContent = $derived(cards.length > 0 || !!summary || !!taskText);
+  const hasContent = $derived(s.cards.length > 0 || !!s.summary || !!s.taskText);
 
   // P104-4 L2-beta：子目标分组浏览。步骤卡归属于"向前最近的一个 goal 卡"，
   // 渲染层缩进表达层级；流头部展示整体进度（ok/total）。
@@ -98,7 +65,7 @@
     return false;
   }
   const goalStats = $derived.by(() => {
-    const goals = cards.filter((c): c is AiGoalCard => c.kind === "goal");
+    const goals = s.cards.filter((c): c is AiGoalCard => c.kind === "goal");
     if (goals.length === 0) return null;
     const last = goals[goals.length - 1];
     return {
@@ -110,8 +77,8 @@
 
   function submit() {
     const t = text.trim();
-    if (!t || busy) return;
-    onSubmit(t, containerInput.trim() || null);
+    if (!t || s.busy) return;
+    ai.onDockSubmit(t, containerInput.trim() || null);
     text = "";
   }
 
@@ -145,10 +112,10 @@
   function applyEditPlan() {
     const cmds = planEditText
       .split("\n")
-      .map((s) => s.trim())
+      .map((line) => line.trim())
       .filter(Boolean);
     editingPlanId = null;
-    onEditPlan(cmds);
+    ai.onEditPlan(cmds);
   }
 
   // §8.7.4 容器下拉：拉取 docker ps 容器名列表（kind=docker 且已连会话时）
@@ -197,13 +164,13 @@
 
   // Alt+I → 聚焦输入框(focusSeq 递增触发)
   $effect(() => {
-    if (focusSeq > 0) inputEl?.focus();
+    if (ai.focusSeq > 0) inputEl?.focus();
   });
 
   // 新内容自动滚底
   $effect(() => {
-    cards;
-    summary;
+    s.cards;
+    s.summary;
     requestAnimationFrame(() => {
       if (bodyEl) bodyEl.scrollTop = bodyEl.scrollHeight;
     });
@@ -211,20 +178,20 @@
 </script>
 
 <div class="ai-dock">
-  {#if streamOpen && hasContent}
+  {#if s.streamOpen && hasContent}
     <section class="ai-stream" aria-label="AI 活动流">
       <header class="ai-stream-head">
-        <span class="ai-task" class:agent={mode === "agent"} title={taskText}>
-          {#if mode === "agent"}
+        <span class="ai-task" class:agent={s.mode === "agent"} title={s.taskText}>
+          {#if s.mode === "agent"}
             <svg class="mode-glyph" width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
           {:else}
             <svg class="mode-glyph" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" /></svg>
           {/if}
-          {taskText}
+          {s.taskText}
         </span>
-        {#if summary}
-          <span class="ai-summary" class:err={!summary.ok}>{summary.ok ? "✓" : "✗"} {summary.text}</span>
-        {:else if busy}
+        {#if s.summary}
+          <span class="ai-summary" class:err={!s.summary.ok}>{s.summary.ok ? "✓" : "✗"} {s.summary.text}</span>
+        {:else if s.busy}
           <span class="ai-summary running">执行中…</span>
         {/if}
         {#if goalStats}
@@ -235,19 +202,19 @@
           </span>
         {/if}
         <span class="spacer"></span>
-        <button class="mini" onclick={onClear} title="清空活动流">清空</button>
-        <button class="mini" onclick={onToggleStream} title="收起">▾</button>
+        <button class="mini" onclick={ai.onClear} title="清空活动流">清空</button>
+        <button class="mini" onclick={ai.onToggleStream} title="收起">▾</button>
       </header>
       <div class="ai-stream-body" bind:this={bodyEl}>
-        {#if thinking && busy}
+        {#if s.thinking && s.busy}
           <div class="card thinking-live">
             <div class="thinking-label">思考中…（推理型模型，实时过程）</div>
-            <div class="thinking-text">{thinking}<span class="cursor">▋</span></div>
+            <div class="thinking-text">{s.thinking}<span class="cursor">▋</span></div>
           </div>
         {/if}
-        {#each cards as c, ci (c.id)}
-          {@const planDone = c.kind === "plan" && cards.slice(ci + 1).some((x) => x.kind === "step")}
-          {@const inGoal = inGoalGroup(cards, ci)}
+        {#each s.cards as c, ci (c.id)}
+          {@const planDone = c.kind === "plan" && s.cards.slice(ci + 1).some((x) => x.kind === "step")}
+          {@const inGoal = inGoalGroup(s.cards, ci)}
           {#if c.kind === "qa"}
             <div class="card qa" class:done={c.done}>
               <div class="qa-text">
@@ -296,8 +263,8 @@
                   {#if c.needConfirm}
                     <button class="mini ghost" onclick={() => startEditPlan(c)}>修改</button>
                     <button class="mini" onclick={() => toggleOut(c.id)}>查看命令</button>
-                    <button class="mini ghost" onclick={() => onReject(c.id)}>放弃</button>
-                    <button class="mini go" onclick={() => onApprove(c.id)}>执行</button>
+                    <button class="mini ghost" onclick={() => ai.onReject(c.id)}>放弃</button>
+                    <button class="mini go" onclick={() => ai.onApprove(c.id)}>执行</button>
                   {:else}
                     <span class="safe-hint" title="全部为安全命令，无需确认">安全 · 自动执行</span>
                     <button class="mini" onclick={() => toggleOut(c.id)}>查看命令</button>
@@ -332,8 +299,8 @@
                 <code class="cmd">$ {c.command}</code>
                 {#if c.status === "confirm"}
                   <span class="danger" title={c.reason}>{levelText[c.level ?? "Warning"]} · {c.reason}</span>
-                  <button class="mini ghost" onclick={() => onReject(c.id)}>跳过</button>
-                  <button class="mini go" onclick={() => onApprove(c.id)}>执行</button>
+                  <button class="mini ghost" onclick={() => ai.onReject(c.id)}>跳过</button>
+                  <button class="mini go" onclick={() => ai.onApprove(c.id)}>执行</button>
                 {:else if c.message}
                   <span class="msg">{c.message}</span>
                 {/if}
@@ -353,18 +320,18 @@
 
   <div class="ai-bar">
     <div class="mode-switch" role="group" aria-label="AI 模式">
-      <button class="mode-btn" class:on={mode === "qa"} title="问答模式：聊天式提问" onclick={() => onModeChange("qa")}>
+      <button class="mode-btn" class:on={s.mode === "qa"} title="问答模式：聊天式提问" onclick={() => ai.onModeChange("qa")}>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" /></svg>
         <span>问答</span>
       </button>
-      <button class="mode-btn" class:on={mode === "agent"} title="Agent 模式：描述任务，AI 自动执行" onclick={() => onModeChange("agent")}>
+      <button class="mode-btn" class:on={s.mode === "agent"} title="Agent 模式：描述任务，AI 自动执行" onclick={() => ai.onModeChange("agent")}>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 17l6-6-6-6" /><path d="M12 19h8" /></svg>
         <span>Agent</span>
       </button>
     </div>
-    {#if busy && aiState !== "idle"}
-      <span class="state-chip" class:wait={aiState === "awaitingConfirm"} title="AI 任务状态机当前阶段">
-        <span class="dot" aria-hidden="true"></span>{stateText[aiState]}
+    {#if s.busy && s.state !== "idle"}
+      <span class="state-chip" class:wait={s.state === "awaitingConfirm"} title="AI 任务状态机当前阶段">
+        <span class="dot" aria-hidden="true"></span>{stateText[s.state]}
       </span>
     {/if}
     {#if kind === "docker"}
@@ -394,20 +361,20 @@
       bind:value={text}
       class="ai-input"
       aria-label="AI 任务输入"
-      placeholder={busy ? "AI 执行中…" : mode === "qa" ? "问 AI 任何问题，Enter 发送" : "描述任务，AI 自动执行，Enter 发送"}
+      placeholder={s.busy ? "AI 执行中…" : s.mode === "qa" ? "问 AI 任何问题，Enter 发送" : "描述任务，AI 自动执行，Enter 发送"}
       onkeydown={onKey}
-      disabled={busy}
+      disabled={s.busy}
     />
-    {#if busy}
-      <button class="act stop" onclick={onStop} title="停止当前任务">
+    {#if s.busy}
+      <button class="act stop" onclick={ai.onStop} title="停止当前任务">
         <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
         <span>停止</span>
       </button>
     {:else}
       <button class="act go" onclick={submit} title="发送 (Enter)">发送</button>
     {/if}
-    <button class="act" class:on={logOpen} onclick={onToggleLog} title="AI 日志 (Alt+L)">日志</button>
-    <button class="act" onclick={onToggleStream} disabled={!hasContent} title={streamOpen ? "收起活动流" : "展开活动流"}>{streamOpen ? "▾" : "▴"}</button>
+    <button class="act" class:on={ai.logOpen} onclick={ai.onToggleLog} title="AI 日志 (Alt+L)">日志</button>
+    <button class="act" onclick={ai.onToggleStream} disabled={!hasContent} title={s.streamOpen ? "收起活动流" : "展开活动流"}>{s.streamOpen ? "▾" : "▴"}</button>
   </div>
 </div>
 

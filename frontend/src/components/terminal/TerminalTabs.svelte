@@ -11,7 +11,7 @@
   import type { ITheme } from "@xterm/xterm";
   import "@xterm/xterm/css/xterm.css";
   import * as api from "../../lib/api";
-  import type { AiCard, AiLogEntry, AiState, SessionKind, SessionStatus } from "../../lib/api";
+  import type { AiDockProps, SessionKind, SessionStatus } from "../../lib/api";
   import { normalizePwd, parseOscPwd, stripAnsi as stripAnsiLib } from "../../lib/osc";
   import { replayEcho } from "../../lib/echo";
   // P124：非 bash 会话的 cd 回退推断（纯函数模块，带单测）
@@ -37,29 +37,10 @@
     onPwd?: (name: string, pwd: string) => void;
   /// P127 三期：一条命令执行完毕（OSC7 到达）。用于滚动基线判定。
   onCmdDone?: (name: string) => void;
-    aiMode: "qa" | "agent";
-    aiBusy: boolean;
-    aiState?: AiState;
-    cards: AiCard[];
-    taskText: string;
-    summary: { text: string; ok: boolean } | null;
-    aiStreamOpen: boolean;
-    aiFocusSeq: number;
-    aiLog: AiLogEntry[];
-    logOpen: boolean;
-    aiEcho: { seq: number; name: string; text: string }[];
-    thinking?: string;
+    /** P134-B：AI dock 聚合对象（数据/回调动/states 单对象，getter 恒等引用） */
+    ai: AiDockProps;
     termFontSize?: number;
     termScrollback?: number;
-    onModeChange: (m: "qa" | "agent") => void;    onApprove: (id?: number) => void;
-    onReject: (id?: number) => void;
-    onEditPlan: (commands: string[]) => void;
-    onStop: () => void;
-    onClear: () => void;
-    onOpenTask: () => void;
-    onToggleLog: () => void;
-    onToggleStream: () => void;
-    onDockSubmit: (text: string, container?: string | null, termContext?: string | null) => void;
   }
 
   let {
@@ -75,31 +56,59 @@
     onCd,
     onPwd,
   onCmdDone,
-    aiMode,
-    aiBusy,
-    aiState = "idle",
-    cards,
-    taskText,
-    summary,
-    aiStreamOpen,
-    aiFocusSeq,
-    aiLog,
-    logOpen,
-    aiEcho,
-    thinking = "",
+    ai,
     termFontSize = 14,
     termScrollback = 5000,
-    onModeChange,
-    onApprove,
-    onReject,
-    onEditPlan,
-    onStop,
-    onClear,
-    onOpenTask,
-    onToggleLog,
-    onToggleStream,
-    onDockSubmit,
   } = $props<Props>();
+
+  // P134-B：透传给 AiCopilot 的 AI dock 对象——与入参 `ai` 唯一差异是
+  // `onDockSubmit` 包装（注入终端上下文，P86）。同样恒等引用 + getter：
+  // 数据字段直读入参 getter（保持各自信号追踪），回调为常量引用,只换 submit。
+  const dockAi: AiDockProps = {
+    get session() {
+      return ai.session;
+    },
+    get focusSeq() {
+      return ai.focusSeq;
+    },
+    get log() {
+      return ai.log;
+    },
+    get logOpen() {
+      return ai.logOpen;
+    },
+    get echo() {
+      return ai.echo;
+    },
+    get onModeChange() {
+      return ai.onModeChange;
+    },
+    get onApprove() {
+      return ai.onApprove;
+    },
+    get onReject() {
+      return ai.onReject;
+    },
+    get onEditPlan() {
+      return ai.onEditPlan;
+    },
+    get onStop() {
+      return ai.onStop;
+    },
+    get onClear() {
+      return ai.onClear;
+    },
+    get onOpenTask() {
+      return ai.onOpenTask;
+    },
+    get onToggleLog() {
+      return ai.onToggleLog;
+    },
+    get onToggleStream() {
+      return ai.onToggleStream;
+    },
+    onDockSubmit: (text, container) => dockSubmit(text, container),
+  };
 
   // P124：非 bash 会话的 cd 回退状态（buf + pending），推断逻辑在 lib/cdtrack
   const cdStates = new Map<string, CdFallbackState>();
@@ -612,7 +621,7 @@
     return lines.join("\n").slice(-4000);
   }
   function dockSubmit(text: string, container?: string | null) {
-    onDockSubmit(text, container, extractTermContext());
+    ai.onDockSubmit(text, container, extractTermContext());
   }
 
   function zmodemAbort(name: string) {
@@ -724,11 +733,11 @@
     } else if (e.altKey && key === "i" && !fromAppField) {
       // 聚焦 AI 命令条输入框（⌥I）;输入框内不劫持
       e.preventDefault();
-      onOpenTask();
+      ai.onOpenTask();
     } else if (e.altKey && key === "l" && !fromAppField) {
       // AI 日志（⌥L）
       e.preventDefault();
-      onToggleLog();
+      ai.onToggleLog();
     }
   }
 
@@ -741,9 +750,9 @@
   let lastEchoSeq = new Map<string, number>();
   let termVersion = $state(0);
   $effect(() => {
-    aiEcho;
+    ai.echo;
     void termVersion; // 依赖终端建立版本号，终端建好后重放滞留回显
-    const { writes, next } = replayEcho(aiEcho, lastEchoSeq, (n) => !!terminals.get(n)?.term);
+    const { writes, next } = replayEcho(ai.echo, lastEchoSeq, (n) => !!terminals.get(n)?.term);
     if (writes.length === 0) return;
     const enc = new TextEncoder();
     for (const e of writes) terminals.get(e.name)?.term.write(enc.encode(e.text));
@@ -752,9 +761,9 @@
 
   /// AI 日志：打开时滚到底（新条目到达也滚动）
   $effect(() => {
-    aiLog;
-    logOpen;
-    if (logOpen) {
+    ai.log;
+    ai.logOpen;
+    if (ai.logOpen) {
       requestAnimationFrame(() => {
         if (logBody) logBody.scrollTop = logBody.scrollHeight;
       });
@@ -934,17 +943,17 @@
     {sessionsCollapsed}
   />
 
-  {#if logOpen}
+  {#if ai.logOpen}
     <div class="ai-log-wrap">
       <div class="ai-log-head">
         <span>AI 日志</span>
-        <button class="s-btn" onclick={onToggleLog}>×</button>
+        <button class="s-btn" onclick={ai.onToggleLog}>×</button>
       </div>
       <div class="ai-log-body" bind:this={logBody}>
-        {#if aiLog.length === 0}
+        {#if ai.log.length === 0}
           <p class="ai-log-empty">暂无日志</p>
         {/if}
-        {#each aiLog as entry (entry.id)}
+        {#each ai.log as entry (entry.id)}
           <div class="ai-log-entry" class:err={entry.type === "cmd" && !entry.success}>
             <span class="ai-log-name">{entry.name}</span>
             {#if entry.type === "cmd"}
@@ -966,28 +975,10 @@
 </div>
 
 <AiCopilot
-  mode={aiMode}
-  busy={aiBusy}
-  {aiState}
+  ai={dockAi}
   kind={kinds[activeTab ?? ""] ?? "linux"}
   name={activeTab ?? ""}
   {status}
-  {cards}
-  {taskText}
-  {summary}
-  streamOpen={aiStreamOpen}
-  focusSeq={aiFocusSeq}
-  {logOpen}
-  {thinking}
-  onSubmit={dockSubmit}
-  onStop={onStop}
-  onApprove={onApprove}
-  onReject={onReject}
-  onEditPlan={onEditPlan}
-  onModeChange={onModeChange}
-  onToggleStream={onToggleStream}
-  onToggleLog={onToggleLog}
-  onClear={onClear}
 />
 
 <style>

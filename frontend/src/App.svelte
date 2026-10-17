@@ -8,7 +8,7 @@
   import HistoryModal from "./components/chrome/HistoryModal.svelte";
   import StatusBar from "./components/chrome/StatusBar.svelte";
   import * as api from "./lib/api";
-  import type { AiCard, AiLogEntry, AiQaCard, AiConfig, SessionInfo, SessionKind, SessionStatus, Theme, UiConfig } from "./lib/api";
+  import type { AiCard, AiDockProps, AiLogEntry, AiQaCard, AiConfig, SessionInfo, SessionKind, SessionStatus, Theme, UiConfig } from "./lib/api";
   // P124：后端对话记录 → 卡片的映射抽为纯函数模块（带单测）
   import { convToCards, convTaskText, type ConvEntry } from "./lib/conv";
   // P134-A：会话级 AI 态 8 桶收敛为单 map（含改名迁移/删除清理策略，带单测）
@@ -67,6 +67,38 @@
 
   // P134-A：活动会话的 AI 态（缺条目时返回缺省态，模板/条件单点取用）
   const activeAi = $derived(getAi(aiSessions, activeTab ?? ""));
+
+  // P134-B：AI dock 聚合对象（App → TerminalTabs → AiCopilot 单对象透传，
+  // 替代 22 个平铺 prop）。**恒等引用 + getter**：对象只建一次，身份恒定——
+  // getter 在读取处（子组件模板/derived）执行，依赖仍精确落在各自来源信号上，
+  // 既避免对象整体重建放大无关失效，也无需子组件处处判空。
+  const aiDock: AiDockProps = {
+    get session() {
+      return activeAi;
+    },
+    get focusSeq() {
+      return aiFocusSeq;
+    },
+    get log() {
+      return aiLog;
+    },
+    get logOpen() {
+      return logOpen;
+    },
+    get echo() {
+      return aiEcho;
+    },
+    onModeChange: handleModeChange,
+    onApprove: (id?: number) => decide(true, id),
+    onReject: (id?: number) => decide(false, id),
+    onEditPlan: editPlan,
+    onStop: stopAi,
+    onClear: clearAi,
+    onOpenTask: focusAi,
+    onToggleLog: toggleLog,
+    onToggleStream: toggleStream,
+    onDockSubmit: submitFromDock,
+  };
 
   $effect(() => {
     document.documentElement.dataset.theme = resolvedTheme;
@@ -759,31 +791,10 @@
           onClose={onTabClose}
           onCd={handleCd}
           onPwd={handlePwd}
-      onCmdDone={handleCmdDone}
-          aiMode={activeAi.mode}
-          aiBusy={activeAi.busy}
-          aiState={activeAi.state}
-          cards={activeAi.cards}
-          taskText={activeAi.taskText}
-          summary={activeAi.summary}
-          aiStreamOpen={activeAi.streamOpen}
-          aiFocusSeq={aiFocusSeq}
-          aiLog={aiLog}
-          logOpen={logOpen}
-          aiEcho={aiEcho}
-          thinking={activeAi.thinking}
+          onCmdDone={handleCmdDone}
+          ai={aiDock}
           termFontSize={uiConfig?.term_font_size ?? 14}
           termScrollback={uiConfig?.term_scrollback ?? 5000}
-          onModeChange={handleModeChange}
-          onApprove={(id?: number) => decide(true, id)}
-          onReject={(id?: number) => decide(false, id)}
-          onEditPlan={editPlan}
-          onStop={stopAi}
-          onClear={clearAi}
-          onOpenTask={focusAi}
-          onToggleLog={toggleLog}
-          onToggleStream={toggleStream}
-          onDockSubmit={submitFromDock}
         />
       </section>
 

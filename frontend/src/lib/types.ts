@@ -1,5 +1,6 @@
 // 类型定义(与 core.rs serde 对齐)
-// ---------- 类型(与 core.rs serde 对齐) ----------
+import type { AiSessionState } from "./aiSession";
+import type { EchoEntry } from "./echo";
 
 export type SessionKind = "linux" | "windows" | "rdp" | "docker";
 
@@ -185,4 +186,37 @@ export interface AiGoalCard {
 }
 
 export type AiCard = AiQaCard | AiStepCard | AiPlanCard | AiGoalCard;
+
+// ---------- P134-B：AI dock 聚合契约 ----------
+/**
+ * App → TerminalTabs → AiCopilot 的 AI 相关 props 聚合对象。
+ *
+ * App 侧用**恒等引用 + getter** 组装（见 App.svelte 的 `aiDock`）：对象身份恒定，
+ * 各字段读取仍落在各自来源信号上（Svelte 5 细粒度依赖），避免对象整体重建把
+ * 无关变更放大成全部子组件失效；TerminalTabs 侧另见 `dockAi`（唯一差异 = 包装
+ * `onDockSubmit` 注入终端上下文，见 TerminalTabs.svelte）。
+ */
+export interface AiDockProps {
+  /** 活动会话的 AI 运行态（aiSession.ts 单桶，原地写） */
+  session: AiSessionState;
+  /** Alt+I 聚焦序号（递增触发输入框聚焦） */
+  focusSeq: number;
+  /** AI 日志条目（Alt+L 面板） */
+  log: AiLogEntry[];
+  /** 日志面板开合（跨会话共享） */
+  logOpen: boolean;
+  /** AI 过程回显队列（各会话终端镜像，lib/echo.replayEcho 消费） */
+  echo: EchoEntry[];
+  onModeChange: (m: "qa" | "agent") => void;
+  /** 确认/拒绝携带点击卡片的 id（source 决定路由：AI 确认 vs 终端拦截） */
+  onApprove: (id?: number) => void;
+  onReject: (id?: number) => void;
+  onEditPlan: (commands: string[]) => void;
+  onStop: () => void;
+  onClear: () => void;
+  onOpenTask: () => void;
+  onToggleLog: () => void;
+  onToggleStream: () => void;
+  onDockSubmit: (text: string, container?: string | null, termContext?: string | null) => void;
+}
 

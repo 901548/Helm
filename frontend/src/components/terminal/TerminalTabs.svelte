@@ -22,6 +22,20 @@
   import SysMonitor from "./SysMonitor.svelte";
   import AiCopilot from "./AiCopilot.svelte";
 
+  // P136：addon-webgl 0.19.0 的渲染器恢复回调读取 xterm 5.5.0 中不存在的
+  // `_terminal._core._store` 字段，导致 WebglAddon.dispose() 必抛 TypeError，
+  // 并中断 AddonManager 与终端 dispose 的清理循环（每次关标签产生未捕获异常 2~4 次）。
+  // 子类吞掉该异常，让销毁全链路完整走完；正常路径行为不变。
+  class SafeWebglAddon extends WebglAddon {
+    dispose(): void {
+      try {
+        super.dispose();
+      } catch {
+        /* 上游 0.19.0 + xterm 5.5.0 组合的已知缺陷，忽略 */
+      }
+    }
+  }
+
   interface Props {
     tabs: string[];
     activeTab: string | null;
@@ -332,7 +346,7 @@
         // P68 WebGL 硬件渲染（大输出滚动性能）；上下文创建失败（上下文数超限/驱动问题/
         // 容器隐藏）时静默回退 DOM 渲染器，不影响功能
         try {
-          const webgl = new WebglAddon();
+          const webgl = new SafeWebglAddon();
           e.term.loadAddon(webgl);
           e.webgl = webgl;
         } catch {
@@ -852,7 +866,7 @@
         }
         requestAnimationFrame(() => {
           try {
-            const w = new WebglAddon();
+            const w = new SafeWebglAddon();
             e.term.loadAddon(w);
             e.webgl = w;
           } catch {

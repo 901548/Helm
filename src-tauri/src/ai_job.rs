@@ -568,16 +568,9 @@ pub(crate) async fn run_ai_job(
                         output: truncate_text(&output, 2000),
                     })
                     .await;
-                    let _ = app.emit(
-                        "ai",
-                        AiPayload::CommandStep {
-                            name: session.to_string(),
-                            command: command.to_string(),
-                            success: code == 0,
-                            message: if code == 0 { String::new() } else { format!("退出码 {}", code) },
-                            output: truncate_text(&output, 2000),
-                        },
-                    );
+                    // 注：CommandStep 事件由 task_exec 内部统一发射（QA/Agent/技能三路径共用）；
+                    // 旧实现在此再发一次 → 每条技能命令双发，前端落两张 ok 卡（第二次不匹配
+                    // running/confirm/skipped 去重条件）、日志面板双条目、bench 步数翻倍。
                 }
                 let fail_note = if fail_count > 0 {
                     format!("、{} 步失败", fail_count)

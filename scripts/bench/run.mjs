@@ -113,7 +113,8 @@ for (const t of tasks) {
     continue;
   }
 
-  const ev0 = (await readEvents()).length;
+  // 事件游标：每轮 poll 只消费新事件（旧实现固定 slice(ev0)，每轮重读全部窗口 → 步数虚高）
+  let evCursor = (await readEvents()).length;
   const t0 = Date.now();
   try {
     await invoke("ai_submit", { name: session, input: t.task, pwd: "/root", container: null, termContext: null });
@@ -132,7 +133,9 @@ for (const t of tasks) {
   let failedSteps = 0;
   while (Date.now() - t0 < TASK_TIMEOUT_MS) {
     await sleep(500);
-    const win = (await readEvents()).slice(ev0);
+    const all = await readEvents();
+    const win = all.slice(evCursor);
+    evCursor = all.length;
     for (const e of win) {
       if (e.name !== session) continue;
       if (e.kind === "commandStep") {

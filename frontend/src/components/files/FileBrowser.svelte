@@ -369,19 +369,36 @@
           disabled={uploading || !activeTab}
           onclick={() => fileInput.click()}
           class:busy={uploading}
-        >{uploading ? "…" : "⬆"}</button>
+        >
+          {#if uploading}…{:else}
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M8 10.6V2.6M5.2 5.4 8 2.6l2.8 2.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M2.6 10.2v2a1.2 1.2 0 0 0 1.2 1.2h8.4a1.2 1.2 0 0 0 1.2-1.2v-2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            </svg>
+          {/if}
+        </button>
         <button
           class="icon-btn"
           title={lastFile ? `下载 ${lastFile.name}` : "先点击一个文件再下载"}
           disabled={!lastFile}
           onclick={() => lastFile && doDownload(lastFile)}
-        >⬇</button>
+        >
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 2.6v8M5.2 7.8 8 10.6l2.8-2.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M2.6 10.2v2a1.2 1.2 0 0 0 1.2 1.2h8.4a1.2 1.2 0 0 0 1.2-1.2v-2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+        </button>
         <button
           class="icon-btn"
           title="服务器快照（打包配置，可回滚）"
           disabled={!activeTab}
           onclick={() => (snapOpen = true)}
-        >🛡</button>
+        >
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 1.9 13 3.6v4.2c0 3-2 5.4-5 6.3-3-.9-5-3.3-5-6.3V3.6l5-1.7Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+            <path d="m5.9 8 1.5 1.5 2.9-2.9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
       </div>
     {/if}
   </header>
@@ -615,7 +632,15 @@
     border-radius: var(--radius-sm);
     padding: 0;
     line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     transition: background 0.12s ease, color 0.12s ease;
+  }
+  .icon-btn svg {
+    display: block;
+    width: 16px;
+    height: 16px;
   }
   .icon-btn:hover:not(:disabled) {
     background: var(--hover);
@@ -813,13 +838,6 @@
     background: var(--danger);
     color: #fff;
     border-color: var(--danger);
-  }
-  textarea.pv-body {
-    border: none;
-    border-radius: 0;
-    resize: none;
-    background: var(--modal-bg);
-    outline: none;
   }
   .fs-resize {
     position: absolute;

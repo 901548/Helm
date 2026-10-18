@@ -103,7 +103,12 @@
 
       {#if dry.touchesSshdConfig}
         <div class="rs-danger">
-          ⚠ 此快照包含 <code>/etc/ssh/sshd_config</code>。若包内配置有误，还原后
+          <svg class="rs-danger-ico" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 2.3 14.4 13.2H1.6L8 2.3Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+            <path d="M8 6.5v3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+            <circle cx="8" cy="11.5" r="0.8" fill="currentColor"/>
+          </svg>
+          此快照包含 <code>/etc/ssh/sshd_config</code>。若包内配置有误，还原后
           <code>sshd</code> 可能无法启动 → <strong>机器失联</strong>。
           后端会做 <code>sshd -t</code> 语法校验，失败则不 reload。
         </div>
@@ -266,6 +271,14 @@
     font-size: 0.76rem;
     line-height: 1.6;
     margin-bottom: 0.5rem;
+  }
+  .rs-danger-ico {
+    display: inline-block;
+    width: 13px;
+    height: 13px;
+    vertical-align: -2px;
+    margin-right: 0.25rem;
+    color: var(--warning);
   }
   .rs-notice {
     padding: 0.5rem 0.7rem;

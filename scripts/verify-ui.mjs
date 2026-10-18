@@ -138,6 +138,10 @@ if (connected) {
   const dirRowJs = `[...document.querySelectorAll('.fs-row')].find((r) => r.querySelector('.fs-icon.dir'))`;
   const fileRowJs = `[...document.querySelectorAll('.fs-row')].find((r) => !r.querySelector('.fs-icon.dir'))`;
 
+  // 等待首次刷新落地（cwd 显示真实路径）。慢链路下若不等待，观测序列首值会是
+  // 占位符「— (会话)」，正常的「首载填充」会被误判成一次额外跃迁（时序抖动，非回跳）
+  await waitFor(`(() => { const t = document.querySelector('.fs-cwd')?.textContent?.trim() ?? ''; return t !== '' && !t.startsWith('—') && t !== '未连接会话'; })()`, 10000, 250);
+
   // P99-1 观测证据：监听 .fs-cwd 的取值序列。旧实现 effect 被自身写的 cwd 二次触发，
   // 会用陈旧目标再刷一次 → 序列里出现「回到旧值再前进」；修复后一次导航只应有一次跃迁。
   // （注：包 window.__TAURI_INTERNALS__.invoke 计数不可行——Tauri 的 api 模块在加载时

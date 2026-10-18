@@ -1079,9 +1079,6 @@
     color: var(--fg);
     background: var(--hover);
   }
-  .s-btn.close:hover {
-    color: var(--danger);
-  }
   .term-area {
     flex: 1;
     min-height: 0;

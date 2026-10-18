@@ -191,6 +191,9 @@
   .s-btn.close {
     color: var(--fg-muted);
   }
+  .s-btn.close:hover {
+    color: var(--danger);
+  }
 
   /* ---------- 终端区右键菜单 ---------- */
   .term-ctx-veil {

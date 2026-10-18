@@ -168,7 +168,21 @@ if (connected) {
   }
 }
 
-// ---------- 5. 全程零 JS 异常 ----------
+// ---------- 5. 关标签触发渲染器销毁（P136 回归守卫） ----------
+// 注入「连接失败」假会话即可建标签（纯前端路径：不写配置、不触真实会话），
+// 关掉它触发 xterm + WebGL 渲染器 dispose —— P136 前此操作每次必抛 2~4 次未捕获
+// TypeError（@xterm/addon-webgl 0.19.0 恢复回调读 xterm 6 的 _core._store）；修复=SafeWebglAddon 吞异常。
+const fakeName = "zverify-close";
+const issuesBeforeClose = pageIssues.length;
+await evalJson(`window.__TAURI_INTERNALS__.invoke('plugin:event|emit', { event: 'connection', payload: { status: 'failed', name: '${fakeName}', error: 'verify-ui' } })`);
+const fakeReady = await waitFor(`[...document.querySelectorAll('.tab-name')].some((e) => e.textContent === '${fakeName}')`, 6000, 150);
+const fakeTerm = await waitFor(`document.querySelector('[data-term="${fakeName}"] .xterm') !== null`, 6000, 150);
+await evalJson(`(() => { const t = [...document.querySelectorAll('.tab')].find((t) => t.querySelector('.tab-name')?.textContent === '${fakeName}'); t?.querySelector('.tab-close')?.click(); return !!t; })()`);
+const fakeGone = await waitFor(`![...document.querySelectorAll('.tab-name')].some((e) => e.textContent === '${fakeName}')`, 4000, 100);
+await sleep(800); // 等 dispose 异常的 CDP 事件送达
+check("关标签触发渲染器销毁且无新异常（P136 回归守卫）", fakeReady === true && fakeTerm === true && fakeGone === true && pageIssues.length === issuesBeforeClose, `ready=${fakeReady} term=${fakeTerm} gone=${fakeGone} newIssues=${pageIssues.length - issuesBeforeClose}`);
+
+// ---------- 6. 全程零 JS 异常 ----------
 check("全程无未捕获异常 / console.error", pageIssues.length === 0, pageIssues.slice(0, 3).join(" | "));
 
 const failed = results.filter((r) => !r.ok).length;
